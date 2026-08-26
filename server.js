@@ -315,7 +315,19 @@ app.post('/api/quote-requests', authRequired, (req, res) => {
   const id = randomUUID();
   db.prepare('INSERT INTO quote_requests (id, user_id, partner_id, address, pyeong, space_type) VALUES (?,?,?,?,?,?)')
     .run(id, req.user.sub, partnerId, address, pyeong, spaceType);
-  res.json({ success: true, data: { id, status: 'requested' } });
+  // 신규(사용자요청 — 견적요청 알림): 견적요청 시 소비자-업체 채팅방을 자동으로 찾거나 만들고,
+  // 그 방에 "견적요청" 타입의 특수 메시지를 남겨서 업체가 메신저에서 바로 확인·구분할 수 있게 함
+  let room = db.prepare('SELECT * FROM chat_rooms WHERE consumer_id=? AND partner_id=?').get(req.user.sub, partnerId);
+  if (!room) {
+    const roomId = randomUUID();
+    db.prepare('INSERT INTO chat_rooms (id, consumer_id, partner_id) VALUES (?,?,?)').run(roomId, req.user.sub, partnerId);
+    db.prepare('INSERT INTO meas_jobs (room_id) VALUES (?)').run(roomId);
+    room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(roomId);
+  }
+  const quoteMsgText = JSON.stringify({ requestId: id, address, pyeong, spaceType });
+  db.prepare('INSERT INTO chat_messages (id, room_id, sender_role, sender_id, text, msg_type) VALUES (?,?,?,?,?,?)')
+    .run(randomUUID(), room.id, 'consumer', req.user.sub, quoteMsgText, 'quote_request');
+  res.json({ success: true, data: { id, status: 'requested', roomId: room.id } });
 });
 
 app.get('/api/quote-requests/mine', authRequired, (req, res) => {
@@ -573,10 +585,37 @@ function assertRoomAccess(room, user) {
 }
 
 // 본인(소비자 또는 업체)이 속한 채팅방 목록(최근 생성순)
+// 본인(소비자 또는 업체)이 속한 채팅방 목록(최근 생성순) — 상대방 이름·마지막메시지 포함
+// 결함수정(사용자 실제 발견): 이전엔 방 ID만 줘서, 프론트가 이름/최근메시지를 표시할 방법이 없어
+// 화면(메신저 목록)이 실제 서버 데이터에 연결이 안 되고 고정 데모데이터만 보여주던 문제
 app.get('/api/rooms/mine', authRequired, (req, res) => {
   const column = req.user.role === 'partner' ? 'partner_id' : 'consumer_id';
   const rooms = db.prepare(`SELECT * FROM chat_rooms WHERE ${column}=? ORDER BY created_at DESC`).all(req.user.sub);
-  res.json({ success: true, data: rooms });
+  const getLastMsg = db.prepare('SELECT text, msg_type, created_at FROM chat_messages WHERE room_id=? ORDER BY seq DESC LIMIT 1');
+  const enriched = rooms.map(room => {
+    let displayName;
+    if (req.user.role === 'partner') {
+      const consumer = db.prepare('SELECT nickname FROM users WHERE id=?').get(room.consumer_id);
+      displayName = (consumer && consumer.nickname) || '회원';
+    } else {
+      const partner = db.prepare('SELECT business_name FROM partners WHERE id=?').get(room.partner_id);
+      displayName = (partner && partner.business_name) || '업체';
+    }
+    const lastMsg = getLastMsg.get(room.id);
+    // 신규(사용자요청 — 견적요청 알림): 목록에서 견적요청 메시지는 사람이 읽기 좋은 요약문구로 표시
+    let lastMessagePreview = lastMsg ? lastMsg.text : '';
+    if (lastMsg && lastMsg.msg_type === 'quote_request') {
+      try { const q = JSON.parse(lastMsg.text); lastMessagePreview = '📋 견적요청 · ' + q.address + ' · ' + q.pyeong + '평'; } catch (e) {}
+    }
+    return {
+      id: room.id,
+      displayName,
+      lastMessage: lastMessagePreview,
+      lastMessageType: lastMsg ? lastMsg.msg_type : 'text',
+      lastTime: lastMsg ? lastMsg.created_at : room.created_at
+    };
+  });
+  res.json({ success: true, data: enriched });
 });
 
 app.post('/api/rooms/:roomId/messages', authRequired, (req, res) => {
@@ -595,10 +634,13 @@ app.post('/api/rooms/:roomId/messages', authRequired, (req, res) => {
 app.get('/api/rooms/:roomId/messages', authRequired, (req, res) => {
   const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
   if (!assertRoomAccess(room, req.user)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인이 속한 채팅방이 아닙니다' } });
-  const { since } = req.query;
-  const rows = since
-    ? db.prepare('SELECT * FROM chat_messages WHERE room_id=? AND created_at > ? ORDER BY created_at ASC').all(req.params.roomId, since)
-    : db.prepare('SELECT * FROM chat_messages WHERE room_id=? ORDER BY created_at ASC').all(req.params.roomId);
+  // 결함수정(실제 재현·발견된 버그): since를 시간(문자열)으로 비교하면, 같은 초(1초 이내)에 여러 메시지가
+  // 오갈 경우 SQLite 시간정밀도(초 단위) 한계로 새 메시지를 놓치는 문제가 있었음
+  // → 시간 대신 자동증가 순번(seq)으로 비교해서 정확히 그 이후 메시지만 가져오도록 근본수정
+  const { sinceSeq } = req.query;
+  const rows = sinceSeq
+    ? db.prepare('SELECT * FROM chat_messages WHERE room_id=? AND seq > ? ORDER BY seq ASC').all(req.params.roomId, Number(sinceSeq))
+    : db.prepare('SELECT * FROM chat_messages WHERE room_id=? ORDER BY seq ASC').all(req.params.roomId);
   res.json({ success: true, data: rows });
 });
 

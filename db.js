@@ -195,11 +195,13 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
 );
 
 CREATE TABLE IF NOT EXISTS chat_messages (
-  id TEXT PRIMARY KEY,
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT UNIQUE,
   room_id TEXT REFERENCES chat_rooms(id),
   sender_role TEXT NOT NULL,
   sender_id TEXT NOT NULL,
   text TEXT NOT NULL,
+  msg_type TEXT DEFAULT 'text',
   created_at TEXT DEFAULT (datetime('now'))
 );
 
