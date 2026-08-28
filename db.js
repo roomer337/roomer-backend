@@ -243,6 +243,25 @@ CREATE TABLE IF NOT EXISTS credit_ledger (
   order_id TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+-- 신규(사용자요청 — 루머칼럼 Notion 연동): Notion 데이터베이스와 동기화되는 칼럼 저장소.
+-- notion_page_id가 있으면 Notion에서 가져온 글, 없으면 관리자가 직접 등록한 기본(폴백) 글.
+CREATE TABLE IF NOT EXISTS columns (
+  id TEXT PRIMARY KEY,
+  notion_page_id TEXT UNIQUE,
+  tag TEXT,
+  title TEXT NOT NULL,
+  summary TEXT,
+  body TEXT,
+  thumb_emoji TEXT,
+  thumb_color TEXT,
+  source_name TEXT,
+  source_url TEXT,
+  published_at TEXT,
+  sort_order INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
 `);
 
 module.exports = db;

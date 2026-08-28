@@ -736,6 +736,172 @@ app.patch('/api/admin/ads/:id/reject', adminAuthRequired(), (req, res) => {
   res.json({ success: true, data: { message: '반려되었습니다' } });
 });
 
+// ===== 신규(사용자요청 — 루머칼럼 Notion 연동) =====
+// 운영자가 Notion 데이터베이스에 글을 쓰면, 이 서버가 주기적으로(또는 수동 트리거로) 가져와서
+// columns 테이블에 동기화한다. NOTION_API_KEY/NOTION_DATABASE_ID 환경변수가 없으면 폴백(기본 3개 글)만 사용.
+// 실서비스 확장 시: 이 폴링 방식 대신 Notion 웹훅으로 실시간 동기화 권장.
+const NOTION_API_KEY = process.env.NOTION_API_KEY || '';
+const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID || '';
+
+// 폴백(기본) 칼럼 3개 — Notion 미연동 상태에서도 화면이 비어보이지 않도록 서버 최초 기동시 1회 시딩
+function seedDefaultColumnsIfEmpty() {
+  const count = db.prepare('SELECT COUNT(*) as c FROM columns').get().c;
+  if (count > 0) return;
+  // 신규(사용자요청 — 실제 웹 기사 기반 칼럼): 아래 3개는 실제 인테리어 매체 기사를 조사해
+  // 저작권 규정에 맞게 직접 인용 없이 자체적으로 재구성한 요약이며, 각 기사의 실제 원문 링크(source_url)를
+  // 함께 제공해 사용자가 원문을 계속 읽을 수 있도록 합니다.
+  const defaults = [
+    {
+      id: randomUUID(), tag: '욕실 인테리어', title: '2026년 욕실 트렌드, 대형 타일이 대세인 이유',
+      summary: '줄눈을 줄이는 대형 타일 시공이 욕실을 넓어 보이게 하는 핵심 트렌드로 떠오르고 있습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-20',
+      source_name: '오늘의집 라이프스타일 매거진', source_url: 'https://ohou.se/advices/12252',
+      body: '최근 인테리어 시공 사례들을 살펴보면 욕실과 거실 벽에서 공통적으로 눈에 띄는 변화가 있습니다. 바로 대형 타일의 확산입니다.\n\n작은 타일을 촘촘히 붙이던 기존 방식과 달리, 600×600mm 이상의 대형 포세린 타일을 쓰면 줄눈 개수가 크게 줄어듭니다. 그 결과 벽면과 바닥이 훨씬 매끈하고 넓어 보이는 효과를 얻을 수 있어, 좁은 욕실을 고민하는 세대에서 특히 선호도가 높습니다.\n\n조명 설계도 함께 달라지고 있습니다. 예전에는 욕실 전체를 하나의 조명으로 균일하게 밝히는 방식이 일반적이었다면, 최근에는 세면대·샤워부스 등 구역마다 조도를 다르게 설계해 공간에 입체감을 주는 방식이 늘고 있습니다. 밝은 영역과 은은한 영역이 공존하면 실제 면적보다 더 넓게 느껴지는 효과가 있습니다.\n\n타일 색상은 화이트·아이보리 같은 밝은 톤이 여전히 강세지만, 최근에는 호텔 욕실처럼 고급스러운 무드를 내기 위해 마감재의 질감(무광·유광)을 다르게 조합하는 경우도 늘고 있습니다.\n\n실제 시공 시에는 타일 크기가 커질수록 평탄 작업의 중요성도 함께 커지므로, 바닥 미장 상태를 꼼꼼히 확인해줄 수 있는 시공 경험이 풍부한 업체를 선택하는 것이 중요합니다.'
+    },
+    {
+      id: randomUUID(), tag: '주방 트렌드', title: '2026년 주방 인테리어, 대면형과 엔지니어드 스톤이 이끈다',
+      summary: '요리하며 가족과 소통할 수 있는 대면형 주방과, 고급스러운 질감의 엔지니어드 스톤 상판이 올해 주방 트렌드를 이끌고 있습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-18',
+      source_name: '오늘의집 라이프스타일 매거진', source_url: 'https://ohou.se/advices/12252',
+      body: '2026년 주방 인테리어에서 가장 두드러지는 흐름은 대면형(아일랜드·ㄷ자 개방형) 주방의 확산입니다. 조리대가 거실을 바라보는 구조라 요리를 하면서도 가족이나 손님과 자연스럽게 대화를 나눌 수 있고, 거실과 주방의 경계가 흐려지면서 공간 전체가 넓어 보이는 효과도 있습니다.\n\n다만 대면형 구조를 무리 없이 적용하려면 어느 정도 면적이 확보되어야 합니다. 협소한 주방이라면 기존 배치를 유지하되 아일랜드 느낌을 낼 수 있는 소형 테이블을 절충안으로 고려하는 경우가 많습니다.\n\n상판 소재로는 엔지니어드 스톤(쿼츠 스톤)이 올해 1순위로 꼽힙니다. 내구성이 좋고 관리가 편하면서도 자연석과 유사한 고급스러운 질감을 낼 수 있기 때문입니다. 최근에는 인공적인 느낌보다 자연스러운 무늬를 살린 제품이 특히 인기입니다.\n\n가전 배치도 인테리어 설계 초반부터 함께 고려하는 추세입니다. 빌트인 냉장고·인덕션·식기세척기 등의 위치를 먼저 정한 뒤 전기 설비와 수납 구조를 맞추는 순서로 진행하면, 시공 중간에 위치를 바꾸는 시행착오를 줄일 수 있습니다.'
+    },
+    {
+      id: randomUUID(), tag: '견적 가이드', title: '인테리어 견적서, 이 항목들을 꼭 확인하세요',
+      summary: '항목별 세부내역, 자재 등급 명시, A/S 보증기간까지 — 견적서에서 분쟁을 예방하는 핵심 체크포인트를 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-15',
+      source_name: 'LifeBase 인테리어 가이드', source_url: 'https://lifebase.kr/blog/0429-interior-estimate-checklist/',
+      body: '인테리어 견적서는 보통 철거·목공·전기·도배·장판·타일·가구·조명 등의 항목으로 구성됩니다. 각 항목이 "공사 내용 - 수량 - 단가 - 총액"으로 세분화되어 있는지, 세부 내역의 합이 전체 소계와 정확히 일치하는지부터 확인하는 것이 견적서 검토의 출발점입니다.\n\n특히 "전체 리모델링 일체 2,000만원"처럼 여러 공정을 하나로 뭉뚱그린 이른바 "일식" 항목은 주의가 필요합니다. 나중에 어떤 항목이 빠졌는지, 왜 추가 비용이 발생했는지 설명하기 어려워지는 경우가 많기 때문입니다. 철거비·폐기물 처리비·인건비를 개별 항목으로 나눠 요청하는 것이 안전합니다.\n\n자재 등급 표기도 중요한 포인트입니다. "마루 시공"처럼 뭉뚱그려진 표현보다 브랜드·모델명·규격까지 구체적으로 적혀 있어야, 시공 중 더 저렴한 자재로 바뀌는 것을 예방할 수 있습니다.\n\nA/S(하자보수) 보증기간도 반드시 계약서에 명시해야 합니다. 공정별로 보증기간이 다른 경우가 많은데, 일반적으로 도배·도장·타일 등은 1년, 급배수나 설비 공사는 2년 이상으로 정하는 경우가 흔합니다. 보증 범위(시공 불량, 자재 하자, 누수 등)까지 구체적으로 남겨두면 이후 분쟁 소지를 크게 줄일 수 있습니다.\n\n계약금 비율도 확인해야 할 항목입니다. 계약금을 지나치게 높게 요구하는 업체는 주의가 필요하며, 착수금·중도금·잔금으로 나누어 지급하는 구조가 일반적으로 더 안전합니다.'
+    },
+    {
+      id: randomUUID(), tag: '거실 인테리어', title: '2026년 거실 트렌드, 워밍 뉴트럴과 곡선 디자인',
+      summary: '차가운 미니멀에서 따뜻한 절제미로 — 올해 거실 인테리어를 이끄는 4가지 키워드를 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-25',
+      source_name: '오늘의집 라이프스타일 매거진', source_url: 'https://ohou.se/advices/12448',
+      body: '2026년 거실 인테리어는 이전의 차갑던 미니멀 스타일에서, 한층 따뜻하고 절제된 분위기로 흐름이 바뀌고 있습니다. 한국·유럽·일본의 인테리어 매거진들이 공통적으로 짚는 키워드는 워밍 뉴트럴, 곡선 디자인, 존 디바이드(공간 분리), 플랜테리어 네 가지입니다.\n\n컬러는 베이지를 기본 바탕으로 하고, 테라코타나 세이지그린 같은 어스톤을 포인트로 더하는 조합이 강세입니다. 자재 면에서는 헤링본 패턴 마루나 마이크로 시멘트 마감이 인기를 얻고 있습니다.\n\n조명도 예전처럼 천장등 하나에 의존하기보다, 메인 조명·간접 조명·무드 조명을 함께 활용해 시간대별로 다른 분위기를 연출하는 방식이 트렌드로 자리잡고 있습니다.\n\n다만 평수가 좁은 거실이라면 이 모든 요소를 한 번에 적용하기보다, 러그·소파 등 가구로 먼저 분위기를 잡아보고 마음에 들면 마루나 벽 마감 같은 자재 시공으로 확장하는 단계적 접근이 안전합니다.'
+    },
+    {
+      id: randomUUID(), tag: '컬러 가이드', title: '2026년 인테리어 컬러, 어스톤이 답이다',
+      summary: '베이지·테라코타·올리브그린 — 공간을 압도하지 않으면서 개성을 살리는 2026년 컬러 배합법을 소개합니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-24',
+      source_name: 'LifeBase 인테리어 가이드', source_url: 'https://lifebase.kr/blog/0184-interior-color-trends-2026/',
+      body: '2026년 인테리어 컬러 트렌드는 채도가 살아있는 어스톤과 딥톤이 중심입니다. 웜그레이나 베이지를 기본 배경으로 삼고, 테라코타나 올리브그린 같은 어스톤을 포인트로 더하면 안정적이면서도 개성 있는 공간을 만들 수 있습니다.\n\n색상 배합에는 흔히 70:20:10 법칙이 활용됩니다. 베이스 컬러를 70%, 서브 컬러를 20%, 포인트 컬러를 10% 정도로 배분하면 과하지 않으면서도 시각적으로 안정된 균형을 만들 수 있습니다.\n\n거실처럼 가족이 함께 시간을 보내는 공간에는 편안함을 주는 색상이 적합합니다. 벽면은 웜그레이나 베이지로, 소파나 러그에는 테라코타·카라멜 같은 따뜻한 색을 포인트로 주면 아늑한 분위기를 연출할 수 있습니다.\n\n한 가지 색을 공간 전체에 과하게 적용하기보다, 벽·가구·소품 등 서로 다른 요소에 나눠 배치하는 것이 실패 확률을 줄이는 방법입니다.'
+    },
+    {
+      id: randomUUID(), tag: '조명 팁', title: '침실 조명, 밝기보다 색온도가 중요한 이유',
+      summary: '숙면을 돕는 침실 조명의 핵심은 밝기가 아니라 따뜻한 색온도입니다. 공간별 조명 선택 요령을 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-23',
+      source_name: 'LifeBase 인테리어 가이드', source_url: 'https://lifebase.kr/blog/0455-interior-jomyeong-gongganbbyeol-jomyeong-seontaeggwa-baechi-yoryeong/',
+      body: '침실 조명을 고를 때 가장 흔히 하는 실수는 밝기만 신경 쓰는 것입니다. 실제로 숙면에 더 큰 영향을 주는 요소는 색온도입니다. 천장 조명은 3000K 이하의 따뜻한 색온도를 선택하고, 밝기를 조절할 수 있는 디밍 기능을 함께 갖추는 것이 좋습니다.\n\n침대 양옆에는 독서용 스탠드나 벽등을 따로 두는 것을 추천합니다. 천장 조명 하나에만 의존하면 책을 읽거나 취침 준비를 할 때 불편할 수 있습니다.\n\n조명은 시선에 직접 닿지 않도록 간접적으로 배치하는 것이 원칙입니다. 빛이 눈에 바로 들어오면 오히려 수면을 방해할 수 있기 때문입니다. 드레스룸이나 화장대가 있다면 거울 주변에 자연광에 가까운 색온도(약 5000K)의 조명을 배치하면 도움이 됩니다.\n\n같은 공간 안에서 색온도가 제각각이면 어수선해 보이므로, 거실·주방·침실의 색온도를 비슷하게 맞추거나 공간별로 명확히 구분하는 것이 좋습니다.'
+    },
+    {
+      id: randomUUID(), tag: '수납 팁', title: '침실이 좁아 보인다면? 수납부터 다시 보세요',
+      summary: '큰 공사 없이도 침실을 넓어 보이게 만드는 수납 정리 아이디어를 단계별로 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-22',
+      source_name: '셀프 인테리어 기초', source_url: 'https://quax-interior.com/increase-bedroom-storage/',
+      body: '침실이 좁아 보이는 이유는 실제 면적보다, 물건이 쌓여 어수선해 보이는 경우가 더 많습니다. 셀프 인테리어로 수납을 개선하기 전에는, 먼저 침실에서 무엇이 가장 많이 쌓이는지부터 파악하는 것이 순서입니다.\n\n옷이 많다면 옷걸이 수납이 부족한 경우가 많고, 침구나 계절 용품이 많다면 침대 아래 공간을 활용하는 편이 효율적입니다. 책이나 잡화가 많다면 벽면 선반이나 서랍형 수납이 더 잘 맞습니다.\n\n한 번에 침실 전체를 바꾸기보다, 가장 불편한 지점 하나부터 개선하는 방식이 예산도 아끼고 실패 확률도 낮출 수 있습니다. 보기 좋은 배치보다 꺼내기 쉽고 다시 넣기 쉬운 구조를 우선하는 것이 실사용 측면에서 훨씬 만족도가 높습니다.\n\n다만 수납 가구를 늘릴 때는 통로나 문이 열리는 공간이 좁아지지 않는지 미리 확인해야, 오히려 사용성이 떨어지는 상황을 피할 수 있습니다.'
+    },
+    {
+      id: randomUUID(), tag: '하자보수 가이드', title: '인테리어 완공 후, 이 부분은 꼭 체크하세요',
+      summary: '공정별로 하자가 잘 생기는 지점을 정리했습니다. 완공 직후 이 체크리스트로 집중 점검해보세요.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-21',
+      source_name: '오늘의집 라이프스타일 매거진', source_url: 'https://ohou.se/advices/2327',
+      body: '인테리어 공사가 끝난 직후에는, 공정별로 하자가 잘 생기는 곳을 정리해둔 체크리스트를 기준으로 하나씩 확인하는 것이 안전합니다. 특히 배관이나 설비를 이동한 경우라면 더욱 꼼꼼한 점검이 필요합니다.\n\n대면형 주방처럼 수도관·배관을 이동했다면, 설비 후 물을 30분에서 1시간 정도 틀어놓고 녹물이 나오지는 않는지, 물이 잘 나오는지 확인해야 합니다. 그다음엔 배수도 함께 확인해야 하는데, 싱크대 이동으로 배관이 길어지면 기울기가 완만해져 물빠짐이 잘 안 되는 하자가 생기기 쉽기 때문입니다.\n\n새시나 문짝은 가장 먼저 여닫힘 상태를 확인하는 것이 좋습니다. 틀어진 곳 없이 수평·수직이 잘 맞는지도 함께 점검해야 합니다.\n\n공정이 끝날 때마다 그 부분을 바로바로 점검하는 습관을 들이면, 나중에 문제가 누적되어 원인을 찾기 어려워지는 상황을 예방할 수 있습니다.'
+    },
+    {
+      id: randomUUID(), tag: '계약 체크리스트', title: '인테리어 계약 전, 후회 없는 체크리스트',
+      summary: '견적 내역부터 자재 등급, 하자보수 조항까지 — 계약 전 반드시 확인해야 할 항목을 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-19',
+      source_name: '인테리어 가이드', source_url: 'https://interiorguide.co.kr/267/',
+      body: '인테리어 공사 계약을 서두르면 예산 초과, 하자 발생, 책임 소재 불분명 같은 문제로 이어지기 쉽습니다. 실제로 소비자원에 접수되는 민원 중 상당수가 인테리어 관련 분쟁일 정도로, 계약 전 체계적인 점검이 중요합니다.\n\n견적서에는 철거·설비·마감재·가구 제작 및 운송비·폐기물 처리 비용까지 모두 기재되어 있는지 확인해야 합니다. "마루 시공"처럼 뭉뚱그린 표현보다, 구체적인 브랜드와 규격이 적혀 있어야 나중에 저가 자재로 바뀌는 상황을 예방할 수 있습니다.\n\n"추후 발생 가능"처럼 모호한 항목은 삭제를 요청하거나, 발생 기준을 명확히 정해두는 것이 좋습니다. 계약금은 전체 비용의 10~20% 정도가 일반적이며, 착수금·중도금·잔금으로 나눠 지급하는 구조가 안전합니다.\n\n업체를 고를 때는 가격보다 신뢰성과 시공 품질이 우선입니다. 사업자 등록증과 보험 가입 여부, 실제 시공 사례를 함께 확인하는 것이 좋습니다.'
+    },
+    {
+      id: randomUUID(), tag: '견적 가이드', title: '여러 인테리어 견적, 이렇게 비교하세요',
+      summary: '같은 조건으로 여러 업체에 견적을 요청해야 금액 차이의 이유가 명확해집니다. 견적 비교의 핵심 포인트를 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-17',
+      source_name: '모모랩', source_url: 'https://momolabdesign.com/story/how-to-compare-estimates',
+      body: '여러 업체의 견적을 비교할 때 가장 중요한 원칙은, 원하는 공사 범위와 자재 등급, 포함 항목(철거·폐기물·청소 등)을 한 장으로 정리해 모든 업체에 동일하게 전달하는 것입니다. 같은 조건에서 나온 견적이라야 어느 업체가 무엇을 더 넣었고 뺐는지가 명확히 드러나고, 금액 차이의 이유도 설명이 가능해집니다.\n\n견적서를 볼 때는 공종별로 자재비·인건비·수량이 나뉘어 있는지, 혹은 "일식"으로 뭉쳐 있지는 않은지부터 확인해야 합니다. 자재 정보도 브랜드·품번·등급·규격과 수량까지 구체적으로 적혀 있는지 봐야 합니다.\n\n하자보증 기간은 법으로 일률적으로 정해진 것이 아니라 계약서에 적힌 대로 적용됩니다. 참고로 건설산업기본법상 하자담보책임기간은 공종에 따라 다른데, 도배·도장·타일·방수·창호 등은 보통 1년, 급배수·냉난방 설비는 2년 정도로 정해져 있습니다.\n\n지급 조건도 비교 포인트입니다. 선금 비중이 지나치게 크지 않은지, 공정 진행에 맞춰 나눠 지급하는 구조인지 확인하는 것이 안전합니다.'
+    }
+  ];
+  const stmt = db.prepare(`INSERT INTO columns (id, tag, title, summary, body, thumb_emoji, thumb_color, published_at, sort_order, source_name, source_url)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  defaults.forEach((c, i) => stmt.run(c.id, c.tag, c.title, c.summary, c.body, c.thumb_emoji, c.thumb_color, c.published_at, i, c.source_name, c.source_url));
+}
+seedDefaultColumnsIfEmpty();
+
+// Notion 텍스트 블록들을 간단한 개행 텍스트로 변환(리치텍스트의 plain_text만 이어붙임)
+function notionBlocksToPlainText(blocks) {
+  return blocks.map(b => {
+    const type = b.type;
+    const rich = (b[type] && b[type].rich_text) || [];
+    const text = rich.map(t => t.plain_text).join('');
+    if (type === 'heading_1' || type === 'heading_2' || type === 'heading_3') return '\n' + text + '\n';
+    return text;
+  }).filter(Boolean).join('\n\n');
+}
+
+// Notion 데이터베이스를 조회해 columns 테이블에 upsert. 실패해도 서버 기동에는 영향 없음(폴백 유지).
+async function syncColumnsFromNotion() {
+  if (!NOTION_API_KEY || !NOTION_DATABASE_ID) {
+    return { synced: false, reason: 'NOTION_API_KEY 또는 NOTION_DATABASE_ID 환경변수가 설정되지 않았습니다' };
+  }
+  const headers = { 'Authorization': `Bearer ${NOTION_API_KEY}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
+  const dbRes = await fetch(`https://api.notion.com/v1/databases/${NOTION_DATABASE_ID}/query`, { method: 'POST', headers, body: JSON.stringify({ page_size: 50 }) });
+  if (!dbRes.ok) throw new Error(`Notion 데이터베이스 조회 실패 (${dbRes.status})`);
+  const dbJson = await dbRes.json();
+  const pages = dbJson.results || [];
+  let syncedCount = 0;
+  for (const page of pages) {
+    const props = page.properties || {};
+    const getTitle = (p) => (p && p.title || []).map(t => t.plain_text).join('') || '';
+    const getRichText = (p) => (p && p.rich_text || []).map(t => t.plain_text).join('') || '';
+    const getSelect = (p) => (p && p.select && p.select.name) || '';
+    const title = getTitle(props['Title'] || props['제목']);
+    if (!title) continue; // 제목 없는 항목은 건너뜀
+    const tag = getSelect(props['Tag'] || props['태그']) || '인테리어';
+    const summary = getRichText(props['Summary'] || props['요약']);
+    const emoji = getRichText(props['Emoji'] || props['이모지']) || '🏠';
+    // 본문(블록) 조회
+    const blocksRes = await fetch(`https://api.notion.com/v1/blocks/${page.id}/children?page_size=100`, { headers });
+    const blocksJson = blocksRes.ok ? await blocksRes.json() : { results: [] };
+    const body = notionBlocksToPlainText(blocksJson.results || []) || summary;
+    const publishedAt = (page.created_time || '').slice(0, 10);
+    const existing = db.prepare('SELECT id FROM columns WHERE notion_page_id=?').get(page.id);
+    if (existing) {
+      db.prepare(`UPDATE columns SET tag=?, title=?, summary=?, body=?, thumb_emoji=?, updated_at=datetime('now') WHERE notion_page_id=?`)
+        .run(tag, title, summary, body, emoji, page.id);
+    } else {
+      db.prepare(`INSERT INTO columns (id, notion_page_id, tag, title, summary, body, thumb_emoji, thumb_color, published_at, sort_order)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .run(randomUUID(), page.id, tag, title, summary, body, emoji, 'linear-gradient(135deg,#8FA890,#4A7BA6)', publishedAt, -Date.now());
+    }
+    syncedCount++;
+  }
+  return { synced: true, count: syncedCount };
+}
+
+// 칼럼 목록(요약) — 최신순
+app.get('/api/columns', (req, res) => {
+  const list = db.prepare('SELECT id, tag, title, summary, thumb_emoji, thumb_color, published_at FROM columns ORDER BY sort_order ASC, published_at DESC').all();
+  res.json({ success: true, data: list });
+});
+
+// 칼럼 상세(본문 포함)
+app.get('/api/columns/:id', (req, res) => {
+  const col = db.prepare('SELECT * FROM columns WHERE id=?').get(req.params.id);
+  if (!col) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '칼럼을 찾을 수 없습니다' } });
+  res.json({ success: true, data: col });
+});
+
+// 관리자 수동 동기화 트리거(Notion에 새 글 쓴 뒤 즉시 반영하고 싶을 때 호출)
+app.post('/api/admin/columns/sync-notion', adminAuthRequired(), async (req, res) => {
+  try {
+    const result = await syncColumnsFromNotion();
+    res.json({ success: true, data: result });
+  } catch (e) {
+    res.status(502).json({ success: false, error: { code: 'NOTION_SYNC_FAILED', message: e.message } });
+  }
+});
+
 // ===== 6. 관리자 대시보드 카운트 =====
 // 결함수정(전체 재검증 중 발견): dispute/abuse/inspect/settleHold/tier가 전부 하드코딩된 0이었음
 // → 각각 실제 테이블에서 미처리 건수를 집계하도록 수정
