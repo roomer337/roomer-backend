@@ -919,9 +919,12 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     </div>
   </div>
 
+  <!-- 결함정리(사용자요청 — 관리자 PIN 진입 안되던 문제): 레퍼런스 스타일 개편시 로고텍스트 자체가
+       삭제되어 있었음(.logo 요소가 없어 5번클릭 트리거 대상이 없었음) → 작게 복원 -->
+  <div class="logo" style="padding:10px 16px 0;display:flex;align-items:baseline;gap:5px"><span style="font-size:15px;font-weight:800;color:var(--charcoal);letter-spacing:-0.3px">루머</span><span style="font-size:13.5px;font-weight:800;color:var(--terracotta);letter-spacing:0.3px">ROOMER</span></div>
   <!-- 재설계(사용자요청 — 레퍼런스 앱 참고): 지역선택(박스없이 아이콘+텍스트+화살표) + 로그인/가입(우) -->
   <!-- 재설계(사용자요청 — 상병마크/삼선메뉴 복구): 좌측 [삼선메뉴+지역선택] 그룹 + 우측 로그인/가입 -->
-  <div class="header-row-00" style="padding:14px 16px 10px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+  <div class="header-row-00" style="padding:6px 16px 10px;display:flex;align-items:center;justify-content:space-between;gap:8px">
     <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
       <button type="button" onclick="openSideMenu()" aria-label="메뉴 열기" style="background:none;border:none;cursor:pointer;padding:6px;display:flex;flex-direction:column;gap:4px;justify-content:center;flex-shrink:0">
         <span style="display:block;width:19px;height:2px;background:var(--charcoal);border-radius:1px"></span>
