@@ -185,8 +185,10 @@ app.post('/api/auth/social/:provider', socialAuthLimiter, (req, res) => {
   let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get(provider, socialId);
   if (!user) {
     const id = randomUUID();
-    db.prepare('INSERT INTO users (id, social_provider, social_id, nickname) VALUES (?,?,?,?)')
-      .run(id, provider, socialId, nickname || '회원');
+    // 신규(사용자요청 — 캐시→크레딧 명칭통일 + 실제 가입혜택 지급): 첫화면 배너("가입시 29,000크레딧")가
+    // 실제로는 지급되지 않던 문제 발견·수정. 가입 즉시 29,000크레딧을 실제로 적립.
+    db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, cash_balance) VALUES (?,?,?,?,?)')
+      .run(id, provider, socialId, nickname || '회원', 29000);
     user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
   }
   const token = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
@@ -223,20 +225,27 @@ app.delete('/api/users/me', authRequired, (req, res) => {
 // 결함수정(팀장 지시 반영): 기존엔 등록 즉시 승인(approved_at)되어 관리자 검수 절차 자체가 없었음
 // → 프론트엔드(루머02.html) 정책과 일치하도록 pending 상태로 시작, 관리자 승인 후에만 검색·노출되게 수정
 app.post('/api/partners/register', (req, res) => {
-  const { businessName, businessRegNumber, licenseNumber, ceoName, address, region, docImageUrl, extImageUrl, intImageUrl } = req.body;
+  const { businessName, businessRegNumber, licenseNumber, ceoName, address, region, docImageUrl, extImageUrl, intImageUrl,
+    intro, strengthTags, portfolioImages, availableHours, spaceCategories } = req.body;
   if (!isNonEmptyString(businessName, 100)) return validationError(res, '상호명을 입력해주세요(100자 이내)');
   if (!isNonEmptyString(businessRegNumber) || !BIZNO_RE.test(businessRegNumber)) return validationError(res, '사업자등록번호 형식이 올바르지 않습니다(예: 123-45-67890)');
   if (ceoName && !isNonEmptyString(ceoName, 30)) return validationError(res, '대표자명은 30자 이내여야 합니다');
   if (address && !isNonEmptyString(address, 200)) return validationError(res, '주소는 200자 이내여야 합니다');
+  // 신규(사용자요청 — 2단계: 가입폼 확장) 필드 검증
+  if (intro && !isNonEmptyString(intro, 50)) return validationError(res, '한줄소개는 50자 이내여야 합니다');
+  if (strengthTags && (!Array.isArray(strengthTags) || strengthTags.length > 5)) return validationError(res, '강점 키워드는 최대 5개까지 선택 가능합니다');
+  if (portfolioImages && (!Array.isArray(portfolioImages) || portfolioImages.length > 6)) return validationError(res, '대표 시공사진은 최대 6장까지 등록 가능합니다');
+  if (spaceCategories && !Array.isArray(spaceCategories)) return validationError(res, '전문분야 형식이 올바르지 않습니다');
   // 재설계(사용자요청): 사업자등록증 없으면 플랫폼 등록 자체를 제한하는 정책
   if (!docImageUrl) {
     return res.status(400).json({ success: false, error: { code: 'DOC_REQUIRED', message: '사업자등록증을 올려야 등록할 수 있습니다' } });
   }
   const id = randomUUID();
   const tier = licenseNumber ? '면허 파트너' : '부분공사가능업체';
-  db.prepare(`INSERT INTO partners (id, business_name, business_reg_number, license_number, ceo_name, address, tier, region, doc_image_url, ext_image_url, int_image_url, verify_status, cert_license)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)`)
-    .run(id, businessName, businessRegNumber, licenseNumber || null, ceoName || null, address || null, tier, region || null, docImageUrl, extImageUrl || null, intImageUrl || null, tier === '면허 파트너' ? 1 : 0);
+  db.prepare(`INSERT INTO partners (id, business_name, business_reg_number, license_number, ceo_name, address, tier, region, doc_image_url, ext_image_url, int_image_url, verify_status, cert_license, intro, strength_tags, portfolio_images, available_hours, space_categories)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending', ?,?,?,?,?,?)`)
+    .run(id, businessName, businessRegNumber, licenseNumber || null, ceoName || null, address || null, tier, region || null, docImageUrl, extImageUrl || null, intImageUrl || null, tier === '면허 파트너' ? 1 : 0,
+      intro || null, JSON.stringify(strengthTags || []), JSON.stringify(portfolioImages || []), availableHours || null, JSON.stringify(spaceCategories || []));
   const token = jwt.sign({ sub: id, role: 'partner' }, JWT_SECRET, { expiresIn: '1h' });
   res.json({ success: true, data: { id, tier, verifyStatus: 'pending', token, licenseLimitNotice: tier === '부분공사가능업체' ? '무면허 업체는 1,500만원 이상 종합공사를 진행할 수 없습니다.' : null } });
 });
@@ -700,21 +709,69 @@ app.post('/api/meas-jobs/:roomId/noshow', authRequired, (req, res) => {
   res.json({ success: true, data: { noshowCount: noshowLog.length, needsAbuseReview: noshowLog.length >= 2 } });
 });
 
-// ===== 5. 광고(Ad Slots) — AI 1차 검수 데모 포함 =====
+// ===== 5. 광고(Ad Slots) — AI 1차 검수 + 구매 즉시 자동노출(5단계: 사용자요청) =====
 const AD_BANNED_WORDS = ['100%', '최고', '1위', '완벽', '무조건'];
+// 신규(사용자요청 — 5단계: 지역광고 자동노출): 슬롯종류별 가격표(서버가 신뢰 소스 — 클라이언트가 보낸 가격은 사용하지 않음)
+// 프론트(window.AD_PRICING)와 반드시 동일한 값으로 유지할 것
+const AD_PRICING = {
+  hero: { periodDays: 7, price: 99000 },
+  'hero-sub': { periodDays: 7, price: 29000 },
+  'region-top': { periodDays: 30, price: 200000 }
+};
+// 신규(사용자요청 — 5단계): 슬롯종류별 "지역당" 최대 동시노출 개수(자리 품절 방지)
+const AD_CAPACITY_PER_REGION = { hero: 1, 'hero-sub': 2, 'region-top': 1 };
+
 app.post('/api/ads', authRequired, (req, res) => {
   if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 광고를 등록할 수 있습니다' } });
-  const { slotType, region, tagline, costType, costValue } = req.body;
-  if (!isNonEmptyString(slotType, 30)) return validationError(res, '광고 슬롯 유형을 선택해주세요');
-  if (region && !isNonEmptyString(region, 50)) return validationError(res, '지역은 50자 이내여야 합니다');
-  if (tagline && !isNonEmptyString(tagline, 100)) return validationError(res, '광고 문구는 100자 이내여야 합니다');
-  if (!isPositiveInt(costValue) || costValue <= 0) return validationError(res, '비용은 0보다 큰 정수여야 합니다');
-  const hit = AD_BANNED_WORDS.filter(w => (tagline || '').includes(w));
+  const { slotType, region, tagline } = req.body;
+  if (!isNonEmptyString(slotType, 30) || !AD_PRICING[slotType]) return validationError(res, '올바른 광고 슬롯 유형을 선택해주세요');
+  if (!isNonEmptyString(region, 50)) return validationError(res, '노출 지역을 선택해주세요');
+  if (!isNonEmptyString(tagline, 100)) return validationError(res, '광고 문구를 입력해주세요(100자 이내)');
+
+  const pricing = AD_PRICING[slotType];
+  const hit = AD_BANNED_WORDS.filter(w => tagline.includes(w));
+  const aiPrecheckResult = hit.length ? 'flagged' : 'pass';
   const id = randomUUID();
-  db.prepare(`INSERT INTO ad_slots (id, partner_id, slot_type, region, tagline, status, cost_type, cost_value, ai_precheck_result)
-    VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(id, req.user.sub, slotType, region, tagline, 'pending', costType, costValue, hit.length ? 'flagged' : 'pass');
-  res.json({ success: true, data: { id, aiPrecheckResult: hit.length ? 'flagged' : 'pass', flaggedWords: hit } });
+
+  try {
+    const tx = db.transaction(() => {
+      // 1) 지역별 정원 확인 — 이미 이 지역+슬롯종류에 활성 광고가 꽉 찼으면 차단
+      const activeCount = db.prepare("SELECT COUNT(*) as c FROM ad_slots WHERE slot_type=? AND region=? AND status='active'").get(slotType, region).c;
+      const capacity = AD_CAPACITY_PER_REGION[slotType] || 1;
+      if (activeCount >= capacity) {
+        throw Object.assign(new Error('이 지역은 광고 자리가 모두 찼어요. 다른 지역을 선택하거나 대기 등록해주세요.'), { code: 'CAPACITY_FULL' });
+      }
+      // 2) 크레딧 잔액 확인
+      const partner = db.prepare('SELECT credit_balance FROM partners WHERE id=?').get(req.user.sub);
+      if (!partner) throw Object.assign(new Error('업체를 찾을 수 없습니다'), { code: 'NOT_FOUND' });
+      if (partner.credit_balance < pricing.price) {
+        throw Object.assign(new Error('보유 크레딧이 부족합니다. 충전 후 다시 시도해주세요.'), { code: 'INSUFFICIENT_BALANCE' });
+      }
+      // 3) 크레딧 차감 + 원장 기록
+      db.prepare('UPDATE partners SET credit_balance = credit_balance - ? WHERE id=?').run(pricing.price, req.user.sub);
+      db.prepare('INSERT INTO credit_ledger (id, partner_id, type, amount, related_ad_id) VALUES (?,?,?,?,?)')
+        .run(randomUUID(), req.user.sub, 'ad_purchase', -pricing.price, id);
+      // 4) 광고 슬롯 생성 — 금칙어 없으면 즉시 active(자동노출), 금칙어 있으면 관리자 확인 대기(pending)
+      //    (크레딧은 어느 경우든 이미 차감됨 — 반려시 별도 환불 처리는 관리자 반려 API에서 수행)
+      const status = hit.length ? 'pending' : 'active';
+      const startDate = new Date().toISOString().slice(0, 10);
+      const endDate = new Date(Date.now() + pricing.periodDays * 86400000).toISOString().slice(0, 10);
+      db.prepare(`INSERT INTO ad_slots (id, partner_id, slot_type, region, tagline, status, cost_type, cost_value, spent_credits, start_date, end_date, ai_precheck_result)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(id, req.user.sub, slotType, region, tagline, status, 'period', pricing.periodDays, pricing.price, startDate, endDate, aiPrecheckResult);
+    });
+    tx();
+  } catch (e) {
+    const code = e.code || 'AD_PURCHASE_FAILED';
+    const status = code === 'NOT_FOUND' ? 404 : (code === 'INSUFFICIENT_BALANCE' || code === 'CAPACITY_FULL') ? 400 : 500;
+    return res.status(status).json({ success: false, error: { code, message: e.message } });
+  }
+
+  res.json({ success: true, data: {
+    id, price: pricing.price, periodDays: pricing.periodDays,
+    autoActivated: !hit.length, aiPrecheckResult, flaggedWords: hit,
+    message: hit.length ? '광고 문구에 확인이 필요한 표현이 있어 관리자 검토 후 노출됩니다.' : '결제가 완료되어 즉시 노출이 시작됐어요.'
+  } });
 });
 
 app.get('/api/ads/active', (req, res) => {

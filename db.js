@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS partners (
   cert_contact INTEGER DEFAULT 0,
   cert_completed INTEGER DEFAULT 0,
   cert_recommended INTEGER DEFAULT 0,
+  -- 신규(사용자요청 — 2단계: 가입폼 확장): 입력값이 곧 상세페이지 콘텐츠가 되도록 추가한 필드
+  intro TEXT,
+  strength_tags TEXT,
+  portfolio_images TEXT,
+  available_hours TEXT,
+  space_categories TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   approved_at TEXT
 );
