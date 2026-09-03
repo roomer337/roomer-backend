@@ -6391,7 +6391,7 @@ function socialGo(provider){
 window.KAKAO_OAUTH = {
   restApiKey: 'b7216abaaa27c838ba8bb998b7cc1f5f',    // 사용자 발급 완료(카카오 디벨로퍼스)
   redirectUri: 'https://roomer-backend.onrender.com/oauth/kakao/callback',   // 카카오 로그인 탭에 등록 완료
-  scope: 'profile_nickname,account_email',  // 최소 수집 원칙: 닉네임·이메일만
+  scope: 'profile_nickname',  // 사용자요청: 이메일은 개인 개발자 계정에서 비활성(비즈 앱 인증 필요)이라 닉네임만 요청
   enabled: true     // 실연동 활성화(사용자요청)
 };
 // Claude 협업본 안전보완: 카카오가 미연동된 프로토타입 로그인은 로컬 파일/로컬 개발서버에서만 허용한다.
