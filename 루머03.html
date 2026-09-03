@@ -1402,7 +1402,6 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
         <div id="badge-minimal-03" style="display:inline-flex;align-items:center;gap:5px;background:#2E7D4F14;color:var(--success);font-size:11.5px;font-weight:700;padding:3px 8px;border-radius:var(--radius-pill);margin-bottom:8px"></div>
         <div id="consent-03" style="border:1px solid var(--stone);border-radius:var(--radius-card);padding:8px 10px;margin-bottom:8px"></div>
         <button class="btn" style="margin-bottom:6px;padding:9px;font-size:14.5px;background:#FEE500;color:#191919" onclick="kakaoLogin()" id="btn-kakao-03"></button>
-        <button class="btn" style="margin-bottom:6px;padding:9px;font-size:14.5px;background:#000;color:#fff" onclick="socialGo('Apple')" id="btn-apple-03"></button>
         <button class="btn" style="margin-bottom:6px;padding:9px;font-size:14.5px;background:#03C75A;color:#fff" onclick="socialGo('네이버')" id="btn-naver-03"></button>
         <button type="button" id="btn-more-signup" style="width:100%;background:none;border:none;padding:6px;font-size:13px;color:var(--slate);cursor:pointer;font-family:inherit"></button>
         <div id="more-signup-options" style="display:none">
@@ -6332,7 +6331,6 @@ SIGNUP_BENEFITS.forEach(function(b){
 document.getElementById('t-signup-03').textContent = '30초면 가입 끝';
 document.getElementById('d-signup-03').textContent = '소셜 계정 하나로 시작 · 추가 정보는 필요할 때만 받아요';
 document.getElementById('btn-kakao-03').textContent = '카카오로 시작하기';
-document.getElementById('btn-apple-03').textContent = 'Apple로 시작하기';
 document.getElementById('btn-naver-03').textContent = '네이버로 시작하기';
 document.getElementById('btn-phone-03').textContent = '휴대폰 번호로 시작하기';
 document.getElementById('btn-email-03').textContent = '이메일로 시작하기';
@@ -6379,8 +6377,57 @@ function socialGo(provider){
   if(provider !== '카카오') clearKakaoProfileState();
   window.userProfile.socialProvider=provider;
   window.userProfile.consent={tos:true, privacy:true, marketing:!!window.consent03.marketing, location:!!window.consent03.location};
-  finishConsumerLight();  // 역할선택 제거: 소비자 전용 경로
+  // 신규(사용자요청 — 네이버도 카카오처럼 실연동): 네이버는 실제 OAuth 연동시 인가화면으로 이동
+  if(provider === '네이버'){
+    var nv = window.NAVER_OAUTH;
+    if(nv && nv.enabled && nv.clientId && nv.redirectUri){
+      var nUrl = 'https://nid.naver.com/oauth2.0/authorize'
+        +'?response_type=code'
+        +'&client_id='+encodeURIComponent(nv.clientId)
+        +'&redirect_uri='+encodeURIComponent(nv.redirectUri)
+        +'&state='+encodeURIComponent(createNaverOAuthState());
+      window.location.href = nUrl;
+      return;
+    }
+  }
+  finishConsumerLight();  // 역할선택 제거: 소비자 전용 경로 (네이버 미연동·애플은 여전히 즉시가입)
 }
+// 신규(사용자요청 — 네이버 실연동 준비): 카카오와 동일한 패턴의 네이버 OAuth 설정.
+// developers.naver.com에서 앱 등록 후 Client ID·Secret 발급받으면 clientId·redirectUri를 채우고
+// enabled를 true로 바꾸면 실제 네이버 로그인으로 연동됩니다. (Client Secret은 서버에서만 사용)
+window.NAVER_OAUTH = {
+  clientId: 'Vyz9B_P_gH4ukAu69naX',      // 사용자 발급 완료(네이버 디벨로퍼스)
+  redirectUri: 'https://roomer-backend.onrender.com/oauth/naver/callback',   // 네이버 앱에 등록 완료
+  enabled: true      // 실연동 활성화(사용자요청)
+};
+function createNaverOAuthState(){
+  var value = (window.crypto && typeof window.crypto.randomUUID === 'function')
+    ? window.crypto.randomUUID()
+    : Date.now().toString(36) + Math.random().toString(36).slice(2);
+  try{ sessionStorage.setItem('roomer_naver_oauth_state', value); }catch(e){}
+  return value;
+}
+function consumeNaverOAuthState(returnedState){
+  var saved = '';
+  try{ saved = sessionStorage.getItem('roomer_naver_oauth_state') || ''; sessionStorage.removeItem('roomer_naver_oauth_state'); }catch(e){}
+  return !!saved && !!returnedState && saved === returnedState;
+}
+function handleNaverOAuthCallback(){
+  var qs = new URLSearchParams(location.search);
+  var code = qs.get('code');
+  var returnedState = qs.get('state');
+  if(!code || location.pathname.indexOf('naver') === -1) return;
+  if(!consumeNaverOAuthState(returnedState)){ console.error('네이버 로그인 보안 state 검증에 실패했습니다.'); return; }
+  apiFetch('/api/auth/social/naver/callback', {method:'POST', body:JSON.stringify({
+    code:code, state:returnedState, redirectUri:(window.NAVER_OAUTH||{}).redirectUri
+  })}).then(function(data){
+    window.authToken = data.token; saveAuthToken(data.token);
+    window.userProfile.socialProvider = '네이버';
+    finishConsumerLight({skipRemoteAuth:true});
+    try{ history.replaceState({}, document.title, location.pathname); }catch(e){}
+  }).catch(function(e){ console.error('네이버 로그인 callback 처리 실패:', e.message); });
+}
+handleNaverOAuthCallback();
 /* ================= [방법 C · 선택1] 카카오 로그인 실연동 준비(스캐폴딩) =================
    실제 카카오 로그인은 아래 3가지가 있어야 완성됩니다(HTML 단독 프로토타입으로는 불가):
    1) 카카오 developers 앱의 REST API 키
@@ -6502,7 +6549,11 @@ function finishConsumerLight(options){
     alert('카카오 로그인이 아직 연결되지 않았습니다. 공개 서비스에서는 실제 인증을 우회할 수 없습니다.');
     return;
   }
-  if(window.MVP.live && !isKakaoAccount && !canUsePrototypeSocialAuth()){
+  // 신규(사용자요청 — 애플은 유료 개발자 프로그램 필요로 당장 보류, 차단정책에서 제외):
+  // 카카오·네이버는 실연동 대상이라 미연동시 계속 차단하지만, 애플은 이 정책에서 제외하고
+  // 항상 즉시가입(프로토타입) 허용. 나중에 애플 실연동 진행 시 이 조건을 다시 조정하면 됨.
+  var isAppleAccount = (window.userProfile && window.userProfile.socialProvider === 'Apple');
+  if(window.MVP.live && !isKakaoAccount && !isAppleAccount && !canUsePrototypeSocialAuth()){
     alert((window.userProfile.socialProvider||'소셜')+' 로그인이 아직 연결되지 않았습니다. 공개 서비스에서는 실제 인증 연결 후 이용할 수 있습니다.');
     return;
   }
