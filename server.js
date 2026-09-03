@@ -251,8 +251,8 @@ app.post('/api/auth/social/kakao/callback', async (req, res) => {
 app.post('/api/auth/social/naver/callback', async (req, res) => {
   const { code, state, redirectUri } = req.body;
   if (!isNonEmptyString(code, 500)) return validationError(res, 'code가 필요합니다');
-  const clientId = process.env.NAVER_CLIENT_ID || 'Vyz9B_P_gH4ukAu69naX';
-  const clientSecret = process.env.NAVER_CLIENT_SECRET || 'CUnYajw9tW';
+  const clientId = process.env.NAVER_CLIENT_ID || 'fh_O5VRbhS2gzV5g5mmX';
+  const clientSecret = process.env.NAVER_CLIENT_SECRET || 'jomjZWzEOB';
   if (!clientId || !clientSecret) {
     return res.status(501).json({ success: false, error: { code: 'NOT_IMPLEMENTED', message: '네이버 로그인 연동이 아직 준비 중이에요.' } });
   }
