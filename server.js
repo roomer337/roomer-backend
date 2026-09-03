@@ -195,6 +195,57 @@ app.post('/api/auth/social/:provider', socialAuthLimiter, (req, res) => {
   res.json({ success: true, data: { token, user } });
 });
 
+// 신규(사용자요청 — 카카오 REST API 키 발급 완료, 실연동 구현): 실제 카카오 OAuth 콜백.
+// 인가코드(code)를 카카오 토큰 API로 교환 → 액세스 토큰으로 사용자 정보 조회 → users upsert → JWT 발급.
+app.post('/api/auth/social/kakao/callback', async (req, res) => {
+  const { code, redirectUri } = req.body;
+  if (!isNonEmptyString(code, 500)) return validationError(res, 'code가 필요합니다');
+  const restApiKey = process.env.KAKAO_REST_API_KEY || 'b7216abaaa27c838ba8bb998b7cc1f5f';
+  try {
+    // 1) 인가코드 → 액세스 토큰 교환
+    const tokenRes = await fetch('https://kauth.kakao.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: restApiKey,
+        redirect_uri: redirectUri || 'https://roomer-backend.onrender.com/oauth/kakao/callback',
+        code: code
+      })
+    });
+    const tokenBody = await tokenRes.json();
+    if (!tokenRes.ok || !tokenBody.access_token) {
+      console.error('카카오 토큰 교환 실패:', tokenBody);
+      return res.status(400).json({ success: false, error: { code: 'KAKAO_TOKEN_ERROR', message: '카카오 인증에 실패했어요. 다시 로그인해주세요.' } });
+    }
+    // 2) 액세스 토큰으로 사용자 정보 조회
+    const profileRes = await fetch('https://kapi.kakao.com/v2/user/me', {
+      headers: { 'Authorization': 'Bearer ' + tokenBody.access_token }
+    });
+    const profileBody = await profileRes.json();
+    if (!profileRes.ok || !profileBody.id) {
+      console.error('카카오 사용자정보 조회 실패:', profileBody);
+      return res.status(400).json({ success: false, error: { code: 'KAKAO_PROFILE_ERROR', message: '카카오 사용자 정보를 가져오지 못했어요.' } });
+    }
+    const kakaoId = String(profileBody.id);
+    const nickname = (profileBody.kakao_account && profileBody.kakao_account.profile && profileBody.kakao_account.profile.nickname) || '카카오회원';
+    const email = (profileBody.kakao_account && profileBody.kakao_account.email) || null;
+    // 3) users 테이블 upsert(기존 회원이면 그대로, 신규면 29,000크레딧 지급)
+    let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get('kakao', kakaoId);
+    if (!user) {
+      const id = randomUUID();
+      db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, email, cash_balance) VALUES (?,?,?,?,?,?)')
+        .run(id, 'kakao', kakaoId, nickname, email, 29000);
+      user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+    }
+    const jwtToken = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
+    res.json({ success: true, data: { token: jwtToken, user, providerUserId: kakaoId, nickname, email } });
+  } catch (e) {
+    console.error('카카오 로그인 처리 중 오류:', e.message);
+    res.status(500).json({ success: false, error: { code: 'KAKAO_CALLBACK_ERROR', message: '카카오 로그인 처리 중 오류가 발생했어요.' } });
+  }
+});
+
 // ===== 2. 회원 =====
 app.get('/api/users/me', authRequired, (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.sub);
@@ -260,6 +311,16 @@ app.get('/api/partners/search', (req, res) => {
   res.json({ success: true, data: partners });
 });
 
+// 신규(사용자요청 — ChatGPT 협업 병합): 로그인한 파트너 본인의 프로필 조회.
+// 주의: 반드시 아래의 '/api/partners/:id'보다 먼저 등록해야 함(Express는 등록순서대로 매칭하므로,
+// 순서가 바뀌면 'me'라는 문자열이 :id 파라미터로 잘못 매칭되어버림)
+app.get('/api/partners/me', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 접근할 수 있습니다' } });
+  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.user.sub);
+  if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체 정보를 찾을 수 없습니다' } });
+  res.json({ success: true, data: partner });
+});
+
 app.get('/api/partners/:id', (req, res) => {
   const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
   if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
@@ -295,7 +356,10 @@ app.post('/api/partners/me/portfolio', authRequired, (req, res) => {
   if (description && !isNonEmptyString(description, 1000)) return validationError(res, '설명은 1000자 이내여야 합니다');
   if (!Array.isArray(photoUrls) || photoUrls.length === 0) return validationError(res, '사진을 1장 이상 올려주세요');
   if (photoUrls.length > 20) return validationError(res, '사진은 최대 20장까지 올릴 수 있습니다');
-  if (!photoUrls.every(u => isNonEmptyString(u, 500))) return validationError(res, '사진 URL 형식이 올바르지 않습니다');
+  // 결함정리(사용자요청 — 완성도리포트 개선: 실제 포트폴리오 사진 반영): 500자 제한이면
+  // base64 이미지 데이터가 전혀 들어갈 수 없어 이 API가 사실상 무용지물이었음. 임시로 완화.
+  // ⚡MVP-SWITCH: 장기적으로는 S3 등 실제 파일스토리지에 업로드 후 짧은 URL만 저장하는 방식 권장
+  if (!photoUrls.every(u => isNonEmptyString(u, 3000000))) return validationError(res, '사진 URL 형식이 올바르지 않습니다');
   const projectId = randomUUID();
   db.prepare('INSERT INTO portfolio_projects (id, partner_id, title, description) VALUES (?,?,?,?)')
     .run(projectId, req.user.sub, title, description || null);
@@ -307,6 +371,24 @@ app.post('/api/partners/me/portfolio', authRequired, (req, res) => {
 
 app.get('/api/partners/:id/portfolio', (req, res) => {
   const projects = db.prepare('SELECT * FROM portfolio_projects WHERE partner_id=? ORDER BY created_at DESC').all(req.params.id);
+  const getPhotos = db.prepare('SELECT image_url FROM portfolio_photos WHERE project_id=? ORDER BY sort_order');
+  const withPhotos = projects.map(p => ({ ...p, photos: getPhotos.all(p.id).map(r => r.image_url) }));
+  res.json({ success: true, data: withPhotos });
+});
+
+// 신규(사용자요청 — 완성도리포트 개선: REALCASES 색상placeholder를 실제사진으로 대체):
+// 승인된(verify_status='approved') 모든 업체의 포트폴리오 프로젝트를 최신순으로 모아
+// 소비자 피드(완공사례)에 실제 데이터로 노출하기 위한 API. 사진이 없으면 빈 배열 반환(정직).
+app.get('/api/portfolio/feed', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 30, 60);
+  const projects = db.prepare(`
+    SELECT pp.id, pp.title, pp.description, pp.created_at, p.business_name, p.region, p.tier
+    FROM portfolio_projects pp
+    JOIN partners p ON p.id = pp.partner_id
+    WHERE p.verify_status = 'approved'
+    ORDER BY pp.created_at DESC
+    LIMIT ?
+  `).all(limit);
   const getPhotos = db.prepare('SELECT image_url FROM portfolio_photos WHERE project_id=? ORDER BY sort_order');
   const withPhotos = projects.map(p => ({ ...p, photos: getPhotos.all(p.id).map(r => r.image_url) }));
   res.json({ success: true, data: withPhotos });
@@ -877,6 +959,27 @@ function seedDefaultColumnsIfEmpty() {
       thumb_emoji: '', thumb_color: '', published_at: '2026-08-17',
       source_name: '모모랩', source_url: 'https://momolabdesign.com/story/how-to-compare-estimates',
       body: '여러 업체의 견적을 비교할 때 가장 중요한 원칙은, 원하는 공사 범위와 자재 등급, 포함 항목(철거·폐기물·청소 등)을 한 장으로 정리해 모든 업체에 동일하게 전달하는 것입니다. 같은 조건에서 나온 견적이라야 어느 업체가 무엇을 더 넣었고 뺐는지가 명확히 드러나고, 금액 차이의 이유도 설명이 가능해집니다.\n\n견적서를 볼 때는 공종별로 자재비·인건비·수량이 나뉘어 있는지, 혹은 "일식"으로 뭉쳐 있지는 않은지부터 확인해야 합니다. 자재 정보도 브랜드·품번·등급·규격과 수량까지 구체적으로 적혀 있는지 봐야 합니다.\n\n하자보증 기간은 법으로 일률적으로 정해진 것이 아니라 계약서에 적힌 대로 적용됩니다. 참고로 건설산업기본법상 하자담보책임기간은 공종에 따라 다른데, 도배·도장·타일·방수·창호 등은 보통 1년, 급배수·냉난방 설비는 2년 정도로 정해져 있습니다.\n\n지급 조건도 비교 포인트입니다. 선금 비중이 지나치게 크지 않은지, 공정 진행에 맞춰 나눠 지급하는 구조인지 확인하는 것이 안전합니다.'
+    },
+    {
+      id: randomUUID(), tag: '서재 인테리어', title: '2026년 홈오피스, 일과 휴식 분리가 핵심입니다',
+      summary: '재택근무가 일상이 되면서 홈오피스는 선택이 아닌 필수 공간이 됐습니다. 업무 집중도를 높이는 공간 구성법을 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-27',
+      source_name: '인테리어꿀팁', source_url: 'https://www.intip.kr/posts/home-office-setup',
+      body: '재택근무와 자기계발 시간이 늘면서, 서재나 홈오피스는 이제 선택이 아니라 필수 공간으로 자리잡고 있습니다. 침실 한쪽에서 불편하게 노트북을 펴던 시절과 달리, 최근에는 집에서도 사무실 못지않게 집중할 수 있는 별도 공간을 마련하는 경우가 늘고 있습니다.\n\n홈오피스 구성의 첫 번째 원칙은 "일하는 공간"과 "쉬는 공간"을 명확히 분리하는 것입니다. 별도의 방이 있다면 가장 좋지만, 여의치 않다면 파티션이나 책장으로 구역만 나눠줘도 업무 모드로 전환하는 데 도움이 됩니다.\n\n조명은 전체 조명과 책상 위를 비추는 부분 조명을 함께 쓰는 것이 좋습니다. 색온도도 상황에 따라 다르게 맞추는 게 효과적인데, 집중이 필요한 업무 시간에는 하얀빛(4000~6000K)이, 휴식이나 아이디어가 필요할 때는 노란빛(2700~3000K)이 더 잘 맞습니다.\n\n모니터 높이는 시선이 약간 아래(15~20도)를 향하도록 맞추는 것이 목 건강에 좋습니다. 책상 위는 필요한 물건만 두고 나머지는 정리해두면, 시각적인 산만함이 줄어 집중력 유지에도 도움이 됩니다.'
+    },
+    {
+      id: randomUUID(), tag: '발코니 활용', title: '발코니 확장, 이 2가지만은 꼭 확인하세요',
+      summary: '발코니를 실내 공간으로 확장할 때, 춥지 않게 시공하려면 창호 교체와 바닥 단열을 제대로 챙겨야 합니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-26',
+      source_name: '오늘의집 라이프스타일 매거진', source_url: 'https://ohou.se/advices/2191',
+      body: '좁은 집이 답답하게 느껴질 때 많이 고려하는 것이 발코니 확장입니다. 다만 발코니 확장은 단순히 면적만 넓히는 공사가 아니라, 여러 공정이 함께 필요한 시공이라 미리 알아두면 좋은 부분들이 있습니다.\n\n발코니 확장을 고민할 때 가장 많이 나오는 질문이 "확장하면 춥지 않을까"입니다. 발코니가 사라지면 외부와 실내가 더 직접 맞닿게 되니 당연한 걱정인데, 핵심은 창호와 바닥 단열을 제대로 하는지에 달려 있습니다.\n\n먼저 기존에 단창이었던 발코니 새시는 반드시 이중창으로 교체해야 합니다. 그다음으로 중요한 것이 바닥 단열입니다. 기존 발코니 바닥을 철거한 뒤 보일러를 깔기 전에 단열재를 제대로 시공해야 하는데, 비용을 아끼려고 기존 타일을 뜯지 않고 그 위에 덧방 시공을 하는 경우 단열재가 얇아져 웃풍이나 결로가 생기기 쉽습니다.\n\n확장한 발코니는 거실 연장 공간으로 쓰기도 하고, 최근에는 홈카페나 미니 정원, 작업실처럼 개성 있는 공간으로 꾸미는 사례도 늘고 있습니다. 다만 참고로 발코니 확장은 법적으로 1.5m까지 가능하지만, 베란다는 위아래 층의 면적 차이로 생긴 공간이라 성격이 달라 확장이 불가능하다는 점은 헷갈리지 않아야 합니다.'
+    },
+    {
+      id: randomUUID(), tag: '현관 인테리어', title: '현관 신발장, 이 4가지 스타일 중 골라보세요',
+      summary: '붙박이형·하부 띄움형·거울 도어형·오픈 선반형 — 현관 폭과 신발 수에 맞는 신발장 스타일을 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-28',
+      source_name: '한샘 스토어', source_url: 'https://store.hanssem.com/tips/info/%ED%98%84%EA%B4%80-%EC%8B%A0%EB%B0%9C%EC%9E%A5-%EC%9D%B8%ED%85%8C%EB%A6%AC%EC%96%B4-%EC%B6%94%EC%B2%9C/',
+      body: '현관 신발장은 크게 붙박이형, 하부 띄움형, 거울 도어형, 오픈 선반형 네 가지로 나눠볼 수 있습니다. 각각 장단점이 달라서, 현관 폭과 보유한 신발 수에 따라 적합한 스타일이 달라집니다.\n\n붙박이형은 수납량을 가장 많이 확보할 수 있어 신발이 많은 가정에 적합합니다. 하부 띄움형은 신발장 아래를 바닥에서 띄워 시공하는 방식으로, 자주 신는 신발을 빠르게 꺼내고 넣기 편하다는 장점이 있습니다.\n\n좁은 현관이라면 밝은 컬러의 슬림형 신발장이 잘 어울립니다. 화이트나 라이트 그레이, 혹은 거울 도어를 활용하면 신발장이 차지하는 시각적 존재감이 줄어들어 공간이 넓어 보이는 효과가 있습니다. 다만 수납할 신발이 많다면, 내부 선반 조절이 가능한지 부츠나 우산을 넣을 별도 공간이 있는지도 함께 확인하는 것이 좋습니다.\n\n시공 전에는 보유한 신발 수와 신발 높이, 현관 치수, 중문 설치 여부를 먼저 확인해야 합니다. 신발을 운동화·구두·부츠처럼 종류별로 분류해두면, 필요한 선반 간격과 하부 오픈 공간을 정하기가 한결 수월해집니다.'
     }
   ];
   const stmt = db.prepare(`INSERT INTO columns (id, tag, title, summary, body, thumb_emoji, thumb_color, published_at, sort_order, source_name, source_url)

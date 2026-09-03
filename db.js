@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
   social_provider TEXT NOT NULL,
   social_id TEXT NOT NULL,
   nickname TEXT,
+  email TEXT,
   phone TEXT,
   region TEXT,
   cash_balance INTEGER DEFAULT 0,
