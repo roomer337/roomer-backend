@@ -246,6 +246,58 @@ app.post('/api/auth/social/kakao/callback', async (req, res) => {
   }
 });
 
+// 신규(사용자요청 — 네이버도 카카오처럼 실연동): 네이버 OAuth 콜백. 카카오와 동일한 구조(인가코드→
+// 토큰교환→사용자정보조회→users upsert→JWT발급), 네이버 API 스펙에 맞춰 구현.
+app.post('/api/auth/social/naver/callback', async (req, res) => {
+  const { code, state, redirectUri } = req.body;
+  if (!isNonEmptyString(code, 500)) return validationError(res, 'code가 필요합니다');
+  const clientId = process.env.NAVER_CLIENT_ID || 'Vyz9B_P_gH4ukAu69naX';
+  const clientSecret = process.env.NAVER_CLIENT_SECRET || 'CUnYajw9tW';
+  if (!clientId || !clientSecret) {
+    return res.status(501).json({ success: false, error: { code: 'NOT_IMPLEMENTED', message: '네이버 로그인 연동이 아직 준비 중이에요.' } });
+  }
+  try {
+    // 1) 인가코드 → 액세스 토큰 교환
+    const tokenRes = await fetch('https://nid.naver.com/oauth2.0/token?' + new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      client_secret: clientSecret,
+      code: code,
+      state: state || ''
+    }));
+    const tokenBody = await tokenRes.json();
+    if (!tokenRes.ok || !tokenBody.access_token) {
+      console.error('네이버 토큰 교환 실패:', tokenBody);
+      return res.status(400).json({ success: false, error: { code: 'NAVER_TOKEN_ERROR', message: '네이버 인증에 실패했어요. 다시 로그인해주세요.' } });
+    }
+    // 2) 액세스 토큰으로 사용자 정보 조회
+    const profileRes = await fetch('https://openapi.naver.com/v1/nid/me', {
+      headers: { 'Authorization': 'Bearer ' + tokenBody.access_token }
+    });
+    const profileBody = await profileRes.json();
+    if (!profileRes.ok || !profileBody.response || !profileBody.response.id) {
+      console.error('네이버 사용자정보 조회 실패:', profileBody);
+      return res.status(400).json({ success: false, error: { code: 'NAVER_PROFILE_ERROR', message: '네이버 사용자 정보를 가져오지 못했어요.' } });
+    }
+    const naverId = String(profileBody.response.id);
+    const nickname = profileBody.response.nickname || profileBody.response.name || '네이버회원';
+    const email = profileBody.response.email || null;
+    // 3) users 테이블 upsert(기존 회원이면 그대로, 신규면 29,000크레딧 지급)
+    let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get('naver', naverId);
+    if (!user) {
+      const id = randomUUID();
+      db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, email, cash_balance) VALUES (?,?,?,?,?,?)')
+        .run(id, 'naver', naverId, nickname, email, 29000);
+      user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+    }
+    const jwtToken = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
+    res.json({ success: true, data: { token: jwtToken, user, providerUserId: naverId, nickname, email } });
+  } catch (e) {
+    console.error('네이버 로그인 처리 중 오류:', e.message);
+    res.status(500).json({ success: false, error: { code: 'NAVER_CALLBACK_ERROR', message: '네이버 로그인 처리 중 오류가 발생했어요.' } });
+  }
+});
+
 // ===== 2. 회원 =====
 app.get('/api/users/me', authRequired, (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.sub);
