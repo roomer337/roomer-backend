@@ -6553,7 +6553,10 @@ function finishConsumerLight(options){
   // 카카오·네이버는 실연동 대상이라 미연동시 계속 차단하지만, 애플은 이 정책에서 제외하고
   // 항상 즉시가입(프로토타입) 허용. 나중에 애플 실연동 진행 시 이 조건을 다시 조정하면 됨.
   var isAppleAccount = (window.userProfile && window.userProfile.socialProvider === 'Apple');
-  if(window.MVP.live && !isKakaoAccount && !isAppleAccount && !canUsePrototypeSocialAuth()){
+  // 결함정리(사용자요청 — 네이버 실연동 후 발견된 버그): 네이버가 실제 서버 콜백을 거쳐
+  // 이미 인증을 완료한 상태(opts.skipRemoteAuth=true)인데도, 이 차단조건이 그걸 고려하지 않고
+  // 무조건 막아버리고 있었음. 이미 실제 인증을 마쳤다면 이 차단을 건너뛰어야 함.
+  if(window.MVP.live && !isKakaoAccount && !isAppleAccount && !opts.skipRemoteAuth && !canUsePrototypeSocialAuth()){
     alert((window.userProfile.socialProvider||'소셜')+' 로그인이 아직 연결되지 않았습니다. 공개 서비스에서는 실제 인증 연결 후 이용할 수 있습니다.');
     return;
   }
