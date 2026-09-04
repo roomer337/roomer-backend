@@ -6754,7 +6754,27 @@ function appendWelcomeCards(count){
 }
 function loadMoreWelcomePortfolio(){ appendWelcomeCards(20); }
 /* ===== 신규: OTP(비밀번호 없는) 인증 — 소비자·업체 공용 가입/로그인 ===== */
-window.otpCtx=null; window.otpCode=null; var otpTimerInt=null;
+function loadStoredOtpContext(){
+  try{
+    var saved=JSON.parse(sessionStorage.getItem('roomer_otp_context')||'null');
+    if(!saved||['consumer','partner'].indexOf(saved.role)===-1||['signup','login'].indexOf(saved.mode)===-1||['email','phone'].indexOf(saved.channel)===-1||Date.now()-Number(saved.createdAt||0)>15*60*1000){
+      sessionStorage.removeItem('roomer_otp_context'); return null;
+    }
+    return {role:saved.role,mode:saved.mode,channel:saved.channel};
+  }catch(e){ return null; }
+}
+function saveOtpContext(ctx){
+  window.otpCtx=ctx;
+  try{ sessionStorage.setItem('roomer_otp_context',JSON.stringify({role:ctx.role,mode:ctx.mode,channel:ctx.channel,createdAt:Date.now()})); }catch(e){}
+}
+function clearOtpContext(){ window.otpCtx=null; try{ sessionStorage.removeItem('roomer_otp_context'); }catch(e){} }
+function requireOtpContext(){
+  var ctx=window.otpCtx||loadStoredOtpContext();
+  if(ctx){ window.otpCtx=ctx; return ctx; }
+  otpWarn('인증 화면 정보가 초기화됐어요. 가입 화면으로 돌아가 인증 방법을 다시 선택해주세요.');
+  return null;
+}
+window.otpCtx=loadStoredOtpContext(); window.otpCode=null; var otpTimerInt=null;
 function otpFromSignup(channel){
   if(!window.consent03.tos || !window.consent03.privacy){
     var w=document.getElementById('consent-warn-03'); if(w) w.style.display='block';
@@ -6766,7 +6786,7 @@ function otpFromSignup(channel){
   openOTP('consumer','signup',channel);
 }
 function openOTP(role, mode, channel){
-  window.otpCtx={role:role, mode:mode, channel:channel||'email'};
+  saveOtpContext({role:role, mode:mode, channel:channel||'email'});
   // 신규(사용자요청): 닫기버튼이 정확히 원래 화면으로 복귀하도록, 호출 시점의 현재화면을 자동 기록
   var curEl = document.querySelector('.scr.on');
   if(curEl) setReturnTo(curEl.id.replace('s-',''));
@@ -6798,7 +6818,8 @@ function renderOTP(){
   } else { sw.innerHTML=''; }
 }
 function otpValidId(){
-  var ctx=window.otpCtx, v=document.getElementById('otp-id').value.trim();
+  var ctx=requireOtpContext(); if(!ctx) return false;
+  var v=document.getElementById('otp-id').value.trim();
   if(ctx.channel==='phone'){ return /^01[016789][0-9]{7,8}$/.test(v.replace(/-/g,'')); }
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v);
 }
@@ -6823,7 +6844,9 @@ function otpBeginResendCooldown(){
   var timer=setInterval(function(){ cd--; btn.textContent='재전송 ('+cd+'초)'; if(cd<=0){ clearInterval(timer); btn.disabled=false; btn.textContent=orig; } },1000);
 }
 function otpSendLive(resend){
-  var ctx=window.otpCtx, idv=document.getElementById('otp-id').value.trim();
+  var ctx=requireOtpContext();
+  if(!ctx) return Promise.reject(new Error('인증 화면 정보가 초기화되었습니다'));
+  var idv=document.getElementById('otp-id').value.trim();
   var body=otpLiveIdentityBody(ctx,idv);
   body.forPartner=ctx.role==='partner'; body.partnerMode=ctx.mode;
   window.otpCode=null;
@@ -6838,8 +6861,8 @@ function otpSendLive(resend){
   }).catch(function(e){ otpWarn('인증코드 발송에 실패했어요: '+(e.message||'잠시 후 다시 시도해주세요.')); throw e; });
 }
 function otpSend(){
-  if(!otpValidId()){ otpWarn(window.otpCtx.channel==='phone'?'올바른 휴대폰 번호를 입력해주세요':'올바른 이메일을 입력해주세요'); return; }
-  var ctx=window.otpCtx;
+  var ctx=requireOtpContext(); if(!ctx) return;
+  if(!otpValidId()){ otpWarn(ctx.channel==='phone'?'올바른 휴대폰 번호를 입력해주세요':'올바른 이메일을 입력해주세요'); return; }
   if(window.MVP.live&&ctx.channel==='phone'&&!window.MVP.smsOtpEnabled){
     otpWarn('휴대폰 인증 서버가 아직 연결되지 않았습니다. 이메일 인증을 이용해주세요.'); return;
   }
@@ -6852,7 +6875,7 @@ function otpSend(){
 function otpResend(){
   var btn = document.querySelector('#otp-step2 button[onclick="otpResend()"]');
   if(btn && btn.disabled) return; // 신규(사용자요청): 재전송 쿨다운 중 중복클릭 방지
-  var ctx=window.otpCtx;
+  var ctx=requireOtpContext(); if(!ctx) return;
   if(window.MVP.live&&ctx.channel==='phone'&&!window.MVP.smsOtpEnabled){ otpWarn('휴대폰 인증 서버가 아직 연결되지 않았습니다.'); return; }
   if(otpUsesLiveServer(ctx)){ otpSendLive(true).catch(function(){}); return; }
   otpGenSend(true); document.getElementById('otp-warn').style.display='none'; window.otpAttempts=0; otpBeginResendCooldown();
@@ -6864,7 +6887,8 @@ function otpStartTimer(){
   upd(); otpTimerInt=setInterval(upd,1000);
 }
 function otpVerify(){
-  var ctx=window.otpCtx, idv=document.getElementById('otp-id').value.trim();
+  var ctx=requireOtpContext(); if(!ctx) return;
+  var idv=document.getElementById('otp-id').value.trim();
   var code=document.getElementById('otp-code').value.trim();
   if(window.MVP.live&&ctx.channel==='phone'&&!window.MVP.smsOtpEnabled){ otpWarn('휴대폰 인증 서버가 아직 연결되지 않았습니다.'); return; }
   // 루머27: 운영 이메일/SMS는 반드시 서버가 발급·검증하고, 성공 응답의 ID·토큰을 계정에 연결한다.
@@ -6874,6 +6898,7 @@ function otpVerify(){
       .then(function(data){
         window.otpAttempts = 0;
         if(otpTimerInt) clearInterval(otpTimerInt);
+        clearOtpContext();
         if(ctx.role==='consumer'){
           applyConsumerAuthResponse(data,ctx.channel==='phone'?'휴대폰':'이메일',{loginId:idv});
           if(!window.userProfile.consent) window.userProfile.consent={tos:true, privacy:true, marketing:false, location:false};
