@@ -1247,6 +1247,14 @@ function findIndexFileNormalized() {
 }
 app.use('/app', express.static(__dirname, { index: findIndexFileNormalized() }));
 
+// 신규(사용자요청 — 네이버/카카오 OAuth 콜백시 ROUTE_NOT_FOUND 에러 수정): 소셜로그인 완료 후
+// 카카오/네이버가 리다이렉트하는 /oauth/*/callback 경로는 API가 아니라 "앱 화면"이 다시 열려야
+// 하는 경로임(그래야 프론트의 handleKakaoOAuthCallback/handleNaverOAuthCallback이 code를 읽어
+// 처리함). 이 경로들에서도 앱 파일을 그대로 서빙하도록 명시적으로 라우트 추가.
+app.get(['/oauth/kakao/callback', '/oauth/naver/callback'], (req, res) => {
+  res.sendFile(require('path').join(__dirname, findIndexFileNormalized()));
+});
+
 // ===== 18. 라이브 리로드(파일만 교체하면 PC·모바일 자동 새로고침) =====
 // 신규(사용자요청): 수정한 루머03.html로 교체만 하면, 서버 재시작·수동 새로고침 없이
 // 열려있는 모든 브라우저(PC+모바일)가 3초 안에 저절로 새로고침되도록
