@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS partners (
   id TEXT PRIMARY KEY,
+  login_provider TEXT,
+  login_id TEXT,
   business_name TEXT NOT NULL,
   business_reg_number TEXT NOT NULL,
   license_number TEXT,
@@ -53,7 +55,8 @@ CREATE TABLE IF NOT EXISTS partners (
   available_hours TEXT,
   space_categories TEXT,
   created_at TEXT DEFAULT (datetime('now')),
-  approved_at TEXT
+  approved_at TEXT,
+  UNIQUE(login_provider, login_id)
 );
 
 CREATE TABLE IF NOT EXISTS portfolio_projects (
@@ -276,8 +279,24 @@ CREATE TABLE IF NOT EXISTS otp_codes (
   code TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   verified INTEGER DEFAULT 0,
+  purpose TEXT NOT NULL DEFAULT 'consumer',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  consumed_at TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
 `);
+
+// 루머27 무중단 마이그레이션: CREATE TABLE IF NOT EXISTS만으로는 기존 SQLite에 새 열이 생기지 않는다.
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name);
+  if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+ensureColumn('partners', 'login_provider', 'TEXT');
+ensureColumn('partners', 'login_id', 'TEXT');
+ensureColumn('otp_codes', 'purpose', "TEXT NOT NULL DEFAULT 'consumer'");
+ensureColumn('otp_codes', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('otp_codes', 'consumed_at', 'TEXT');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_partners_login ON partners(login_provider, login_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_otp_target_purpose ON otp_codes(target, purpose, created_at DESC)');
 
 module.exports = db;
