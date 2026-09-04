@@ -6553,10 +6553,11 @@ function finishConsumerLight(options){
   // 카카오·네이버는 실연동 대상이라 미연동시 계속 차단하지만, 애플은 이 정책에서 제외하고
   // 항상 즉시가입(프로토타입) 허용. 나중에 애플 실연동 진행 시 이 조건을 다시 조정하면 됨.
   var isAppleAccount = (window.userProfile && window.userProfile.socialProvider === 'Apple');
-  // 결함정리(사용자요청 — 네이버 실연동 후 발견된 버그): 네이버가 실제 서버 콜백을 거쳐
-  // 이미 인증을 완료한 상태(opts.skipRemoteAuth=true)인데도, 이 차단조건이 그걸 고려하지 않고
-  // 무조건 막아버리고 있었음. 이미 실제 인증을 마쳤다면 이 차단을 건너뛰어야 함.
-  if(window.MVP.live && !isKakaoAccount && !isAppleAccount && !opts.skipRemoteAuth && !canUsePrototypeSocialAuth()){
+  // 결함정리(사용자요청 — 휴대폰/이메일 가입도 같은 버그 발견·수정): 이 차단정책은 카카오·네이버
+  // 같은 "외부 소셜로그인 업체"에만 해당되는 것인데, 휴대폰·이메일 인증(루머 자체 회원시스템,
+  // 외부 업체와 무관)까지 잘못 걸려서 막히고 있었음. 자체 회원시스템은 이 정책과 무관하므로 제외.
+  var isOwnAuthSystem = (window.userProfile && (window.userProfile.socialProvider === '휴대폰' || window.userProfile.socialProvider === '이메일'));
+  if(window.MVP.live && !isKakaoAccount && !isAppleAccount && !isOwnAuthSystem && !opts.skipRemoteAuth && !canUsePrototypeSocialAuth()){
     alert((window.userProfile.socialProvider||'소셜')+' 로그인이 아직 연결되지 않았습니다. 공개 서비스에서는 실제 인증 연결 후 이용할 수 있습니다.');
     return;
   }
@@ -6716,7 +6717,19 @@ function otpSend(){
   document.getElementById('otp-step1').style.display='none';
   document.getElementById('otp-step2').style.display='';
   document.getElementById('otp-warn').style.display='none';
-  otpGenSend(false);
+  // 신규(사용자요청 — 실제 이메일 인증 구현): live모드+이메일이면 실제 서버API로 발송,
+  // 그 외(휴대폰·로컬모드)는 기존처럼 화면에 코드를 보여주는 프로토타입 시뮬레이션 유지
+  if(window.MVP.live && window.otpCtx.channel==='email'){
+    var idv = document.getElementById('otp-id').value.trim();
+    window.otpCode = null; // 실제 서버가 검증하므로 프론트가 코드를 알 필요 없음
+    document.getElementById('otp-sent-note').innerHTML = icon('checkCircle',T.success,13)+' <b>'+idv+'</b>로 인증코드를 보냈어요. 메일함을 확인해주세요.';
+    otpStartTimer();
+    apiFetch('/api/otp/email/send', {method:'POST', body: JSON.stringify({email: idv})}).catch(function(e){
+      otpWarn('이메일 발송에 실패했어요: '+e.message);
+    });
+  } else {
+    otpGenSend(false);
+  }
   document.getElementById('otp-code').focus();
 }
 function otpResend(){
@@ -6744,7 +6757,37 @@ function otpStartTimer(){
   upd(); otpTimerInt=setInterval(upd,1000);
 }
 function otpVerify(){
+  var ctx=window.otpCtx, idv=document.getElementById('otp-id').value.trim();
   var code=document.getElementById('otp-code').value.trim();
+  // 신규(사용자요청 — 실제 이메일 인증 구현): live모드+이메일이면 실제 서버 API로 검증
+  if(window.MVP.live && ctx.channel==='email'){
+    apiFetch('/api/otp/email/verify', {method:'POST', body: JSON.stringify({email:idv, code:code, forPartner: ctx.role==='partner'})})
+      .then(function(data){
+        window.otpAttempts = 0;
+        if(otpTimerInt) clearInterval(otpTimerInt);
+        if(ctx.role==='consumer'){
+          window.authToken = data.token; saveAuthToken(data.token);
+          window.userProfile.socialProvider = '이메일';
+          if(idv) window.userProfile.loginId = idv;
+          if(!window.userProfile.consent) window.userProfile.consent={tos:true, privacy:true, marketing:false, location:false};
+          finishConsumerLight({skipRemoteAuth:true});
+        } else {
+          var partnerLoginId = normalizePartnerLoginId(idv, ctx.channel);
+          window.partnerAccount = {id:partnerLoginId, channel:ctx.channel};
+          if(ctx.mode==='signup'){
+            beginPartnerSignupProfile(partnerLoginId, ctx.channel);
+            go('03b');
+          } else {
+            completePartnerLogin(partnerLoginId, ctx.channel);
+          }
+        }
+      })
+      .catch(function(e){
+        window.otpAttempts = (window.otpAttempts||0) + 1;
+        otpWarn(e.message || '인증코드가 일치하지 않아요.');
+      });
+    return;
+  }
   window.otpAttempts = (window.otpAttempts||0);
   if(!window.otpCode || code!==window.otpCode){
     window.otpAttempts++;
@@ -6759,7 +6802,6 @@ function otpVerify(){
   }
   window.otpAttempts = 0;
   if(otpTimerInt) clearInterval(otpTimerInt);
-  var ctx=window.otpCtx, idv=document.getElementById('otp-id').value.trim();
   if(ctx.role==='consumer'){
     // 신규(사용자요청): 중복가입 방지 시뮬레이션 — 실서버에서는 DB 조회로 대체될 부분
     // ⚡MVP-SWITCH: 실서버 → const dup = await fetch('/api/users/check?loginId='+idv).then(r=>r.json());
