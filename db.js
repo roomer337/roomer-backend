@@ -269,6 +269,15 @@ CREATE TABLE IF NOT EXISTS columns (
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS otp_codes (
+  id TEXT PRIMARY KEY,
+  target TEXT NOT NULL,
+  code TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  verified INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
 `);
 
 module.exports = db;
