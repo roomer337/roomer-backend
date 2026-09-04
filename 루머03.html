@@ -1705,7 +1705,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
           <input type="file" id="reg-portfolio-input" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0">
         </label>
       </div>
-      <button class="btn btn-primary" onclick="renderPartnerDone(); go('p-done')" id="btn-toupload"></button>
+      <button class="btn btn-primary" onclick="submitPartnerRegistration(this)" id="btn-toupload"></button>
     </div>
   </div>
 </div>
@@ -7376,7 +7376,7 @@ function tryNextFromVision(){
 // 결함수정(사용자요청): 타이틀 설정은 아래 btn-next3 클릭이벤트 안으로 이동됨(최초1회만 실행되던 문제 해결)
 document.getElementById('btn-toupload').textContent = '다음';
 
-function renderPartnerDone(){
+async function renderPartnerDone(){
   var pf = window.PARTNER_PROFILE || {};
   // 결함수정(사용자요청): 신규가입자도 데모용 고정 실적(계약62건·8년경력 등)이 그대로 보이던 문제
   // → 가입 완료 시점에 실제 신규 상태로 초기화
@@ -7395,6 +7395,15 @@ function renderPartnerDone(){
   };
   // 신규(사용자요청): 관리자 검수 전까지는 "심사중" 상태
   pf.verifyStatus = 'pending';
+  // 실서버에서는 DB 저장이 성공한 뒤에만 가입완료 화면을 표시한다.
+  // 이전에는 비동기 저장 결과를 기다리지 않아 실패해도 성공 화면이 먼저 노출됐다.
+  if(window.MVP.live){
+    var registered = await registerPendingPartner();
+    if(!registered) return false;
+    pf = window.PARTNER_PROFILE || pf;
+  } else {
+    registerPendingPartner();
+  }
   document.getElementById('t-p-done').textContent = '축하드려요, 루머의 파트너가 되셨어요!';
   document.getElementById('d-p-done').innerHTML = (pf.tier||'파트너')+'로 함께하게 됐어요.<br>첫 견적 요청은 프로필을 채울수록 더 빨리 와요 — 포트폴리오부터 시작해보세요.';
   // 신규(사용자요청): 무면허(부분공사가능업체) 등급이면 시공범위 제한을 다시 한번 명확히 안내
@@ -7407,8 +7416,6 @@ function renderPartnerDone(){
       licenseNote.style.display = 'none';
     }
   }
-  // 신규(사용자요청): 가입완료 시점에 업로드한 서류·사진을 관리자 "신규 업체 등록" 큐에 등록
-  if(typeof registerPendingPartner==='function') registerPendingPartner();
   // 메신저 참여자 연결 3/12: 로컬 프로토타입에서는 로그인 ID별 파트너 프로필을 세션에 저장한다.
   // 실제 서버 모드의 영속 저장은 위 registerPendingPartner() 응답이 담당한다.
   if(!window.MVP.live){
@@ -7416,8 +7423,25 @@ function renderPartnerDone(){
     if(!saved) console.warn('파트너 프로필 저장 실패: 로그인 식별값 또는 상호명을 확인해주세요.');
   }
   // 운영 모드에서는 서버 등록 성공 응답을 받은 뒤 registerPendingPartner()가 로그인 완료로 전환한다.
-  window.currentUserLoggedIn = !window.MVP.live;
+  window.currentUserLoggedIn = true;
   window.currentAccountMode = 'partner';
+  return true;
+}
+var partnerRegistrationPending = false;
+async function submitPartnerRegistration(button){
+  if(partnerRegistrationPending) return;
+  partnerRegistrationPending = true;
+  var originalText = button ? button.textContent : '다음';
+  if(button){ button.disabled = true; button.textContent = '가입정보 저장 중…'; }
+  try{
+    var completed = await renderPartnerDone();
+    if(completed) go('p-done');
+  }catch(e){
+    alert('파트너 가입 저장에 실패했어요. 입력 내용은 화면에 남아 있습니다.\n'+(e.message||'잠시 후 다시 시도해주세요.'));
+  }finally{
+    partnerRegistrationPending = false;
+    if(button){ button.disabled = false; button.textContent = originalText; }
+  }
 }
 document.getElementById('btn-next3').addEventListener('click', function(){
   // 결함수정(사용자요청): 이 타이틀이 최상위스크립트(최초 1회만 실행)에 있어서 재진입해도 안 바뀌던 문제 → 클릭시마다 재실행되도록 이동
@@ -10661,7 +10685,45 @@ async function restoreConsumerSessionFromServer(){
     return false;
   }
 }
-setTimeout(function(){ restoreConsumerSessionFromServer(); },0);
+// 파트너도 소비자와 동일하게 새로고침 때 JWT를 서버에서 다시 검증하고 실제 상호명·ID를 복원한다.
+// 서버 확인 전 세션 플래그나 데모 프로필만으로 로그인 완료라고 판단하지 않는다.
+async function restorePartnerSessionFromServer(){
+  if(!window.MVP.live||!window.authToken) return false;
+  var savedMode='';
+  try{ savedMode=sessionStorage.getItem('roomer_accountMode')||''; }catch(e){}
+  if(savedMode!=='partner') return false;
+  try{
+    var partner=await apiFetch('/api/partners/me',{method:'GET'});
+    applyPartnerProfile(partner,{source:'server',status:'connected',restoreState:'restored',loginId:partner.login_id,channel:partner.login_provider});
+    window.currentUserLoggedIn=true;
+    window.currentAccountMode='partner';
+    try{
+      sessionStorage.setItem('roomer_loggedIn','1');
+      sessionStorage.setItem('roomer_accountMode','partner');
+    }catch(e){}
+    if(typeof updateHeaderAuthButton==='function') updateHeaderAuthButton();
+    if(typeof updateAuthBtn00==='function') updateAuthBtn00();
+    if(typeof renderPartnerMypage==='function') renderPartnerMypage();
+    return true;
+  }catch(e){
+    clearAuthToken();
+    window.currentUserLoggedIn=false;
+    window.currentAccountMode='consumer';
+    try{
+      sessionStorage.setItem('roomer_loggedIn','0');
+      sessionStorage.setItem('roomer_accountMode','');
+      sessionStorage.setItem('roomer_lastScreen','00');
+    }catch(ignore){}
+    go('00');
+    return false;
+  }
+}
+setTimeout(function(){
+  var savedMode='';
+  try{ savedMode=sessionStorage.getItem('roomer_accountMode')||''; }catch(e){}
+  if(savedMode==='partner') restorePartnerSessionFromServer();
+  else restoreConsumerSessionFromServer();
+},0);
 window._measStore = null;           // 프로토타입 인메모리 저장소(실서버 전환 시 삭제)
 function saveMeasJob(){
   if(window.MVP.live){
