@@ -7748,10 +7748,12 @@ function filterMemberFeedInline(q){
 renderMemberFeed();
 
 // 결함 발견(사용자 재신고 후속) -> 사용자 요청: alert 안내 대신 실제 화면으로 진입하도록 buildTabbar 공용함수로 통일
-window.currentUserLoggedIn = false; // 초기값: 비회원. #06b(s-profiledone)에서 #07 진입 시 true로 전환됨
+// 인증상태를 앞선 세션 복원 코드가 이미 설정했다면 유지한다. 무조건 false로 덮어쓰면
+// OAuth/이메일 로그인 후 새로고침할 때 정상 세션이 비회원으로 바뀐다.
+window.currentUserLoggedIn = (typeof window.currentUserLoggedIn === 'boolean') ? window.currentUserLoggedIn : false;
 // 결함 보완(사용자 요청: 계정전환 기능): 현재 소비자/업체 중 어느 계정으로 활동중인지
 // 정확히 추적 — 소비자가입완료(saveProfileAndGoFeed) 또는 업체가입완료(shareSns04/t-skip) 시점에 설정됨
-window.currentAccountMode = 'consumer';
+window.currentAccountMode = window.currentAccountMode || 'consumer';
 buildTabbar('tabbar-member', true, 'feed');
 
 /* ===== 신규: 소비자 견적요청 (종합제안서 2번) ===== */
@@ -10626,6 +10628,35 @@ async function apiFetch(path, opts, _retryCount){
   }
   return body.data;
 }
+
+// 네이버/이메일 소비자 세션 복원: JWT가 남아 있으면 화면 플래그만 믿지 않고 서버에서
+// 실제 사용자 정보를 다시 확인한다. 만료·철회된 토큰은 즉시 제거한다.
+async function restoreConsumerSessionFromServer(){
+  if(!window.MVP.live||!window.authToken) return false;
+  var savedMode='';
+  try{ savedMode=sessionStorage.getItem('roomer_accountMode')||''; }catch(e){}
+  if(savedMode&&savedMode!=='consumer') return false;
+  try{
+    var user=await apiFetch('/api/users/me',{method:'GET'});
+    var providerMap={naver:'네이버',kakao:'카카오',email:'이메일',phone:'휴대폰'};
+    applyConsumerAuthResponse({user:user},providerMap[user.social_provider]||'소비자');
+    window.currentUserLoggedIn=true;
+    window.currentAccountMode='consumer';
+    try{
+      sessionStorage.setItem('roomer_loggedIn','1');
+      sessionStorage.setItem('roomer_accountMode','consumer');
+    }catch(e){}
+    if(typeof updateHeaderAuthButton==='function') updateHeaderAuthButton();
+    if(typeof updateAuthBtn00==='function') updateAuthBtn00();
+    return true;
+  }catch(e){
+    clearAuthToken();
+    window.currentUserLoggedIn=false;
+    try{ sessionStorage.setItem('roomer_loggedIn','0'); }catch(ignore){}
+    return false;
+  }
+}
+setTimeout(function(){ restoreConsumerSessionFromServer(); },0);
 window._measStore = null;           // 프로토타입 인메모리 저장소(실서버 전환 시 삭제)
 function saveMeasJob(){
   if(window.MVP.live){
