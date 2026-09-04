@@ -365,7 +365,9 @@ app.post('/api/otp/email/send', otpSendLimiter, async (req, res) => {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + resendKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: 'onboarding@resend.dev',
+        // Resend 운영 발신주소는 검증된 도메인의 주소를 Render 환경변수로 지정한다.
+        // 미지정 시 Resend 시험용 주소를 사용하며, 이 경우 수신자가 제한될 수 있다.
+        from: process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
         to: email,
         subject: '[루머 ROOMER] 인증코드 안내',
         html: '<p>안녕하세요, 루머(ROOMER)입니다.</p><p>인증코드는 <strong style="font-size:20px">' + code + '</strong> 입니다.<br>5분 이내에 입력해주세요.</p>'
@@ -1436,20 +1438,37 @@ app.get('/api/qrcode', async (req, res) => {
 // 달라서 express.static이 파일을 못 찾고 계속 404를 반환했음(Mac에서만 재현되던 문제).
 // → 폴더를 실제로 스캔해서, 정규화(NFC) 기준으로 이름이 같은 파일을 찾아 그 "실제 파일명"으로 서빙
 function findIndexFileNormalized() {
-  const fs = require('fs'); // 함수 내부에서 직접 require(모듈 캐싱되므로 성능 문제 없음, 파일 상단 선언 순서와 무관하게 항상 안전)
   const targetNFC = '루머03.html'.normalize('NFC');
   const files = fs.readdirSync(__dirname);
   const found = files.find(f => f.normalize('NFC') === targetNFC);
-  return found || '루머03.html';
+  return found ? path.join(__dirname, found) : null;
 }
-app.use('/app', express.static(__dirname, { index: findIndexFileNormalized() }));
+
+// 보안수정(루머28): __dirname 전체를 정적 공개하면 /app/server.js, /app/db.js 및 DB 파일까지
+// 다운로드될 수 있다. 앱 HTML 한 파일만 명시적으로 제공하고, 내용이 실제 HTML인지도 확인한다.
+function sendRoomerApp(req, res) {
+  const appFile = findIndexFileNormalized();
+  if (!appFile) {
+    return res.status(503).json({ success:false, error:{ code:'FRONTEND_NOT_FOUND', message:'루머03.html 파일이 배포되지 않았습니다' } });
+  }
+  try {
+    const prefix = fs.readFileSync(appFile, { encoding:'utf8' }).slice(0, 256).toLowerCase();
+    if (!prefix.includes('<!doctype html') && !prefix.includes('<html')) {
+      return res.status(503).json({ success:false, error:{ code:'FRONTEND_INVALID', message:'배포된 루머03.html 파일의 내용이 올바르지 않습니다' } });
+    }
+  } catch (e) {
+    return res.status(503).json({ success:false, error:{ code:'FRONTEND_READ_ERROR', message:'앱 화면 파일을 읽을 수 없습니다' } });
+  }
+  res.type('html').sendFile(appFile);
+}
+app.get(['/app', '/app/'], sendRoomerApp);
 
 // 신규(사용자요청 — 네이버/카카오 OAuth 콜백시 ROUTE_NOT_FOUND 에러 수정): 소셜로그인 완료 후
 // 카카오/네이버가 리다이렉트하는 /oauth/*/callback 경로는 API가 아니라 "앱 화면"이 다시 열려야
 // 하는 경로임(그래야 프론트의 handleKakaoOAuthCallback/handleNaverOAuthCallback이 code를 읽어
 // 처리함). 이 경로들에서도 앱 파일을 그대로 서빙하도록 명시적으로 라우트 추가.
 app.get(['/oauth/kakao/callback', '/oauth/naver/callback'], (req, res) => {
-  res.sendFile(require('path').join(__dirname, findIndexFileNormalized()));
+  sendRoomerApp(req, res);
 });
 
 // ===== 18. 라이브 리로드(파일만 교체하면 PC·모바일 자동 새로고침) =====
@@ -1457,7 +1476,9 @@ app.get(['/oauth/kakao/callback', '/oauth/naver/callback'], (req, res) => {
 // 열려있는 모든 브라우저(PC+모바일)가 3초 안에 저절로 새로고침되도록
 app.get('/api/dev-file-version', (req, res) => {
   try {
-    const stat = fs.statSync(path.join(__dirname, '루머03.html'));
+    const appFile = findIndexFileNormalized();
+    if (!appFile) throw new Error('루머03.html not found');
+    const stat = fs.statSync(appFile);
     res.json({ success: true, data: { mtime: stat.mtimeMs } });
   } catch (e) {
     res.status(500).json({ success: false, error: { code: 'FILE_ERROR', message: e.message } });
