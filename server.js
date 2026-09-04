@@ -8,6 +8,8 @@ const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { randomUUID } = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const db = require('./db');
 const swaggerUi = require('swagger-ui-express');
 const QRCode = require('qrcode');
@@ -32,9 +34,11 @@ app.use(helmet({
     }
   }
 })); // 결함수정: 기본 보안헤더(X-Frame-Options 등) 전혀 없었음
-// 결함수정: CORS가 모든 오리진을 허용하고 있었음 → 환경변수로 명시적 허용 도메인 지정(미설정시 개발 편의상 전체허용, 배포 전 반드시 설정)
-app.use(cors({ origin: process.env.ALLOWED_ORIGIN ? process.env.ALLOWED_ORIGIN.split(',') : '*' }));
+// 공개 서버의 임의 origin 접근을 막고, 같은 서비스와 명시한 프론트 주소만 허용한다.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || 'https://roomer-backend.onrender.com').split(',').map(v => v.trim()).filter(Boolean);
+app.use(cors({ origin(origin, callback) { callback(null, !origin || ALLOWED_ORIGINS.includes(origin)); } }));
 app.use(express.json({ limit: '1mb' })); // 결함수정: 요청 본문 크기 제한이 없어 대용량 body로 서버 자원 고갈시키는 DoS가 가능했음
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
 
 // 결함수정: 관리자 로그인에 무차별대입(brute-force) 방지가 전혀 없었음 → IP당 15분에 10회로 제한
 const adminLoginLimiter = rateLimit({
@@ -51,6 +55,18 @@ const socialAuthLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '요청이 너무 많습니다. 잠시 후 다시 시도해주세요' } }
+});
+const otpSendLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '인증코드 요청이 너무 많습니다. 15분 후 다시 시도해주세요' } }
+});
+const otpVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '인증 시도가 너무 많습니다. 15분 후 다시 시도해주세요' } }
+});
+const portfolioUploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_UPLOADS', message: '사진 업로드가 너무 많습니다. 잠시 후 다시 시도해주세요' } }
 });
 
 // ===== 1-2(팀장 지시): 요청 로깅 미들웨어 =====
@@ -77,7 +93,8 @@ app.use((req, res, next) => {
   next();
 });
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-only-secret-change-in-production');
+if (!JWT_SECRET) throw new Error('운영환경에서는 JWT_SECRET 환경변수가 반드시 필요합니다.');
 if (!process.env.JWT_SECRET) {
   console.warn('⚠️  경고: JWT_SECRET 환경변수가 설정되지 않아 개발용 기본값을 사용 중입니다. 배포 전 반드시 환경변수로 강력한 값을 설정하세요.');
 }
@@ -99,6 +116,9 @@ function isPositiveAmount(v) {
 function validationError(res, message) {
   return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message } });
 }
+function hasRequiredConsent(consent) {
+  return !!(consent && consent.tos === true && consent.privacy === true);
+}
 
 // ===== 인증 미들웨어 =====
 function authRequired(req, res, next) {
@@ -107,6 +127,9 @@ function authRequired(req, res, next) {
   try {
     const token = header.replace('Bearer ', '');
     req.user = jwt.verify(token, JWT_SECRET);
+    if (!['consumer', 'partner'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, error: { code: 'INVALID_ROLE', message: '이 API에 사용할 수 없는 인증입니다' } });
+    }
     // 신규(2차 심층검증 중 발견): 탈퇴한 회원의 토큰이 만료 전까지 계속 유효했던 보안 문제 수정
     // → 매 요청마다 탈퇴 여부를 확인해서, 탈퇴한 회원은 토큰이 남아있어도 즉시 차단
     if (req.user.role === 'consumer') {
@@ -116,6 +139,21 @@ function authRequired(req, res, next) {
     next();
   } catch (e) {
     res.status(401).json({ success: false, error: { code: 'INVALID_TOKEN', message: '유효하지 않은 토큰입니다' } });
+  }
+}
+
+function partnerSignupRequired(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header) return res.status(401).json({ success: false, error: { code: 'OTP_REQUIRED', message: '파트너 이메일 인증이 필요합니다' } });
+  try {
+    const payload = jwt.verify(header.replace('Bearer ', ''), JWT_SECRET);
+    if (payload.role !== 'partner_signup' || !payload.loginId || payload.loginProvider !== 'email') {
+      return res.status(403).json({ success: false, error: { code: 'INVALID_SIGNUP_TOKEN', message: '유효한 파트너 가입 인증이 아닙니다' } });
+    }
+    req.partnerSignup = payload;
+    next();
+  } catch (e) {
+    res.status(401).json({ success: false, error: { code: 'INVALID_SIGNUP_TOKEN', message: '파트너 가입 인증이 만료되었거나 유효하지 않습니다' } });
   }
 }
 
@@ -197,9 +235,10 @@ app.post('/api/auth/social/:provider', socialAuthLimiter, (req, res) => {
 
 // 신규(사용자요청 — 카카오 REST API 키 발급 완료, 실연동 구현): 실제 카카오 OAuth 콜백.
 // 인가코드(code)를 카카오 토큰 API로 교환 → 액세스 토큰으로 사용자 정보 조회 → users upsert → JWT 발급.
-app.post('/api/auth/social/kakao/callback', async (req, res) => {
-  const { code, redirectUri } = req.body;
+app.post('/api/auth/social/kakao/callback', socialAuthLimiter, async (req, res) => {
+  const { code, redirectUri, consent } = req.body;
   if (!isNonEmptyString(code, 500)) return validationError(res, 'code가 필요합니다');
+  if (!hasRequiredConsent(consent)) return validationError(res, '필수 이용약관과 개인정보 수집 동의가 필요합니다');
   const restApiKey = process.env.KAKAO_REST_API_KEY || 'b7216abaaa27c838ba8bb998b7cc1f5f';
   try {
     // 1) 인가코드 → 액세스 토큰 교환
@@ -238,6 +277,8 @@ app.post('/api/auth/social/kakao/callback', async (req, res) => {
         .run(id, 'kakao', kakaoId, nickname, email, 29000);
       user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
     }
+    db.prepare('UPDATE users SET consent_marketing=?, consent_location=? WHERE id=?').run(consent.marketing === true ? 1 : 0, consent.location === true ? 1 : 0, user.id);
+    user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
     const jwtToken = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
     res.json({ success: true, data: { token: jwtToken, user, providerUserId: kakaoId, nickname, email } });
   } catch (e) {
@@ -248,11 +289,12 @@ app.post('/api/auth/social/kakao/callback', async (req, res) => {
 
 // 신규(사용자요청 — 네이버도 카카오처럼 실연동): 네이버 OAuth 콜백. 카카오와 동일한 구조(인가코드→
 // 토큰교환→사용자정보조회→users upsert→JWT발급), 네이버 API 스펙에 맞춰 구현.
-app.post('/api/auth/social/naver/callback', async (req, res) => {
-  const { code, state, redirectUri } = req.body;
+app.post('/api/auth/social/naver/callback', socialAuthLimiter, async (req, res) => {
+  const { code, state, redirectUri, consent } = req.body;
   if (!isNonEmptyString(code, 500)) return validationError(res, 'code가 필요합니다');
-  const clientId = process.env.NAVER_CLIENT_ID || 'fh_O5VRbhS2gzV5g5mmX';
-  const clientSecret = process.env.NAVER_CLIENT_SECRET || 'jomjZWzEOB';
+  if (!hasRequiredConsent(consent)) return validationError(res, '필수 이용약관과 개인정보 수집 동의가 필요합니다');
+  const clientId = process.env.NAVER_CLIENT_ID;
+  const clientSecret = process.env.NAVER_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
     return res.status(501).json({ success: false, error: { code: 'NOT_IMPLEMENTED', message: '네이버 로그인 연동이 아직 준비 중이에요.' } });
   }
@@ -290,12 +332,95 @@ app.post('/api/auth/social/naver/callback', async (req, res) => {
         .run(id, 'naver', naverId, nickname, email, 29000);
       user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
     }
+    db.prepare('UPDATE users SET consent_marketing=?, consent_location=? WHERE id=?').run(consent.marketing === true ? 1 : 0, consent.location === true ? 1 : 0, user.id);
+    user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
     const jwtToken = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
     res.json({ success: true, data: { token: jwtToken, user, providerUserId: naverId, nickname, email } });
   } catch (e) {
     console.error('네이버 로그인 처리 중 오류:', e.message);
     res.status(500).json({ success: false, error: { code: 'NAVER_CALLBACK_ERROR', message: '네이버 로그인 처리 중 오류가 발생했어요.' } });
   }
+});
+
+// 신규(사용자요청 — 실제 이메일 인증코드 발송): Resend API로 실제 이메일 발송.
+// 6자리 코드를 생성해 DB에 5분 만료로 저장하고, 실제 이메일을 보낸다.
+app.post('/api/otp/email/send', otpSendLimiter, async (req, res) => {
+  const { email, forPartner, partnerMode } = req.body;
+  if (!isNonEmptyString(email, 200) || !EMAIL_RE.test(email)) return validationError(res, '올바른 이메일 형식이 아닙니다');
+  if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const codeHash = bcrypt.hashSync(code, 10);
+  const id = randomUUID();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer';
+  db.prepare('UPDATE otp_codes SET consumed_at=datetime(\'now\') WHERE target=? AND purpose=? AND consumed_at IS NULL').run(email.toLowerCase(), purpose);
+  db.prepare('INSERT INTO otp_codes (id, target, code, expires_at, purpose) VALUES (?,?,?,?,?)').run(id, email.toLowerCase(), codeHash, expiresAt, purpose);
+  const resendKey = process.env.RESEND_API_KEY;
+  if (!resendKey) {
+    db.prepare('DELETE FROM otp_codes WHERE id=?').run(id);
+    return res.status(503).json({ success: false, error: { code: 'EMAIL_NOT_CONFIGURED', message: '이메일 인증 서비스 설정이 필요합니다' } });
+  }
+  try {
+    const emailRes = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + resendKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'onboarding@resend.dev',
+        to: email,
+        subject: '[루머 ROOMER] 인증코드 안내',
+        html: '<p>안녕하세요, 루머(ROOMER)입니다.</p><p>인증코드는 <strong style="font-size:20px">' + code + '</strong> 입니다.<br>5분 이내에 입력해주세요.</p>'
+      })
+    });
+    if (!emailRes.ok) {
+      const errBody = await emailRes.text();
+      console.error('이메일 발송 실패:', errBody);
+      db.prepare('DELETE FROM otp_codes WHERE id=?').run(id);
+      return res.status(500).json({ success: false, error: { code: 'EMAIL_SEND_ERROR', message: '이메일 발송에 실패했어요. 잠시 후 다시 시도해주세요.' } });
+    }
+    res.json({ success: true, data: { sent: true } });
+  } catch (e) {
+    console.error('이메일 발송 오류:', e.message);
+    db.prepare('DELETE FROM otp_codes WHERE id=?').run(id);
+    res.status(500).json({ success: false, error: { code: 'EMAIL_SEND_ERROR', message: '이메일 발송 중 오류가 발생했어요.' } });
+  }
+});
+
+// 신규(사용자요청): 이메일 인증코드 확인. 일치하면 users upsert(신규면 29,000크레딧) 후 JWT 발급.
+// 파트너 가입 흐름에서는 단순 확인(verified)만 쓰고, 유저 생성은 프론트에서 별도 처리.
+app.post('/api/otp/email/verify', otpVerifyLimiter, (req, res) => {
+  const { email, code, forPartner, partnerMode } = req.body;
+  if (!isNonEmptyString(email, 200) || !isNonEmptyString(code, 10)) return validationError(res, 'email과 code가 필요합니다');
+  if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
+  const normalizedEmail = email.toLowerCase();
+  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer';
+  const row = db.prepare('SELECT * FROM otp_codes WHERE target=? AND purpose=? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1').get(normalizedEmail, purpose);
+  if (!row) return res.status(400).json({ success: false, error: { code: 'OTP_NOT_FOUND', message: '인증코드를 먼저 요청해주세요.' } });
+  if (new Date(row.expires_at) < new Date()) return res.status(400).json({ success: false, error: { code: 'OTP_EXPIRED', message: '인증코드가 만료됐어요. 다시 요청해주세요.' } });
+  if (row.attempts >= 5) return res.status(429).json({ success: false, error: { code: 'OTP_LOCKED', message: '인증 시도 횟수를 초과했습니다. 코드를 다시 요청해주세요.' } });
+  if (!bcrypt.compareSync(code, row.code)) {
+    db.prepare('UPDATE otp_codes SET attempts=attempts+1 WHERE id=?').run(row.id);
+    return res.status(400).json({ success: false, error: { code: 'OTP_MISMATCH', message: '인증코드가 일치하지 않아요.' } });
+  }
+  db.prepare("UPDATE otp_codes SET verified=1, consumed_at=datetime('now') WHERE id=?").run(row.id);
+  if (forPartner) {
+    if (partnerMode === 'login') {
+      const partner = db.prepare('SELECT * FROM partners WHERE login_provider=? AND login_id=?').get('email', normalizedEmail);
+      if (!partner) return res.status(404).json({ success: false, error: { code: 'PARTNER_NOT_FOUND', message: '이 이메일로 가입된 파트너를 찾을 수 없습니다' } });
+      const partnerToken = jwt.sign({ sub: partner.id, role: 'partner' }, JWT_SECRET, { expiresIn: '4h' });
+      return res.json({ success: true, data: { token: partnerToken, partner, verified: true } });
+    }
+    const signupToken = jwt.sign({ role: 'partner_signup', loginId: normalizedEmail, loginProvider: 'email' }, JWT_SECRET, { expiresIn: '30m' });
+    return res.json({ success: true, data: { token: signupToken, verified: true } });
+  }
+  let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get('email', normalizedEmail);
+  if (!user) {
+    const id = randomUUID();
+    db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, email, cash_balance) VALUES (?,?,?,?,?,?)')
+      .run(id, 'email', normalizedEmail, normalizedEmail.split('@')[0], normalizedEmail, 29000);
+    user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+  }
+  const token = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
+  res.json({ success: true, data: { token, user, verified: true } });
 });
 
 // ===== 2. 회원 =====
@@ -327,9 +452,9 @@ app.delete('/api/users/me', authRequired, (req, res) => {
 // ===== 3. 업체 가입·검증 =====
 // 결함수정(팀장 지시 반영): 기존엔 등록 즉시 승인(approved_at)되어 관리자 검수 절차 자체가 없었음
 // → 프론트엔드(루머02.html) 정책과 일치하도록 pending 상태로 시작, 관리자 승인 후에만 검색·노출되게 수정
-app.post('/api/partners/register', (req, res) => {
+app.post('/api/partners/register', partnerSignupRequired, (req, res) => {
   const { businessName, businessRegNumber, licenseNumber, ceoName, address, region, docImageUrl, extImageUrl, intImageUrl,
-    intro, strengthTags, portfolioImages, availableHours, spaceCategories } = req.body;
+    intro, strengthTags, portfolioImages, availableHours, spaceCategories, loginId, loginProvider } = req.body;
   if (!isNonEmptyString(businessName, 100)) return validationError(res, '상호명을 입력해주세요(100자 이내)');
   if (!isNonEmptyString(businessRegNumber) || !BIZNO_RE.test(businessRegNumber)) return validationError(res, '사업자등록번호 형식이 올바르지 않습니다(예: 123-45-67890)');
   if (ceoName && !isNonEmptyString(ceoName, 30)) return validationError(res, '대표자명은 30자 이내여야 합니다');
@@ -343,14 +468,22 @@ app.post('/api/partners/register', (req, res) => {
   if (!docImageUrl) {
     return res.status(400).json({ success: false, error: { code: 'DOC_REQUIRED', message: '사업자등록증을 올려야 등록할 수 있습니다' } });
   }
+  const verifiedLoginId = req.partnerSignup.loginId;
+  const verifiedLoginProvider = req.partnerSignup.loginProvider;
+  if ((loginId && loginId.toLowerCase() !== verifiedLoginId) || (loginProvider && loginProvider !== verifiedLoginProvider)) {
+    return res.status(403).json({ success: false, error: { code: 'LOGIN_ID_MISMATCH', message: '인증한 이메일과 가입 이메일이 일치하지 않습니다' } });
+  }
+  const duplicateLogin = db.prepare('SELECT id FROM partners WHERE login_provider=? AND login_id=?').get(verifiedLoginProvider, verifiedLoginId);
+  if (duplicateLogin) return res.status(409).json({ success: false, error: { code: 'ALREADY_EXISTS', message: '이미 가입된 파트너 이메일입니다' } });
   const id = randomUUID();
   const tier = licenseNumber ? '면허 파트너' : '부분공사가능업체';
-  db.prepare(`INSERT INTO partners (id, business_name, business_reg_number, license_number, ceo_name, address, tier, region, doc_image_url, ext_image_url, int_image_url, verify_status, cert_license, intro, strength_tags, portfolio_images, available_hours, space_categories)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending', ?,?,?,?,?,?)`)
-    .run(id, businessName, businessRegNumber, licenseNumber || null, ceoName || null, address || null, tier, region || null, docImageUrl, extImageUrl || null, intImageUrl || null, tier === '면허 파트너' ? 1 : 0,
+  db.prepare(`INSERT INTO partners (id, login_provider, login_id, business_name, business_reg_number, license_number, ceo_name, address, tier, region, doc_image_url, ext_image_url, int_image_url, verify_status, cert_license, intro, strength_tags, portfolio_images, available_hours, space_categories)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?,?,?,?,?,?)`)
+    .run(id, verifiedLoginProvider, verifiedLoginId, businessName, businessRegNumber, licenseNumber || null, ceoName || null, address || null, tier, region || null, docImageUrl, extImageUrl || null, intImageUrl || null, tier === '면허 파트너' ? 1 : 0,
       intro || null, JSON.stringify(strengthTags || []), JSON.stringify(portfolioImages || []), availableHours || null, JSON.stringify(spaceCategories || []));
   const token = jwt.sign({ sub: id, role: 'partner' }, JWT_SECRET, { expiresIn: '1h' });
-  res.json({ success: true, data: { id, tier, verifyStatus: 'pending', token, licenseLimitNotice: tier === '부분공사가능업체' ? '무면허 업체는 1,500만원 이상 종합공사를 진행할 수 없습니다.' : null } });
+  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(id);
+  res.json({ success: true, data: { id, tier, verifyStatus: 'pending', token, partner, licenseLimitNotice: tier === '부분공사가능업체' ? '무면허 업체는 1,500만원 이상 종합공사를 진행할 수 없습니다.' : null } });
 });
 
 app.get('/api/partners/search', (req, res) => {
@@ -401,24 +534,88 @@ app.put('/api/admin/partners/:id/reject', adminAuthRequired(), (req, res) => {
 });
 
 // ===== 3-2. 포트폴리오(프로젝트 단위: 제목+여러사진+설명) =====
-app.post('/api/partners/me/portfolio', authRequired, (req, res) => {
+function parseMultipartBody(req) {
+  const contentType = req.headers['content-type'] || '';
+  const match = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  if (!match || !Buffer.isBuffer(req.body)) throw new Error('MULTIPART_REQUIRED');
+  const boundary = Buffer.from('--' + (match[1] || match[2]).trim());
+  const fields = {};
+  const files = [];
+  let cursor = req.body.indexOf(boundary);
+  while (cursor !== -1) {
+    cursor += boundary.length;
+    if (req.body.slice(cursor, cursor + 2).toString() === '--') break;
+    if (req.body.slice(cursor, cursor + 2).toString() === '\r\n') cursor += 2;
+    const next = req.body.indexOf(boundary, cursor);
+    if (next === -1) break;
+    const headerEnd = req.body.indexOf(Buffer.from('\r\n\r\n'), cursor);
+    if (headerEnd === -1 || headerEnd > next) throw new Error('INVALID_MULTIPART');
+    const headerText = req.body.slice(cursor, headerEnd).toString('utf8');
+    let dataEnd = next;
+    if (req.body.slice(dataEnd - 2, dataEnd).toString() === '\r\n') dataEnd -= 2;
+    const data = req.body.slice(headerEnd + 4, dataEnd);
+    const nameMatch = headerText.match(/name="([^"]+)"/i);
+    const filenameMatch = headerText.match(/filename="([^"]*)"/i);
+    const typeMatch = headerText.match(/content-type:\s*([^\r\n]+)/i);
+    if (nameMatch) {
+      if (filenameMatch) files.push({ field: nameMatch[1], filename: filenameMatch[1], declaredType: (typeMatch && typeMatch[1].trim().toLowerCase()) || '', data });
+      else fields[nameMatch[1]] = data.toString('utf8');
+    }
+    cursor = next;
+  }
+  return { fields, files };
+}
+
+function detectPortfolioImage(file) {
+  const b = file.data;
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return { mime: 'image/jpeg', ext: 'jpg' };
+  if (b.length >= 8 && b.slice(0, 8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]))) return { mime: 'image/png', ext: 'png' };
+  if (b.length >= 12 && b.slice(0, 4).toString() === 'RIFF' && b.slice(8, 12).toString() === 'WEBP') return { mime: 'image/webp', ext: 'webp' };
+  return null;
+}
+
+const portfolioMultipart = express.raw({ type: 'multipart/form-data', limit: '105mb' });
+app.post('/api/partners/me/portfolio', authRequired, portfolioUploadLimiter, portfolioMultipart, (req, res, next) => {
   if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 등록할 수 있습니다' } });
-  const { title, description, photoUrls } = req.body;
+  let parsed;
+  try { parsed = parseMultipartBody(req); }
+  catch (e) { return validationError(res, 'multipart/form-data 형식의 사진 업로드가 필요합니다'); }
+  const { title, description } = parsed.fields;
+  const photoFiles = parsed.files.filter(file => file.field === 'photos');
   if (!isNonEmptyString(title, 60)) return validationError(res, '제목은 1~60자여야 합니다');
   if (description && !isNonEmptyString(description, 1000)) return validationError(res, '설명은 1000자 이내여야 합니다');
-  if (!Array.isArray(photoUrls) || photoUrls.length === 0) return validationError(res, '사진을 1장 이상 올려주세요');
-  if (photoUrls.length > 20) return validationError(res, '사진은 최대 20장까지 올릴 수 있습니다');
-  // 결함정리(사용자요청 — 완성도리포트 개선: 실제 포트폴리오 사진 반영): 500자 제한이면
-  // base64 이미지 데이터가 전혀 들어갈 수 없어 이 API가 사실상 무용지물이었음. 임시로 완화.
-  // ⚡MVP-SWITCH: 장기적으로는 S3 등 실제 파일스토리지에 업로드 후 짧은 URL만 저장하는 방식 권장
-  if (!photoUrls.every(u => isNonEmptyString(u, 3000000))) return validationError(res, '사진 URL 형식이 올바르지 않습니다');
+  if (photoFiles.length === 0) return validationError(res, '사진을 1장 이상 올려주세요');
+  if (photoFiles.length > 10) return validationError(res, '사진은 최대 10장까지 올릴 수 있습니다');
+  const validated = [];
+  for (const file of photoFiles) {
+    if (file.data.length === 0 || file.data.length > 10 * 1024 * 1024) return validationError(res, '사진 1장당 최대 10MB까지 올릴 수 있습니다');
+    const detected = detectPortfolioImage(file);
+    if (!detected || file.declaredType !== detected.mime) return validationError(res, 'JPG, PNG, WebP 이미지 파일만 올릴 수 있습니다');
+    validated.push({ ...file, ...detected });
+  }
   const projectId = randomUUID();
-  db.prepare('INSERT INTO portfolio_projects (id, partner_id, title, description) VALUES (?,?,?,?)')
-    .run(projectId, req.user.sub, title, description || null);
-  const insertPhoto = db.prepare('INSERT INTO portfolio_photos (id, project_id, image_url, sort_order) VALUES (?,?,?,?)');
-  photoUrls.forEach((url, i) => insertPhoto.run(randomUUID(), projectId, url, i));
-  // 실시공 인증(계약 이력과 별개로, 포트폴리오 등록 자체는 인증에 반영하지 않음 — cert_completed는 계약건수 기준)
-  res.json({ success: true, data: { id: projectId } });
+  const uploadDir = path.join(__dirname, 'uploads', 'portfolio');
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const savedPaths = [];
+  try {
+    const photos = validated.map((file, i) => {
+      const storedName = projectId + '-' + i + '-' + randomUUID() + '.' + file.ext;
+      const diskPath = path.join(uploadDir, storedName);
+      fs.writeFileSync(diskPath, file.data, { flag: 'wx' });
+      savedPaths.push(diskPath);
+      return '/uploads/portfolio/' + storedName;
+    });
+    const saveProject = db.transaction(() => {
+      db.prepare('INSERT INTO portfolio_projects (id, partner_id, title, description) VALUES (?,?,?,?)').run(projectId, req.user.sub, title.trim(), description ? description.trim() : null);
+      const insertPhoto = db.prepare('INSERT INTO portfolio_photos (id, project_id, image_url, sort_order) VALUES (?,?,?,?)');
+      photos.forEach((url, i) => insertPhoto.run(randomUUID(), projectId, url, i));
+    });
+    saveProject();
+    res.json({ success: true, data: { id: projectId, title: title.trim(), description: description ? description.trim() : '', photos } });
+  } catch (e) {
+    savedPaths.forEach(filePath => { try { fs.unlinkSync(filePath); } catch (_) {} });
+    next(e);
+  }
 });
 
 app.get('/api/partners/:id/portfolio', (req, res) => {
@@ -1258,8 +1455,6 @@ app.get(['/oauth/kakao/callback', '/oauth/naver/callback'], (req, res) => {
 // ===== 18. 라이브 리로드(파일만 교체하면 PC·모바일 자동 새로고침) =====
 // 신규(사용자요청): 수정한 루머03.html로 교체만 하면, 서버 재시작·수동 새로고침 없이
 // 열려있는 모든 브라우저(PC+모바일)가 3초 안에 저절로 새로고침되도록
-const fs = require('fs');
-const path = require('path');
 app.get('/api/dev-file-version', (req, res) => {
   try {
     const stat = fs.statSync(path.join(__dirname, '루머03.html'));
@@ -1332,7 +1527,8 @@ app.use((err, req, res, next) => {
   }
   // 결함수정(4단계 부하테스트 중 발견): 1MB 초과 요청이 500(서버오류)으로 잘못 분류되던 문제 → 400으로 정확히 구분
   if (err.type === 'entity.too.large') {
-    return res.status(400).json({ success: false, error: { code: 'PAYLOAD_TOO_LARGE', message: '요청 본문이 너무 큽니다(최대 1MB)' } });
+    const portfolioUpload = req.path === '/api/partners/me/portfolio';
+    return res.status(400).json({ success: false, error: { code: 'PAYLOAD_TOO_LARGE', message: portfolioUpload ? '포트폴리오 업로드 용량이 너무 큽니다(사진당 10MB·최대 10장)' : '요청 본문이 너무 큽니다(최대 1MB)' } });
   }
   if (err.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
     return res.status(400).json({ success: false, error: { code: 'INVALID_REFERENCE', message: '존재하지 않는 대상을 참조했습니다(예: 잘못된 업체ID)' } });
