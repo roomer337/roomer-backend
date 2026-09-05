@@ -215,7 +215,8 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 .badge-taste{top:8px;left:8px;background:linear-gradient(135deg,#4A7BA6,#2C4A63)}
 /* 재설계(사용자요청): .badge-rank("OO구 1위 업체") 완전 삭제됨 */
 </style>
-<script src="//t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
+<!-- 카카오 우편번호 공식 배포 주소(HTTPS 고정). 구 daumcdn 주소 의존을 제거한다. -->
+<script src="https://t1.kakaocdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
 </head>
 <body>
 <!-- ════════════════════════════════════════════════════════════════
@@ -1580,23 +1581,35 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div class="h2" id="t-p1" style="margin-bottom:18px"></div>
     <div style="margin-bottom:14px"><div class="caption" id="lb-bizname" style="margin-bottom:5px"></div><input type="text" id="in-bizname" placeholder="루머인테리어" style="width:100%;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 12px;font-size:15px;color:var(--charcoal);font-family:inherit"><div style="font-size:12px;color:var(--slate);margin-top:5px">사업자등록증 상의 업체명과 동일하게 해주세요</div></div>
     <div style="margin-bottom:14px"><div class="caption" style="margin-bottom:5px">사업자등록번호</div><div style="display:flex;gap:6px"><input type="text" id="in-bizno" placeholder="123-45-67890" style="flex:1;min-width:0;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 12px;font-size:15px;color:var(--charcoal);font-family:inherit"><button onclick="verifyBizNo04()" id="btn-vf-bizno" style="flex-shrink:0;background:var(--charcoal);color:#fff;border:none;border-radius:var(--radius-button);padding:0 clamp(10px,3vw,16px);font-size:12.5px;font-weight:700;white-space:nowrap">검증</button></div><div id="bizno-result" style="font-size:12px;margin-top:6px;display:none"></div></div>
+    <div style="margin-bottom:14px"><div class="caption" style="margin-bottom:5px">개업일자</div><input type="text" id="in-biz-start-date" inputmode="numeric" maxlength="8" placeholder="YYYYMMDD (예: 20240115)" style="width:100%;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 12px;font-size:15px;color:var(--charcoal);font-family:inherit"><div style="font-size:12px;color:var(--slate);margin-top:5px">사업자등록증에 표시된 개업연월일 8자리를 입력해주세요</div></div>
     <div style="margin-bottom:14px"><div class="caption" id="lb-ceo" style="margin-bottom:5px"></div><div style="display:flex;gap:6px"><input type="text" id="in-ceo" placeholder="김루머" style="flex:1;min-width:0;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 12px;font-size:15px;color:var(--charcoal);font-family:inherit"><button onclick="verifyCeo04()" id="btn-vf-ceo" style="flex-shrink:0;background:var(--charcoal);color:#fff;border:none;border-radius:var(--radius-button);padding:0 clamp(10px,3vw,16px);font-size:12.5px;font-weight:700;white-space:nowrap">검증</button></div><div id="ceo-result" style="font-size:12px;margin-top:6px;display:none"></div><div style="font-size:12px;color:var(--slate);margin-top:5px">사업자등록증 상의 대표자와 동일하게 적어주세요</div></div>
     <div style="margin-bottom:14px"><div class="caption" id="lb-addr" style="margin-bottom:5px"></div>
       <div style="display:flex;gap:6px;margin-bottom:6px"><input type="text" id="in-zipcode" readonly placeholder="우편번호" style="width:100px;background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 8px;font-size:15px;color:var(--charcoal);font-family:inherit"><button onclick="openZipSearch04()" style="background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-button);padding:0 16px;font-size:12.5px;font-weight:700;color:var(--charcoal)">우편번호 찾기</button></div>
-      <input type="text" id="in-addr" readonly value="서울 강남구 테헤란로 123" style="width:100%;background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 12px;font-size:15px;color:var(--charcoal);font-family:inherit;margin-bottom:6px">
+      <input type="text" id="in-addr" readonly placeholder="우편번호 찾기로 사업장 주소를 선택하세요" style="width:100%;background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 12px;font-size:15px;color:var(--charcoal);font-family:inherit;margin-bottom:6px">
       <input type="text" id="in-addr-detail" placeholder="상세주소(동/호수 등)" style="width:100%;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 12px;font-size:15px;color:var(--charcoal);font-family:inherit">
     </div>
     <!-- 신규(사용자요청 — 1단계: 지역 데이터 통일): 소비자 지역선택(REGION_DATA)과 동일한 코드값으로
          "활동지역"을 별도 선택. 주소(도로명주소) 자유텍스트와 분리해서, 검색·광고 매칭이 항상 정확히 되도록 함 -->
     <div style="margin-bottom:24px">
-      <div class="caption" style="margin-bottom:5px">활동지역 (필수 — 소비자 검색·광고 노출 기준)</div>
+      <div class="caption" style="margin-bottom:5px">활동지역 (필수 · 최대 5개)</div>
       <div style="display:flex;gap:6px">
         <select id="in-region-sido" onchange="onPartnerRegionSidoChange()" style="flex:1;min-width:0;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 8px;font-size:15px;color:var(--charcoal);font-family:inherit"></select>
         <select id="in-region-gu" style="flex:1;min-width:0;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 8px;font-size:15px;color:var(--charcoal);font-family:inherit"></select>
+        <button type="button" onclick="addPartnerServiceRegion()" style="flex-shrink:0;background:var(--charcoal);color:#fff;border:none;border-radius:var(--radius-button);padding:0 14px;font-size:12.5px;font-weight:700;white-space:nowrap">추가</button>
       </div>
-      <div id="region-select-hint" style="font-size:12px;color:var(--slate);margin-top:6px">지역을 선택하면, 그 지역을 찾는 소비자에게 자동으로 노출돼요</div>
+      <div id="partner-service-region-chips" style="display:flex;gap:7px;flex-wrap:wrap;margin-top:10px"></div>
+      <div id="region-select-hint" style="font-size:12px;color:var(--slate);margin-top:6px">주 활동지역을 먼저 추가하세요. 선택 순서대로 최대 5개까지 등록할 수 있어요.</div>
     </div>
-    <div style="margin-bottom:24px"><div class="caption" id="lb-tel" style="margin-bottom:5px"></div><div style="display:flex;gap:6px"><input type="text" id="in-tel" placeholder="010-1234-5678" style="flex:1;min-width:0;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 12px;font-size:15px;color:var(--charcoal);font-family:inherit"><button onclick="verifyTel04()" id="btn-vf" style="flex-shrink:0;background:var(--charcoal);color:#fff;border:none;border-radius:var(--radius-button);padding:0 clamp(10px,3vw,16px);font-size:12.5px;font-weight:700;white-space:nowrap">인증</button></div></div>
+    <div style="margin-bottom:14px"><div class="caption" style="margin-bottom:5px">가입자 역할</div><select id="in-applicant-role" onchange="onPartnerApplicantRoleChange()" style="width:100%;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 10px;font-size:15px;color:var(--charcoal);font-family:inherit"><option value="representative">대표자 본인</option><option value="manager">업체 담당자</option></select><div id="applicant-role-hint" style="font-size:12px;color:var(--slate);margin-top:5px">휴대폰 본인확인 이름과 사업자 대표자명이 일치해야 합니다.</div></div>
+    <div id="partner-authorization-wrap" style="display:none;margin-bottom:14px"><div class="caption" style="margin-bottom:5px">대표자 위임 증빙 (담당자 필수)</div><input type="file" id="in-authorization-doc" accept="image/jpeg,image/png,application/pdf" onchange="handlePartnerAuthorizationDoc(this.files)" style="width:100%;font-family:inherit"><div id="authorization-doc-status" style="font-size:12px;color:var(--slate);margin-top:5px">대표자 위임장 또는 재직 증빙을 업로드해주세요.</div></div>
+    <div style="margin-bottom:24px"><div class="caption" id="lb-tel" style="margin-bottom:5px"></div><div style="display:flex;gap:6px"><input type="text" id="in-tel" readonly placeholder="본인확인 후 자동입력" style="flex:1;min-width:0;background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 12px;font-size:15px;color:var(--charcoal);font-family:inherit"><button type="button" onclick="verifyTel04()" id="btn-vf" style="flex-shrink:0;background:var(--charcoal);color:#fff;border:none;border-radius:var(--radius-button);padding:0 clamp(10px,3vw,16px);font-size:12.5px;font-weight:700;white-space:nowrap">본인확인</button></div><div id="identity-result" style="font-size:12px;margin-top:6px;display:none"></div></div>
+    <div style="background:var(--ivory);border-radius:var(--radius-card);padding:14px;margin-bottom:16px">
+      <div style="font-size:14px;font-weight:800;color:var(--charcoal);margin-bottom:8px">파트너 검증을 위한 필수 동의</div>
+      <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;cursor:pointer"><input type="checkbox" id="consent-partner-business" style="margin-top:3px;accent-color:var(--terracotta)"><span style="font-size:12.5px;line-height:1.55">국세청 사업자등록정보 진위·상태 조회 및 검증 결과 저장에 동의합니다.</span></label>
+      <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;cursor:pointer"><input type="checkbox" id="consent-partner-identity" style="margin-top:3px;accent-color:var(--terracotta)"><span style="font-size:12.5px;line-height:1.55">휴대폰 본인확인 결과(성명·전화번호·중복확인용 CI 해시) 처리에 동의합니다.</span></label>
+      <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="consent-partner-review" style="margin-top:3px;accent-color:var(--terracotta)"><span style="font-size:12.5px;line-height:1.55">제출한 사업자·위임 증빙을 파트너 승인 심사에 이용하는 것에 동의합니다.</span></label>
+      <div style="font-size:11.5px;color:var(--slate);line-height:1.5;margin-top:8px">주민등록번호는 ROOMER가 직접 수집하지 않으며, 본인확인 식별값 원문은 저장하지 않습니다.</div>
+    </div>
     <button class="btn btn-primary" onclick="if(validatePartnerRegionSelect())go('p-doc')" id="btn-next1"></button>
   </div>
 </div>
@@ -3459,7 +3472,8 @@ function normalizePartnerProfilePayload(payload){
     totalDisplay:firstPartnerDefined(root.totalDisplay, root.total_display),
     years:firstPartnerDefined(root.years, root.experienceYears, root.experience_years),
     responseRate:firstPartnerDefined(root.responseRate, root.response_rate),
-    certFlags:firstPartnerDefined(root.certFlags, root.cert_flags)
+    certFlags:firstPartnerDefined(root.certFlags, root.cert_flags),
+    serviceRegions:firstPartnerDefined(root.serviceRegions, root.service_regions)
   };
 }
 function applyPartnerProfile(payload, options){
@@ -3479,6 +3493,12 @@ function applyPartnerProfile(payload, options){
   }
   if(!pf.id && opts.createLocalId) pf.id = createLocalPartnerId();
   if(pf.id) window.currentPartnerId = pf.id;
+  if(Array.isArray(pf.serviceRegions)){
+    window.partnerSelectedRegions = pf.serviceRegions.map(function(item){
+      return normalizePartnerIdentityValue(item && typeof item==='object' ? (item.regionCode||item.region_code||item.name) : item);
+    }).filter(Boolean).slice(0,5);
+    if(typeof renderPartnerServiceRegions==='function') renderPartnerServiceRegions();
+  }
   pf.profileStatus = opts.status || 'connected';
   pf.profileSource = opts.source || pf.profileSource || 'prototype';
   pf.profileRestoreState = opts.restoreState || pf.profileRestoreState || 'connected';
@@ -3516,7 +3536,7 @@ function readPrototypePartnerProfiles(){
 }
 function partnerProfileSnapshot(){
   var pf = window.PARTNER_PROFILE || {};
-  var keys = ['id','loginId','name','ceoName','tier','verifyStatus','region','contracts','reviews','rating','totalDisplay','years','responseRate','certFlags'];
+  var keys = ['id','loginId','name','ceoName','tier','verifyStatus','region','serviceRegions','contracts','reviews','rating','totalDisplay','years','responseRate','certFlags'];
   var snapshot = {};
   keys.forEach(function(key){ if(partnerDefined(pf[key])) snapshot[key] = pf[key]; });
   return snapshot;
@@ -3552,6 +3572,8 @@ function beginPartnerSignupProfile(loginValue, channel){
   };
   window.currentPartnerId = null;
   window.partnerTierInfo = null;
+  window.partnerSelectedRegions = [];
+  if(typeof renderPartnerServiceRegions==='function') renderPartnerServiceRegions();
   window.partnerAccount = {id:loginId, channel:channel};
   return getPartnerProfileState();
 }
@@ -3845,6 +3867,9 @@ function registerPendingPartner(){
   var bizNo = (document.getElementById('in-bizno') && document.getElementById('in-bizno').value) || '-';
   var ceoName = (document.getElementById('in-ceo') && document.getElementById('in-ceo').value) || '-';
   var addr = (document.getElementById('in-addr') && document.getElementById('in-addr').value) || '-';
+  var postalCode = (document.getElementById('in-zipcode') && document.getElementById('in-zipcode').value.trim()) || '';
+  var addressDetail = (document.getElementById('in-addr-detail') && document.getElementById('in-addr-detail').value.trim()) || '';
+  var fullAddress = addr === '-' ? '' : (addr + (addressDetail ? ' ' + addressDetail : ''));
   // 신규(사용자요청 — 2단계: 가입폼 확장): 상세페이지 콘텐츠용 입력값 수집
   var intro = (document.getElementById('in-intro') && document.getElementById('in-intro').value.trim()) || '';
   var strengthTags = ((document.getElementById('in-strength-tags') && document.getElementById('in-strength-tags').value) || '')
@@ -3856,10 +3881,16 @@ function registerPendingPartner(){
     // 신규(2단계 프론트연동): 실제 서버 업체가입 API 연결(사업자등록증 필수·pending 상태·6개 인증필드는 서버가 관리)
     return apiFetch('/api/partners/register', {method:'POST', body: JSON.stringify({
       businessName: (window.PARTNER_PROFILE && window.PARTNER_PROFILE.name) || '신규 업체',
-      businessRegNumber: bizNo, ceoName: ceoName, address: addr,
+      businessRegNumber: bizNo, ceoName: ceoName, address: fullAddress,
+      postalCode: postalCode, roadAddress: addr === '-' ? '' : addr, addressDetail: addressDetail,
+      businessVerificationToken:window.partnerBusinessVerificationToken,
+      identityVerificationToken:window.partnerIdentityVerificationToken,
+      applicantRole:(document.getElementById('in-applicant-role')||{}).value||'representative',
+      authorizationDocUrl:window.partnerAuthorizationDoc,
+      verificationConsents:{business:true,identity:true,review:true,policyVersion:'2026-09-05'},
       loginId:(window.partnerAccount||{}).id, loginProvider:(window.partnerAccount||{}).channel,
       licenseNumber: (window.PARTNER_PROFILE && window.PARTNER_PROFILE.tier==='면허 파트너') ? 'L-'+Date.now() : null,
-      region: getPartnerSelectedRegion() || addr, docImageUrl: u.ocrImg, extImageUrl: u.extImg, intImageUrl: u.intImg,
+      region: getPartnerSelectedRegion() || addr, serviceRegions:getPartnerSelectedRegions(), docImageUrl: u.ocrImg, extImageUrl: u.extImg, intImageUrl: u.intImg,
       intro: intro, strengthTags: strengthTags, portfolioImages: portfolioImages, availableHours: availableHours, spaceCategories: spaceCategories
     })}).then(function(data){
       if(data.token) saveAuthToken(data.token);
@@ -5170,12 +5201,15 @@ var REGION_DATA = {
 // 동일한 REGION_DATA 코드값으로 선택하게 해서, 표기 불일치로 인한 검색·광고 매칭 실패를 원천 차단
 function initPartnerRegionSelect(){
   var sidoEl = document.getElementById('in-region-sido');
-  if(!sidoEl || sidoEl.options.length) return; // 이미 초기화됐으면 중복 실행 방지
-  Object.keys(REGION_DATA).forEach(function(sido){
-    var opt = document.createElement('option'); opt.value = sido; opt.textContent = sido;
-    sidoEl.appendChild(opt);
-  });
-  onPartnerRegionSidoChange();
+  if(!sidoEl) return;
+  if(!sidoEl.options.length){
+    Object.keys(REGION_DATA).forEach(function(sido){
+      var opt = document.createElement('option'); opt.value = sido; opt.textContent = sido;
+      sidoEl.appendChild(opt);
+    });
+    onPartnerRegionSidoChange();
+  }
+  renderPartnerServiceRegions();
 }
 function onPartnerRegionSidoChange(){
   var sidoEl = document.getElementById('in-region-sido');
@@ -5188,19 +5222,55 @@ function onPartnerRegionSidoChange(){
     guEl.appendChild(opt);
   });
 }
-// 가입 1단계 "다음" 버튼에서 호출 — 지역선택 필수 검증
+window.partnerSelectedRegions = Array.isArray(window.partnerSelectedRegions) ? window.partnerSelectedRegions : [];
+function currentPartnerRegionSelection(){
+  var sidoEl=document.getElementById('in-region-sido'), guEl=document.getElementById('in-region-gu');
+  if(!sidoEl||!guEl||!sidoEl.value||!guEl.value) return '';
+  return sidoEl.value+' '+guEl.value;
+}
+function addPartnerServiceRegion(){
+  var region=currentPartnerRegionSelection();
+  if(!region){ alert('추가할 활동지역을 선택해주세요.'); return; }
+  if(window.partnerSelectedRegions.indexOf(region)!==-1){ alert('이미 추가한 활동지역입니다.'); return; }
+  if(window.partnerSelectedRegions.length>=5){ alert('활동지역은 최대 5개까지 등록할 수 있어요.'); return; }
+  window.partnerSelectedRegions.push(region);
+  renderPartnerServiceRegions();
+}
+function removePartnerServiceRegion(index){
+  if(index<0||index>=window.partnerSelectedRegions.length) return;
+  window.partnerSelectedRegions.splice(index,1);
+  renderPartnerServiceRegions();
+}
+function renderPartnerServiceRegions(){
+  var box=document.getElementById('partner-service-region-chips');
+  var hint=document.getElementById('region-select-hint');
+  if(!box) return;
+  box.innerHTML=window.partnerSelectedRegions.map(function(region,index){
+    return '<button type="button" onclick="removePartnerServiceRegion('+index+')" style="border:1px solid var(--stone);background:#fff;color:var(--charcoal);border-radius:var(--radius-pill);padding:7px 10px;font-size:12.5px;font-weight:700;cursor:pointer">'+escapeConsumerIdentityHtml(region)+' <span aria-hidden="true">×</span></button>';
+  }).join('');
+  if(hint) hint.textContent=window.partnerSelectedRegions.length+'/5개 선택 · 첫 번째 지역이 주 활동지역이에요.';
+}
+function getPartnerSelectedRegions(){ return window.partnerSelectedRegions.slice(0,5); }
+// 가입 1단계 "다음" 버튼에서 호출 — 활동지역 1~5개 검증
 function validatePartnerRegionSelect(){
-  var sidoEl = document.getElementById('in-region-sido');
-  var guEl = document.getElementById('in-region-gu');
-  if(!sidoEl || !guEl || !sidoEl.value || !guEl.value){ alert('활동지역을 선택해주세요'); return false; }
+  var consentIds=['consent-partner-business','consent-partner-identity','consent-partner-review'];
+  if(consentIds.some(function(id){var el=document.getElementById(id);return !el||!el.checked;})){ alert('파트너 검증을 위한 필수 동의 3가지를 모두 확인해주세요.'); return false; }
+  var postalCode=(document.getElementById('in-zipcode')||{}).value||'';
+  var roadAddress=(document.getElementById('in-addr')||{}).value||'';
+  if(!/^\d{5}$/.test(postalCode)||!roadAddress.trim()){ alert('우편번호 찾기를 눌러 실제 사업장 주소를 선택해주세요.'); return false; }
+  if(window.MVP.live && !window.partnerBusinessVerificationToken){ alert('국세청 사업자 진위확인을 먼저 완료해주세요.'); return false; }
+  if(window.MVP.live && !window.partnerIdentityVerificationToken){ alert('휴대폰 본인확인을 먼저 완료해주세요.'); return false; }
+  var applicantRole=(document.getElementById('in-applicant-role')||{}).value||'representative';
+  var ceoName=(document.getElementById('in-ceo')||{}).value||'';
+  if(window.MVP.live && applicantRole==='representative' && normalizePartnerIdentityValue(window.partnerIdentityApplicantName).replace(/\s+/g,'')!==normalizePartnerIdentityValue(ceoName).replace(/\s+/g,'')){ alert('휴대폰 본인확인 이름과 대표자명이 일치하지 않습니다. 담당자라면 가입자 역할을 업체 담당자로 변경해주세요.'); return false; }
+  if(window.MVP.live && applicantRole==='manager' && !window.partnerAuthorizationDoc){ alert('업체 담당자는 대표자 위임 또는 재직 증빙을 첨부해야 합니다.'); return false; }
+  if(!window.partnerSelectedRegions.length){ alert('활동지역을 한 곳 이상 추가해주세요.'); return false; }
+  if(window.partnerSelectedRegions.length>5){ alert('활동지역은 최대 5개까지 등록할 수 있어요.'); return false; }
   return true;
 }
-// 선택된 지역을 "서울 강남구" 형식(REGION_DATA 코드값)으로 반환 — 등록 API 전송시 사용
+// 첫 번째 선택값은 기존 단일 region 필드와의 하위호환용 대표 활동지역이다.
 function getPartnerSelectedRegion(){
-  var sidoEl = document.getElementById('in-region-sido');
-  var guEl = document.getElementById('in-region-gu');
-  if(!sidoEl || !guEl || !sidoEl.value || !guEl.value) return null;
-  return sidoEl.value + ' ' + guEl.value;
+  return window.partnerSelectedRegions[0] || null;
 }
 // 3단계(읍·면·동) 데이터 — 대표 동 위주. 없는 구는 구 단위로 자동 폴백. (실서비스: 행정동 표준코드 전체)
 var DONG_DATA = {
@@ -7159,42 +7229,117 @@ document.getElementById('lb-ceo').textContent = '대표자명';
 document.getElementById('lb-addr').textContent = '사업장 주소 (GPS 자동완성)';
 document.getElementById('lb-tel').textContent = '대표 전화번호';
 document.getElementById('btn-next1').textContent = '다음';
-function verifyTel04(){
-  const btn = document.getElementById('btn-vf');
-  btn.textContent = '인증완료';
-  btn.style.background = 'var(--success)';
+window.partnerIdentityVerificationToken=null;
+window.partnerIdentityApplicantName='';
+window.partnerAuthorizationDoc=null;
+function onPartnerApplicantRoleChange(){
+  var role=document.getElementById('in-applicant-role').value;
+  var wrap=document.getElementById('partner-authorization-wrap');
+  var hint=document.getElementById('applicant-role-hint');
+  if(wrap) wrap.style.display=role==='manager'?'block':'none';
+  if(hint) hint.textContent=role==='manager'?'담당자 본인확인 후 대표자 위임 또는 재직 증빙을 관리자에게 제출합니다.':'휴대폰 본인확인 이름과 사업자 대표자명이 일치해야 합니다.';
+}
+function handlePartnerAuthorizationDoc(files){
+  var file=files&&files[0], status=document.getElementById('authorization-doc-status');
+  window.partnerAuthorizationDoc=null;
+  if(!file) return;
+  if(['image/jpeg','image/png','application/pdf'].indexOf(file.type)===-1){ status.style.color='var(--danger)';status.textContent='JPG, PNG 또는 PDF만 업로드할 수 있어요.';return; }
+  if(file.size>700*1024){ status.style.color='var(--danger)';status.textContent='현재 가입 단계에서는 700KB 이하 파일만 업로드할 수 있어요.';return; }
+  var reader=new FileReader();
+  reader.onload=function(e){window.partnerAuthorizationDoc=e.target.result;status.style.color='var(--success)';status.textContent='위임 증빙이 첨부됐어요: '+file.name;};
+  reader.onerror=function(){status.style.color='var(--danger)';status.textContent='파일을 읽지 못했습니다.';};
+  reader.readAsDataURL(file);
+}
+function loadPortOneIdentitySdk(){
+  if(window.PortOne&&typeof window.PortOne.requestIdentityVerification==='function') return Promise.resolve(window.PortOne);
+  if(window._portOneSdkPromise) return window._portOneSdkPromise;
+  window._portOneSdkPromise=new Promise(function(resolve,reject){
+    var script=document.createElement('script');script.src='https://cdn.portone.io/v2/browser-sdk.js';script.async=true;
+    script.onload=function(){window.PortOne?resolve(window.PortOne):reject(new Error('본인확인 SDK를 초기화하지 못했습니다'));};
+    script.onerror=function(){reject(new Error('본인확인 SDK를 불러오지 못했습니다'));};document.head.appendChild(script);
+  });
+  return window._portOneSdkPromise;
+}
+async function verifyTel04(){
+  var btn=document.getElementById('btn-vf'), result=document.getElementById('identity-result');
+  result.style.display='block'; result.style.color='var(--slate)'; result.textContent='본인확인 서비스를 준비하고 있어요…';
+  btn.disabled=true;btn.textContent='확인 중…';
+  try{
+    if(!window.MVP.live) throw new Error('실제 본인확인은 배포된 서비스에서만 이용할 수 있습니다.');
+    var prepared=await apiFetch('/api/identity-verifications/prepare',{method:'POST',body:'{}'});
+    var sdk=await loadPortOneIdentitySdk();
+    var response=await sdk.requestIdentityVerification({storeId:prepared.storeId,identityVerificationId:prepared.verificationId,channelKey:prepared.channelKey});
+    if(response&&response.code) throw new Error(response.message||'본인확인이 취소되었거나 실패했습니다.');
+    var confirmed=await apiFetch('/api/identity-verifications/confirm',{method:'POST',body:JSON.stringify({verificationId:prepared.verificationId})});
+    window.partnerIdentityVerificationToken=confirmed.verificationToken;
+    window.partnerIdentityApplicantName=confirmed.applicantName||'';
+    document.getElementById('in-tel').value=confirmed.phone||'';
+    result.style.color='var(--success)';result.innerHTML=icon('checkCircle',T.success,12)+' '+escapeConsumerIdentityHtml(confirmed.applicantName||'본인')+' 명의의 휴대폰 확인이 완료됐어요.';
+    btn.textContent='인증완료';btn.style.background='var(--success)';
+  }catch(e){
+    window.partnerIdentityVerificationToken=null;
+    result.style.color='var(--danger)';result.textContent=e.message||'본인확인에 실패했습니다.';
+    btn.textContent='본인확인';btn.style.background='var(--charcoal)';
+  }finally{btn.disabled=false;}
 }
 // 신규(사용자요청): 다음(카카오) 우편번호 서비스 — API키 불필요, 실제로 동작하는 진짜 기능
 function openZipSearch04(){
   if(typeof daum === 'undefined' || !daum.Postcode){ alert('우편번호 서비스를 불러오지 못했어요. 잠시 후 다시 시도해주세요.'); return; }
   new daum.Postcode({
     oncomplete: function(data){
-      document.getElementById('in-zipcode').value = data.zonecode;
-      document.getElementById('in-addr').value = data.roadAddress || data.jibunAddress;
-      document.getElementById('in-addr-detail').focus();
+      var zipcodeEl=document.getElementById('in-zipcode');
+      var addressEl=document.getElementById('in-addr');
+      var detailEl=document.getElementById('in-addr-detail');
+      var selectedAddress=(data.roadAddress||data.jibunAddress||'').trim();
+      if(!zipcodeEl||!addressEl||!selectedAddress){
+        alert('선택한 주소를 입력칸에 적용하지 못했어요. 화면을 새로고침한 후 다시 시도해주세요.');
+        return;
+      }
+      zipcodeEl.value=String(data.zonecode||'');
+      addressEl.value=selectedAddress;
+      addressEl.dispatchEvent(new Event('change',{bubbles:true}));
+      if(detailEl){ detailEl.value=''; detailEl.focus(); }
     }
   }).open();
 }
-// 신규(사용자요청): 사업자등록번호 검증 — 실제로는 국세청 API가 필요(서버 경유 필수, 인증키 노출 위험)해서
-// 지금은 시뮬레이션. ⚡MVP-SWITCH: 실서버 → await fetch('/api/verify/business-number', {method:'POST', body: JSON.stringify({bizno})})
+window.partnerBusinessVerificationToken = null;
+function partnerBusinessVerificationPayload(){
+  return {
+    bizNo:(document.getElementById('in-bizno').value||'').replace(/[^0-9]/g,''),
+    startDate:(document.getElementById('in-biz-start-date').value||'').replace(/[^0-9]/g,''),
+    ceoName:document.getElementById('in-ceo').value.trim(),
+    businessName:document.getElementById('in-bizname').value.trim()
+  };
+}
+function resetPartnerBusinessVerification(){
+  window.partnerBusinessVerificationToken=null;
+  ['btn-vf-bizno','btn-vf-ceo'].forEach(function(id){ var btn=document.getElementById(id); if(btn){btn.textContent='검증';btn.style.background='var(--charcoal)';} });
+}
+// 국세청 진위확인은 사업자번호·개업일자·대표자명을 묶어서 서버에서 확인한다.
 function verifyBizNo04(){
-  const val = document.getElementById('in-bizno').value.replace(/[^0-9]/g,'');
+  const payload = partnerBusinessVerificationPayload();
   const result = document.getElementById('bizno-result');
   const btn = document.getElementById('btn-vf-bizno');
   result.style.display = 'block';
-  if(val.length !== 10){
+  if(payload.bizNo.length !== 10){
     result.style.color = 'var(--danger)';
     result.textContent = '사업자등록번호 10자리를 정확히 입력해주세요.';
     return;
   }
+  if(!/^\d{8}$/.test(payload.startDate)){ result.style.color='var(--danger)'; result.textContent='사업자등록증의 개업일자 8자리를 입력해주세요.'; return; }
+  if(!payload.ceoName){ result.style.color='var(--danger)'; result.textContent='대표자명을 입력해주세요.'; return; }
   if(window.MVP.live){
-    // 신규(2단계 프론트연동): 실서버 검증 API 연결
-    apiFetch('/api/verify/business-number', {method:'POST', body: JSON.stringify({bizNo: document.getElementById('in-bizno').value})})
+    btn.disabled=true; btn.textContent='확인 중…';
+    apiFetch('/api/verify/business-number', {method:'POST', body: JSON.stringify(payload)})
       .then(function(data){
         result.style.color = data.valid ? 'var(--success)' : 'var(--danger)';
-        result.innerHTML = data.valid ? (icon('checkCircle',T.success,12)+' 유효한 사업자등록번호입니다.') : '유효하지 않은 사업자등록번호입니다.';
-        if(data.valid){ btn.textContent = '검증완료'; btn.style.background = 'var(--success)'; }
-      }).catch(function(e){ result.style.color = 'var(--danger)'; result.textContent = '검증 중 오류: '+e.message; });
+        result.innerHTML = data.valid ? (icon('checkCircle',T.success,12)+' 국세청 사업자 정보와 일치하며 계속사업자 상태입니다.') : (data.message||'입력 정보가 국세청 등록정보와 일치하지 않습니다.');
+        if(data.valid){
+          window.partnerBusinessVerificationToken=data.verificationToken;
+          ['btn-vf-bizno','btn-vf-ceo'].forEach(function(id){var b=document.getElementById(id);if(b){b.textContent='검증완료';b.style.background='var(--success)';}});
+        }
+      }).catch(function(e){ resetPartnerBusinessVerification(); result.style.color = 'var(--danger)'; result.textContent = '검증 중 오류: '+e.message; })
+      .finally(function(){ btn.disabled=false; if(!window.partnerBusinessVerificationToken) btn.textContent='검증'; });
     return;
   }
   result.style.color = 'var(--success)';
@@ -7202,7 +7347,7 @@ function verifyBizNo04(){
   btn.textContent = '검증완료';
   btn.style.background = 'var(--success)';
 }
-// 신규(사용자요청): 대표자명 검증(사업자번호+대표자명 매칭) — 실제로는 국세청 진위확인 API 필요(서버 경유)
+// 대표자명도 별도 가짜 판정 없이 동일한 국세청 진위확인 절차를 실행한다.
 function verifyCeo04(){
   const name = document.getElementById('in-ceo').value.trim();
   const result = document.getElementById('ceo-result');
@@ -7213,22 +7358,15 @@ function verifyCeo04(){
     result.textContent = '대표자명을 입력해주세요.';
     return;
   }
-  if(window.MVP.live){
-    // 신규(2단계 프론트연동): 실서버 검증 API 연결
-    var bizNo = (document.getElementById('in-bizno')||{}).value || '';
-    apiFetch('/api/verify/ceo-name', {method:'POST', body: JSON.stringify({bizNo: bizNo, ceoName: name})})
-      .then(function(data){
-        result.style.color = data.match ? 'var(--success)' : 'var(--danger)';
-        result.innerHTML = data.match ? (icon('checkCircle',T.success,12)+' 사업자등록번호와 대표자명이 일치합니다.') : '대표자명이 일치하지 않습니다.';
-        if(data.match){ btn.textContent = '검증완료'; btn.style.background = 'var(--success)'; }
-      }).catch(function(e){ result.style.color = 'var(--danger)'; result.textContent = '검증 중 오류: '+e.message; });
-    return;
-  }
+  if(window.MVP.live){ verifyBizNo04(); return; }
   result.style.color = 'var(--success)';
   result.innerHTML = icon('checkCircle',T.success,12)+' 사업자등록번호와 대표자명이 일치합니다.';
   btn.textContent = '검증완료';
   btn.style.background = 'var(--success)';
 }
+['in-bizno','in-biz-start-date','in-ceo','in-bizname'].forEach(function(id){
+  var field=document.getElementById(id); if(field) field.addEventListener('input',resetPartnerBusinessVerification);
+});
 
 /* ===== (s-p-doc) 서류 업로드 2/4 ===== */
 document.getElementById('lb-step04b').textContent = '2 / 4 단계 · 서류 업로드';
