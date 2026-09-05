@@ -33,7 +33,10 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
       imgSrc: ["'self'", "data:", "https:"],
       // 팝업 차단 영향을 받지 않는 카카오 우편번호 화면 내 embed 방식을 허용한다.
-      frameSrc: ["'self'", "https://postcode.map.daum.net", "https://t1.kakaocdn.net", "https://t1.daumcdn.net"],
+      // 결함정리(사용자요청 — 우편번호 팝업 iframe이 깨진 이미지로 뜨는 문제 발견·수정): 카카오가
+      // 2026년 3월 우편번호 서비스 도메인을 postcode.map.kakao.com으로 이관(자동 리다이렉트 적용)
+      // 했는데, CSP에 신규 도메인이 없어서 iframe이 차단되고 있었음. 신규 도메인 추가.
+      frameSrc: ["'self'", "https://postcode.map.kakao.com", "https://postcode.map.daum.net", "https://t1.kakaocdn.net", "https://t1.daumcdn.net"],
       fontSrc: ["'self'", "https://cdn.jsdelivr.net", "data:"],
       connectSrc: ["'self'", "https:"],
       mediaSrc: ["'self'", "data:", "blob:"]
@@ -246,18 +249,26 @@ app.post('/api/auth/social/kakao/callback', socialAuthLimiter, async (req, res) 
   const { code, redirectUri, consent } = req.body;
   if (!isNonEmptyString(code, 500)) return validationError(res, 'code가 필요합니다');
   if (!hasRequiredConsent(consent)) return validationError(res, '필수 이용약관과 개인정보 수집 동의가 필요합니다');
-  const restApiKey = process.env.KAKAO_REST_API_KEY || 'b7216abaaa27c838ba8bb998b7cc1f5f';
+  const restApiKey = process.env.KAKAO_REST_API_KEY;
+  if (!restApiKey) {
+    return res.status(501).json({ success: false, error: { code: 'KAKAO_NOT_CONFIGURED', message: '카카오 로그인이 아직 설정되지 않았어요.' } });
+  }
+  // 결함정리(회귀버그 수정 — 이 카카오 앱은 "클라이언트 시크릿" 활성화 상태로 발급되어 있어서,
+  // 토큰교환시 client_secret이 없으면 반드시 실패함): 환경변수로만 관리(하드코딩 금지)
+  const kakaoClientSecret = process.env.KAKAO_CLIENT_SECRET;
   try {
     // 1) 인가코드 → 액세스 토큰 교환
+    const kakaoTokenParams = {
+      grant_type: 'authorization_code',
+      client_id: restApiKey,
+      redirect_uri: redirectUri || 'https://roomer-backend.onrender.com/oauth/kakao/callback',
+      code: code
+    };
+    if (kakaoClientSecret) kakaoTokenParams.client_secret = kakaoClientSecret;
     const tokenRes = await fetch('https://kauth.kakao.com/oauth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: restApiKey,
-        redirect_uri: redirectUri || 'https://roomer-backend.onrender.com/oauth/kakao/callback',
-        code: code
-      })
+      body: new URLSearchParams(kakaoTokenParams)
     });
     const tokenBody = await tokenRes.json();
     if (!tokenRes.ok || !tokenBody.access_token) {
