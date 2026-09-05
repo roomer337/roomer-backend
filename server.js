@@ -32,6 +32,8 @@ app.use(helmet({
       scriptSrcAttr: ["'unsafe-inline'"], // onclick="..." 같은 인라인 이벤트핸들러 허용(이 프로토타입 전체가 이 방식으로 만들어짐)
       styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
       imgSrc: ["'self'", "data:", "https:"],
+      // 팝업 차단 영향을 받지 않는 카카오 우편번호 화면 내 embed 방식을 허용한다.
+      frameSrc: ["'self'", "https://postcode.map.daum.net", "https://t1.kakaocdn.net", "https://t1.daumcdn.net"],
       fontSrc: ["'self'", "https://cdn.jsdelivr.net", "data:"],
       connectSrc: ["'self'", "https:"],
       mediaSrc: ["'self'", "data:", "blob:"]
