@@ -7,7 +7,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { randomUUID } = require('crypto');
+const { randomUUID, createHmac } = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const db = require('./db');
@@ -21,10 +21,14 @@ const app = express();
 // 인라인 스크립트(<script>...</script>)와 인라인 이벤트핸들러(onclick="...")를 전부 차단해서,
 // 화면은 보이지만 모든 버튼이 완전히 먹통이 되던 문제 → 루머03.html의 구조(인라인 스크립트/onclick 대량 사용)에 맞게 CSP 완화
 app.use(helmet({
+  // 카카오 우편번호 팝업이 선택한 주소를 열어준 ROOMER 창으로 돌려줄 수 있게 한다.
+  // 기본값 same-origin은 검색창은 열리지만 oncomplete 콜백이 적용되지 않는 원인이다.
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://t1.daumcdn.net"],
+      // 카카오 우편번호 서비스의 현재 공식 CDN을 허용한다. 구 daumcdn은 기존 배포 호환용으로 유지한다.
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://t1.kakaocdn.net", "https://t1.daumcdn.net", "https://cdn.portone.io"],
       scriptSrcAttr: ["'unsafe-inline'"], // onclick="..." 같은 인라인 이벤트핸들러 허용(이 프로토타입 전체가 이 방식으로 만들어짐)
       styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
       imgSrc: ["'self'", "data:", "https:"],
@@ -37,7 +41,8 @@ app.use(helmet({
 // 공개 서버의 임의 origin 접근을 막고, 같은 서비스와 명시한 프론트 주소만 허용한다.
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || 'https://roomer-backend.onrender.com').split(',').map(v => v.trim()).filter(Boolean);
 app.use(cors({ origin(origin, callback) { callback(null, !origin || ALLOWED_ORIGINS.includes(origin)); } }));
-app.use(express.json({ limit: '1mb' })); // 결함수정: 요청 본문 크기 제한이 없어 대용량 body로 서버 자원 고갈시키는 DoS가 가능했음
+// 심사용 사진·PDF data URL이 함께 전송되는 현재 단일-HTML 구조용 제한이다.
+app.use(express.json({ limit: '8mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
 
 // 결함수정: 관리자 로그인에 무차별대입(brute-force) 방지가 전혀 없었음 → IP당 15분에 10회로 제한
@@ -239,26 +244,18 @@ app.post('/api/auth/social/kakao/callback', socialAuthLimiter, async (req, res) 
   const { code, redirectUri, consent } = req.body;
   if (!isNonEmptyString(code, 500)) return validationError(res, 'code가 필요합니다');
   if (!hasRequiredConsent(consent)) return validationError(res, '필수 이용약관과 개인정보 수집 동의가 필요합니다');
-  const restApiKey = process.env.KAKAO_REST_API_KEY;
-  if (!restApiKey) {
-    return res.status(501).json({ success: false, error: { code: 'KAKAO_NOT_CONFIGURED', message: '카카오 로그인이 아직 설정되지 않았어요.' } });
-  }
-  // 신규(사용자요청 — 카카오 앱이 "클라이언트 시크릿" 활성화 상태로 발급되어, 토큰교환시
-  // client_secret이 없으면 실패하는 문제 발견·수정): 환경변수로만 관리(코드에 절대 하드코딩 금지)
-  const clientSecret = process.env.KAKAO_CLIENT_SECRET;
+  const restApiKey = process.env.KAKAO_REST_API_KEY || 'b7216abaaa27c838ba8bb998b7cc1f5f';
   try {
     // 1) 인가코드 → 액세스 토큰 교환
-    const tokenParams = {
-      grant_type: 'authorization_code',
-      client_id: restApiKey,
-      redirect_uri: redirectUri || 'https://roomer-backend.onrender.com/oauth/kakao/callback',
-      code: code
-    };
-    if (clientSecret) tokenParams.client_secret = clientSecret;
     const tokenRes = await fetch('https://kauth.kakao.com/oauth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
-      body: new URLSearchParams(tokenParams)
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: restApiKey,
+        redirect_uri: redirectUri || 'https://roomer-backend.onrender.com/oauth/kakao/callback',
+        code: code
+      })
     });
     const tokenBody = await tokenRes.json();
     if (!tokenRes.ok || !tokenBody.access_token) {
@@ -353,14 +350,15 @@ app.post('/api/auth/social/naver/callback', socialAuthLimiter, async (req, res) 
 // 신규(사용자요청 — 실제 이메일 인증코드 발송): Resend API로 실제 이메일 발송.
 // 6자리 코드를 생성해 DB에 5분 만료로 저장하고, 실제 이메일을 보낸다.
 app.post('/api/otp/email/send', otpSendLimiter, async (req, res) => {
-  const { email, forPartner, partnerMode } = req.body;
+  const { email, forPartner, partnerMode, consumerMode } = req.body;
   if (!isNonEmptyString(email, 200) || !EMAIL_RE.test(email)) return validationError(res, '올바른 이메일 형식이 아닙니다');
   if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
+  if (!forPartner && !['signup', 'login'].includes(consumerMode)) return validationError(res, '소비자 인증 목적이 올바르지 않습니다');
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const codeHash = bcrypt.hashSync(code, 10);
   const id = randomUUID();
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer';
+  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer_' + consumerMode;
   db.prepare('UPDATE otp_codes SET consumed_at=datetime(\'now\') WHERE target=? AND purpose=? AND consumed_at IS NULL').run(email.toLowerCase(), purpose);
   db.prepare('INSERT INTO otp_codes (id, target, code, expires_at, purpose) VALUES (?,?,?,?,?)').run(id, email.toLowerCase(), codeHash, expiresAt, purpose);
   const resendKey = process.env.RESEND_API_KEY;
@@ -398,11 +396,12 @@ app.post('/api/otp/email/send', otpSendLimiter, async (req, res) => {
 // 신규(사용자요청): 이메일 인증코드 확인. 일치하면 users upsert(신규면 29,000크레딧) 후 JWT 발급.
 // 파트너 가입 흐름에서는 단순 확인(verified)만 쓰고, 유저 생성은 프론트에서 별도 처리.
 app.post('/api/otp/email/verify', otpVerifyLimiter, (req, res) => {
-  const { email, code, forPartner, partnerMode } = req.body;
+  const { email, code, forPartner, partnerMode, consumerMode } = req.body;
   if (!isNonEmptyString(email, 200) || !isNonEmptyString(code, 10)) return validationError(res, 'email과 code가 필요합니다');
   if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
+  if (!forPartner && !['signup', 'login'].includes(consumerMode)) return validationError(res, '소비자 인증 목적이 올바르지 않습니다');
   const normalizedEmail = email.toLowerCase();
-  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer';
+  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer_' + consumerMode;
   const row = db.prepare('SELECT * FROM otp_codes WHERE target=? AND purpose=? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1').get(normalizedEmail, purpose);
   if (!row) return res.status(400).json({ success: false, error: { code: 'OTP_NOT_FOUND', message: '인증코드를 먼저 요청해주세요.' } });
   if (new Date(row.expires_at) < new Date()) return res.status(400).json({ success: false, error: { code: 'OTP_EXPIRED', message: '인증코드가 만료됐어요. 다시 요청해주세요.' } });
@@ -417,12 +416,15 @@ app.post('/api/otp/email/verify', otpVerifyLimiter, (req, res) => {
       const partner = db.prepare('SELECT * FROM partners WHERE login_provider=? AND login_id=?').get('email', normalizedEmail);
       if (!partner) return res.status(404).json({ success: false, error: { code: 'PARTNER_NOT_FOUND', message: '이 이메일로 가입된 파트너를 찾을 수 없습니다' } });
       const partnerToken = jwt.sign({ sub: partner.id, role: 'partner' }, JWT_SECRET, { expiresIn: '4h' });
-      return res.json({ success: true, data: { token: partnerToken, partner, verified: true } });
+      return res.json({ success: true, data: { token: partnerToken, partner: omitPartnerSecrets(withPartnerServiceRegions(partner), true), verified: true } });
     }
-    const signupToken = jwt.sign({ role: 'partner_signup', loginId: normalizedEmail, loginProvider: 'email' }, JWT_SECRET, { expiresIn: '30m' });
+    const signupToken = jwt.sign({ role: 'partner_signup', loginId: normalizedEmail, loginProvider: 'email' }, JWT_SECRET, { expiresIn: '1h' });
     return res.json({ success: true, data: { token: signupToken, verified: true } });
   }
   let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get('email', normalizedEmail);
+  if (consumerMode === 'login' && !user) {
+    return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: '이 이메일로 가입된 소비자 계정을 찾을 수 없습니다.' } });
+  }
   if (!user) {
     const id = randomUUID();
     db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, email, cash_balance) VALUES (?,?,?,?,?,?)')
@@ -458,25 +460,91 @@ app.delete('/api/users/me', authRequired, (req, res) => {
   db.prepare("UPDATE users SET withdrawn_at=datetime('now') WHERE id=?").run(req.user.sub);
   res.json({ success: true, data: { message: '탈퇴 처리되었습니다' } });
 });
+const partnerRegistrationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
+  message: { success:false, error:{ code:'TOO_MANY_REGISTRATIONS', message:'파트너 등록 요청이 너무 많습니다. 15분 후 다시 시도해주세요' } }
+});
 
 // ===== 3. 업체 가입·검증 =====
+function normalizePartnerServiceRegions(value, fallbackRegion) {
+  const source = Array.isArray(value) && value.length ? value : (fallbackRegion ? [fallbackRegion] : []);
+  const normalized = source.map(item => String(item || '').trim().replace(/\s+/g, ' ')).filter(Boolean);
+  return [...new Set(normalized)];
+}
+function partnerServiceRegions(partnerId) {
+  return db.prepare(`SELECT region_code AS regionCode, sido, sigungu, is_primary AS isPrimary
+    FROM partner_service_regions WHERE partner_id=? ORDER BY is_primary DESC, created_at ASC`).all(partnerId);
+}
+function withPartnerServiceRegions(partner) {
+  if (!partner) return partner;
+  return { ...partner, serviceRegions: partnerServiceRegions(partner.id) };
+}
+function omitPartnerSecrets(partner, includePrivateProfile) {
+  if (!partner) return partner;
+  const safe = { ...partner };
+  [
+    'ci_hash', 'authorization_doc_url', 'doc_image_url', 'ext_image_url', 'int_image_url'
+  ].forEach(key => delete safe[key]);
+  if (!includePrivateProfile) {
+    ['login_id', 'login_provider', 'business_reg_number', 'phone', 'applicant_name', 'address_detail',
+      'reject_reason'].forEach(key => delete safe[key]);
+  }
+  return safe;
+}
 // 결함수정(팀장 지시 반영): 기존엔 등록 즉시 승인(approved_at)되어 관리자 검수 절차 자체가 없었음
 // → 프론트엔드(루머02.html) 정책과 일치하도록 pending 상태로 시작, 관리자 승인 후에만 검색·노출되게 수정
-app.post('/api/partners/register', partnerSignupRequired, (req, res) => {
-  const { businessName, businessRegNumber, licenseNumber, ceoName, address, region, docImageUrl, extImageUrl, intImageUrl,
-    intro, strengthTags, portfolioImages, availableHours, spaceCategories, loginId, loginProvider } = req.body;
+app.post('/api/partners/register', partnerRegistrationLimiter, partnerSignupRequired, (req, res) => {
+  const { businessName, businessRegNumber, licenseNumber, ceoName, address, postalCode, roadAddress, addressDetail, region, docImageUrl, extImageUrl, intImageUrl,
+    intro, strengthTags, portfolioImages, availableHours, spaceCategories, serviceRegions, businessVerificationToken,
+    identityVerificationToken, applicantRole, authorizationDocUrl, verificationConsents, loginId, loginProvider } = req.body;
   if (!isNonEmptyString(businessName, 100)) return validationError(res, '상호명을 입력해주세요(100자 이내)');
   if (!isNonEmptyString(businessRegNumber) || !BIZNO_RE.test(businessRegNumber)) return validationError(res, '사업자등록번호 형식이 올바르지 않습니다(예: 123-45-67890)');
   if (ceoName && !isNonEmptyString(ceoName, 30)) return validationError(res, '대표자명은 30자 이내여야 합니다');
   if (address && !isNonEmptyString(address, 200)) return validationError(res, '주소는 200자 이내여야 합니다');
+  if (!/^\d{5}$/.test(String(postalCode || ''))) return validationError(res, '우편번호 찾기로 5자리 우편번호를 선택해주세요');
+  if (!isNonEmptyString(roadAddress, 180)) return validationError(res, '우편번호 찾기로 사업장 주소를 선택해주세요');
+  if (addressDetail && !isNonEmptyString(addressDetail, 100)) return validationError(res, '상세주소는 100자 이내여야 합니다');
   // 신규(사용자요청 — 2단계: 가입폼 확장) 필드 검증
   if (intro && !isNonEmptyString(intro, 50)) return validationError(res, '한줄소개는 50자 이내여야 합니다');
   if (strengthTags && (!Array.isArray(strengthTags) || strengthTags.length > 5)) return validationError(res, '강점 키워드는 최대 5개까지 선택 가능합니다');
   if (portfolioImages && (!Array.isArray(portfolioImages) || portfolioImages.length > 6)) return validationError(res, '대표 시공사진은 최대 6장까지 등록 가능합니다');
   if (spaceCategories && !Array.isArray(spaceCategories)) return validationError(res, '전문분야 형식이 올바르지 않습니다');
+  if (!verificationConsents || verificationConsents.business !== true || verificationConsents.identity !== true || verificationConsents.review !== true) {
+    return validationError(res, '파트너 검증을 위한 필수 동의가 필요합니다');
+  }
+  const normalizedRegions = normalizePartnerServiceRegions(serviceRegions, region);
+  if (normalizedRegions.length < 1 || normalizedRegions.length > 5) return validationError(res, '활동지역은 1개 이상 5개 이하로 등록해주세요');
+  if (normalizedRegions.some(item => item.length > 60 || item.split(' ').length < 2)) return validationError(res, '활동지역 형식이 올바르지 않습니다');
   // 재설계(사용자요청): 사업자등록증 없으면 플랫폼 등록 자체를 제한하는 정책
   if (!docImageUrl) {
     return res.status(400).json({ success: false, error: { code: 'DOC_REQUIRED', message: '사업자등록증을 올려야 등록할 수 있습니다' } });
+  }
+  let verifiedBusiness;
+  try {
+    verifiedBusiness = jwt.verify(String(businessVerificationToken || ''), JWT_SECRET);
+  } catch (error) {
+    return res.status(403).json({ success:false, error:{ code:'BUSINESS_VERIFICATION_REQUIRED', message:'국세청 사업자 진위확인을 다시 완료해주세요' } });
+  }
+  const normalizedBizNo = String(businessRegNumber).replace(/\D/g, '');
+  if (verifiedBusiness.role !== 'partner_business_verification' || verifiedBusiness.bizNo !== normalizedBizNo || verifiedBusiness.ceoName !== String(ceoName || '').trim()) {
+    return res.status(403).json({ success:false, error:{ code:'BUSINESS_VERIFICATION_MISMATCH', message:'검증받은 사업자 정보와 가입정보가 일치하지 않습니다' } });
+  }
+  let identityClaim;
+  try { identityClaim = jwt.verify(String(identityVerificationToken || ''), JWT_SECRET); }
+  catch (error) { return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_REQUIRED', message:'휴대폰 본인확인을 다시 완료해주세요' } }); }
+  if (identityClaim.role !== 'partner_identity_verification' || identityClaim.loginId !== req.partnerSignup.loginId) {
+    return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_MISMATCH', message:'본인확인 계정과 가입 이메일이 일치하지 않습니다' } });
+  }
+  const identityRow = db.prepare(`SELECT * FROM partner_identity_verifications
+    WHERE id=? AND login_id=? AND status='verified' AND consumed_at IS NULL`).get(identityClaim.verificationId, req.partnerSignup.loginId);
+  if (!identityRow) return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_USED', message:'본인확인을 다시 완료해주세요' } });
+  const normalizedApplicantRole = applicantRole === 'manager' ? 'manager' : 'representative';
+  const normalizePersonName = value => String(value || '').replace(/\s+/g, '');
+  if (normalizedApplicantRole === 'representative' && normalizePersonName(identityRow.applicant_name) !== normalizePersonName(ceoName)) {
+    return res.status(403).json({ success:false, error:{ code:'REPRESENTATIVE_NAME_MISMATCH', message:'휴대폰 본인확인 이름과 사업자 대표자명이 일치하지 않습니다' } });
+  }
+  if (normalizedApplicantRole === 'manager' && !isNonEmptyString(authorizationDocUrl, 950000)) {
+    return res.status(400).json({ success:false, error:{ code:'AUTHORIZATION_REQUIRED', message:'담당자는 대표자 위임 또는 재직 증빙이 필요합니다' } });
   }
   const verifiedLoginId = req.partnerSignup.loginId;
   const verifiedLoginProvider = req.partnerSignup.loginProvider;
@@ -487,12 +555,30 @@ app.post('/api/partners/register', partnerSignupRequired, (req, res) => {
   if (duplicateLogin) return res.status(409).json({ success: false, error: { code: 'ALREADY_EXISTS', message: '이미 가입된 파트너 이메일입니다' } });
   const id = randomUUID();
   const tier = licenseNumber ? '면허 파트너' : '부분공사가능업체';
-  db.prepare(`INSERT INTO partners (id, login_provider, login_id, business_name, business_reg_number, license_number, ceo_name, address, tier, region, doc_image_url, ext_image_url, int_image_url, verify_status, cert_license, intro, strength_tags, portfolio_images, available_hours, space_categories)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?,?,?,?,?,?)`)
-    .run(id, verifiedLoginProvider, verifiedLoginId, businessName, businessRegNumber, licenseNumber || null, ceoName || null, address || null, tier, region || null, docImageUrl, extImageUrl || null, intImageUrl || null, tier === '면허 파트너' ? 1 : 0,
-      intro || null, JSON.stringify(strengthTags || []), JSON.stringify(portfolioImages || []), availableHours || null, JSON.stringify(spaceCategories || []));
+  const insertPartner = db.transaction(() => {
+    db.prepare(`INSERT INTO partners (id, login_provider, login_id, business_name, business_reg_number, license_number, ceo_name, address, postal_code, road_address, address_detail, tier, region, doc_image_url, ext_image_url, int_image_url, verify_status, cert_license, intro, strength_tags, portfolio_images, available_hours, space_categories)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?,?,?,?,?,?)`)
+      .run(id, verifiedLoginProvider, verifiedLoginId, businessName, businessRegNumber, licenseNumber || null, ceoName || null, address || null, postalCode, roadAddress, addressDetail || null, tier, normalizedRegions[0], docImageUrl, extImageUrl || null, intImageUrl || null, tier === '면허 파트너' ? 1 : 0,
+        intro || null, JSON.stringify(strengthTags || []), JSON.stringify(portfolioImages || []), availableHours || null, JSON.stringify(spaceCategories || []));
+    const insertRegion = db.prepare(`INSERT INTO partner_service_regions
+      (id, partner_id, region_code, sido, sigungu, is_primary) VALUES (?,?,?,?,?,?)`);
+    normalizedRegions.forEach((regionCode, index) => {
+      const parts = regionCode.split(' ');
+      insertRegion.run(randomUUID(), id, regionCode, parts[0], parts.slice(1).join(' '), index === 0 ? 1 : 0);
+    });
+    db.prepare(`UPDATE partners SET phone=?, applicant_name=?, applicant_role=?, identity_verified_at=?, ci_hash=?, authorization_doc_url=? WHERE id=?`)
+      .run(identityRow.phone, identityRow.applicant_name, normalizedApplicantRole, identityRow.verified_at, identityRow.ci_hash, normalizedApplicantRole === 'manager' ? authorizationDocUrl : null, id);
+    db.prepare(`UPDATE partners SET business_verified_at=?, business_status=?, business_tax_type=? WHERE id=?`)
+      .run(verifiedBusiness.verifiedAt || new Date().toISOString(), verifiedBusiness.businessStatus || '계속사업자', verifiedBusiness.taxType || null, id);
+    const consentInsert = db.prepare(`INSERT INTO partner_verification_consents
+      (id, partner_id, consent_type, policy_version, agreed_at) VALUES (?,?,?,?,?)`);
+    const policyVersion = String(verificationConsents.policyVersion || '2026-09-05').slice(0,30);
+    ['business','identity','review'].forEach(type => consentInsert.run(randomUUID(), id, type, policyVersion, new Date().toISOString()));
+    db.prepare("UPDATE partner_identity_verifications SET consumed_at=datetime('now') WHERE id=?").run(identityRow.id);
+  });
+  insertPartner();
   const token = jwt.sign({ sub: id, role: 'partner' }, JWT_SECRET, { expiresIn: '1h' });
-  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(id);
+  const partner = omitPartnerSecrets(withPartnerServiceRegions(db.prepare('SELECT * FROM partners WHERE id=?').get(id)), true);
   res.json({ success: true, data: { id, tier, verifyStatus: 'pending', token, partner, licenseLimitNotice: tier === '부분공사가능업체' ? '무면허 업체는 1,500만원 이상 종합공사를 진행할 수 없습니다.' : null } });
 });
 
@@ -501,8 +587,13 @@ app.get('/api/partners/search', (req, res) => {
   // 결함수정: 승인된(approved) 업체만 검색 노출되도록 verify_status 조건 추가(기존 approved_at만 보던 것 정리)
   let query = "SELECT * FROM partners WHERE verify_status='approved'";
   const params = [];
-  if (region) { query += ' AND region LIKE ?'; params.push(`%${region}%`); }
-  const partners = db.prepare(query).all(...params);
+  if (region) {
+    query += ` AND (region LIKE ? OR EXISTS (
+      SELECT 1 FROM partner_service_regions psr WHERE psr.partner_id=partners.id AND psr.region_code LIKE ?
+    ))`;
+    params.push(`%${region}%`, `%${region}%`);
+  }
+  const partners = db.prepare(query).all(...params).map(withPartnerServiceRegions).map(partner => omitPartnerSecrets(partner, false));
   res.json({ success: true, data: partners });
 });
 
@@ -511,26 +602,93 @@ app.get('/api/partners/search', (req, res) => {
 // 순서가 바뀌면 'me'라는 문자열이 :id 파라미터로 잘못 매칭되어버림)
 app.get('/api/partners/me', authRequired, (req, res) => {
   if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 접근할 수 있습니다' } });
-  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.user.sub);
+  const partner = omitPartnerSecrets(withPartnerServiceRegions(db.prepare('SELECT * FROM partners WHERE id=?').get(req.user.sub)), true);
   if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체 정보를 찾을 수 없습니다' } });
   res.json({ success: true, data: partner });
 });
 
 app.get('/api/partners/:id', (req, res) => {
-  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
+  const partner = omitPartnerSecrets(withPartnerServiceRegions(db.prepare("SELECT * FROM partners WHERE id=? AND verify_status='approved'").get(req.params.id)), false);
   if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
   res.json({ success: true, data: partner });
 });
 
 // ===== 3-1. 관리자 — 업체 가입심사 큐 =====
+function maskPhone(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length < 8) return '';
+  return digits.replace(/(\d{3})(\d+)(\d{4})$/, (_, a, middle, c) => `${a}-${'*'.repeat(Math.min(middle.length, 4))}-${c}`);
+}
+function adminPartnerReviewSummary(partner) {
+  const consentRows = db.prepare(`SELECT consent_type AS consentType, policy_version AS policyVersion, agreed_at AS agreedAt
+    FROM partner_verification_consents WHERE partner_id=? ORDER BY agreed_at ASC`).all(partner.id);
+  return {
+    id: partner.id,
+    businessName: partner.business_name,
+    businessRegNumber: partner.business_reg_number,
+    ceoName: partner.ceo_name,
+    tier: partner.tier,
+    address: partner.address,
+    postalCode: partner.postal_code,
+    roadAddress: partner.road_address,
+    addressDetail: partner.address_detail,
+    serviceRegions: partnerServiceRegions(partner.id),
+    applicantName: partner.applicant_name,
+    applicantRole: partner.applicant_role,
+    maskedPhone: maskPhone(partner.phone),
+    verifyStatus: partner.verify_status,
+    businessVerified: Boolean(partner.business_verified_at),
+    businessVerifiedAt: partner.business_verified_at,
+    businessStatus: partner.business_status,
+    businessTaxType: partner.business_tax_type,
+    identityVerified: Boolean(partner.identity_verified_at),
+    identityVerifiedAt: partner.identity_verified_at,
+    documents: {
+      businessRegistration: Boolean(partner.doc_image_url),
+      officeExterior: Boolean(partner.ext_image_url),
+      officeInterior: Boolean(partner.int_image_url),
+      authorization: Boolean(partner.authorization_doc_url)
+    },
+    consents: consentRows,
+    createdAt: partner.created_at,
+    rejectReason: partner.reject_reason || null
+  };
+}
+function adminPartnerReviewDetail(partner) {
+  const summary = adminPartnerReviewSummary(partner);
+  return {
+    ...summary,
+    documentFiles: {
+      businessRegistration: partner.doc_image_url || null,
+      officeExterior: partner.ext_image_url || null,
+      officeInterior: partner.int_image_url || null,
+      authorization: partner.authorization_doc_url || null
+    }
+  };
+}
 app.get('/api/admin/partners/pending', adminAuthRequired(), (req, res) => {
-  const list = db.prepare("SELECT * FROM partners WHERE verify_status='pending' ORDER BY created_at DESC").all();
+  const list = db.prepare("SELECT * FROM partners WHERE verify_status='pending' ORDER BY created_at DESC").all().map(adminPartnerReviewSummary);
   res.json({ success: true, data: list });
+});
+
+app.get('/api/admin/partners/:id/review', adminAuthRequired(), (req, res) => {
+  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
+  if (!partner) return res.status(404).json({ success:false, error:{ code:'NOT_FOUND', message:'업체를 찾을 수 없습니다' } });
+  res.set('Cache-Control', 'no-store');
+  res.json({ success:true, data:adminPartnerReviewDetail(partner) });
 });
 
 app.put('/api/admin/partners/:id/approve', adminAuthRequired(), (req, res) => {
   const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
   if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
+  if (!partner.business_verified_at || !partner.identity_verified_at) {
+    return res.status(409).json({ success:false, error:{ code:'VERIFICATION_INCOMPLETE', message:'국세청 사업자 검증과 휴대폰 본인확인이 모두 완료된 업체만 승인할 수 있습니다' } });
+  }
+  const consentCount = db.prepare(`SELECT COUNT(DISTINCT consent_type) AS count FROM partner_verification_consents
+    WHERE partner_id=? AND consent_type IN ('business','identity','review')`).get(req.params.id).count;
+  if (consentCount !== 3) {
+    return res.status(409).json({ success:false, error:{ code:'CONSENT_INCOMPLETE', message:'필수 검증 동의 이력이 완전하지 않아 승인할 수 없습니다' } });
+  }
   db.prepare(`UPDATE partners SET verify_status='approved', approved_at=datetime('now'),
     cert_business=1, cert_location=1, cert_contact=1 WHERE id=?`).run(req.params.id);
   res.json({ success: true, data: { message: '승인되었습니다' } });
@@ -1338,17 +1496,109 @@ app.get('/api/admin/dashboard/counts', adminAuthRequired(), (req, res) => {
 // ===== 1-5(팀장 지시): API 문서 자동화(Swagger) — /api-docs 에서 43개 전체 확인·직접 테스트 가능 =====
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openapiSpec));
 
-// ===== 9. 검증(사업자번호/대표자명) =====
-// ⚡MVP-SWITCH: 실서버는 국세청 사업자등록정보 진위확인 API(공공데이터포털) 연동. 지금은 형식검증만 하는 결정적 mock
-app.post('/api/verify/business-number', (req, res) => {
-  const { bizNo } = req.body;
-  if(!bizNo || !/^\d{3}-?\d{2}-?\d{5}$/.test(bizNo)) return res.status(400).json({ success:false, error:{code:'VALIDATION_ERROR', message:'사업자등록번호 형식이 올바르지 않습니다'} });
-  res.json({ success:true, data:{ valid:true, status:'정상' } });
+// ===== 8-1. PortOne 휴대폰 본인확인 =====
+// prepare는 브라우저 인증창에 필요한 공개 식별값만 반환하고, API Secret은 서버에서만 사용한다.
+app.post('/api/identity-verifications/prepare', partnerSignupRequired, socialAuthLimiter, (req, res) => {
+  const storeId = process.env.PORTONE_STORE_ID;
+  const channelKey = process.env.PORTONE_IDENTITY_CHANNEL_KEY;
+  if (!storeId || !channelKey || !process.env.PORTONE_API_SECRET) {
+    return res.status(503).json({ success:false, error:{ code:'IDENTITY_NOT_CONFIGURED', message:'휴대폰 본인확인 서비스 계약 및 운영키 설정이 필요합니다' } });
+  }
+  const id = randomUUID();
+  const providerVerificationId = 'roomer-' + randomUUID();
+  db.prepare(`INSERT INTO partner_identity_verifications
+    (id, login_id, provider, provider_verification_id, status) VALUES (?,?,?,?, 'prepared')`)
+    .run(id, req.partnerSignup.loginId, 'portone', providerVerificationId);
+  res.json({ success:true, data:{ verificationId:providerVerificationId, storeId, channelKey } });
 });
-app.post('/api/verify/ceo-name', (req, res) => {
-  const { bizNo, ceoName } = req.body;
-  if(!isNonEmptyString(bizNo) || !isNonEmptyString(ceoName, 30)) return validationError(res, 'bizNo, ceoName이 필요합니다');
-  res.json({ success:true, data:{ match:true } });
+
+app.post('/api/identity-verifications/confirm', partnerSignupRequired, socialAuthLimiter, async (req, res) => {
+  const verificationId = String(req.body.verificationId || '').trim();
+  const row = db.prepare(`SELECT * FROM partner_identity_verifications
+    WHERE provider_verification_id=? AND login_id=?`).get(verificationId, req.partnerSignup.loginId);
+  if (!row) return res.status(404).json({ success:false, error:{ code:'IDENTITY_REQUEST_NOT_FOUND', message:'본인확인 요청을 찾을 수 없습니다' } });
+  if (row.status === 'verified') return res.status(409).json({ success:false, error:{ code:'IDENTITY_ALREADY_VERIFIED', message:'이미 처리된 본인확인 요청입니다' } });
+  try {
+    const response = await fetch('https://api.portone.io/identity-verifications/' + encodeURIComponent(verificationId), {
+      headers:{ Authorization:'PortOne ' + process.env.PORTONE_API_SECRET }
+    });
+    if (!response.ok) throw Object.assign(new Error('본인확인 결과를 조회할 수 없습니다'), { code:'IDENTITY_UPSTREAM_ERROR', status:502 });
+    const body = await response.json();
+    if (body.status !== 'VERIFIED') return res.status(400).json({ success:false, error:{ code:'IDENTITY_NOT_VERIFIED', message:'휴대폰 본인확인이 완료되지 않았습니다' } });
+    const customer = body.verifiedCustomer || body.customer || {};
+    const applicantName = String(customer.name || '').trim();
+    const phone = String(customer.phoneNumber || customer.phone || '').replace(/\D/g, '');
+    const ci = String(customer.ci || customer.id || customer.uniqueId || '');
+    if (!applicantName || !/^01[016789]\d{7,8}$/.test(phone) || !ci) throw Object.assign(new Error('본인확인 결과의 필수정보가 누락되었습니다'), { code:'IDENTITY_RESULT_INCOMPLETE', status:502 });
+    const ciHash = createHmac('sha256', JWT_SECRET).update(ci).digest('hex');
+    db.prepare(`UPDATE partner_identity_verifications SET applicant_name=?, phone=?, ci_hash=?, status='verified', verified_at=datetime('now') WHERE id=?`)
+      .run(applicantName, phone, ciHash, row.id);
+    const verificationToken = jwt.sign({ role:'partner_identity_verification', verificationId:row.id, loginId:req.partnerSignup.loginId }, JWT_SECRET, { expiresIn:'30m' });
+    res.json({ success:true, data:{ verified:true, applicantName, phone, verificationToken } });
+  } catch (error) {
+    console.error('휴대폰 본인확인 조회 실패:', error.message);
+    res.status(error.status || 500).json({ success:false, error:{ code:error.code || 'IDENTITY_CONFIRM_ERROR', message:error.message || '본인확인 처리 중 오류가 발생했습니다' } });
+  }
+});
+
+// ===== 9. 국세청 사업자등록정보 진위확인 =====
+// 브라우저에는 공공데이터 서비스키를 노출하지 않고 ROOMER 서버가 국세청 API를 대리 호출한다.
+async function verifyBusinessWithNts({ bizNo, startDate, ceoName, businessName }) {
+  const serviceKey = process.env.NTS_SERVICE_KEY;
+  if (!serviceKey) {
+    const error = new Error('국세청 사업자 검증 서비스키가 아직 설정되지 않았습니다');
+    error.code = 'NTS_NOT_CONFIGURED'; error.status = 503; throw error;
+  }
+  const cleanBizNo = String(bizNo || '').replace(/\D/g, '');
+  const cleanStartDate = String(startDate || '').replace(/\D/g, '');
+  const payload = { b_no: cleanBizNo, start_dt: cleanStartDate, p_nm: String(ceoName || '').trim() };
+  if (businessName) payload.b_nm = String(businessName).trim();
+  const base = 'https://api.odcloud.kr/api/nts-businessman/v1';
+  const query = '?serviceKey=' + encodeURIComponent(serviceKey);
+  const [validateResponse, statusResponse] = await Promise.all([
+    fetch(base + '/validate' + query, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ businesses:[payload] }) }),
+    fetch(base + '/status' + query, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ b_no:[cleanBizNo] }) })
+  ]);
+  if (!validateResponse.ok || !statusResponse.ok) {
+    const error = new Error('국세청 조회가 지연되고 있습니다. 잠시 후 다시 시도해주세요');
+    error.code = 'NTS_UPSTREAM_ERROR'; error.status = 502; throw error;
+  }
+  const validateBody = await validateResponse.json();
+  const statusBody = await statusResponse.json();
+  const validation = validateBody && validateBody.data && validateBody.data[0];
+  const status = statusBody && statusBody.data && statusBody.data[0];
+  const authentic = !!validation && validation.valid === '01';
+  const active = !!status && status.b_stt_cd === '01';
+  return { authentic, active, status: status ? status.b_stt : null, taxType: status ? status.tax_type : null, validMessage: validation ? validation.valid_msg : null };
+}
+app.post('/api/verify/business-number', socialAuthLimiter, partnerSignupRequired, async (req, res) => {
+  const { bizNo, startDate, ceoName, businessName } = req.body;
+  const cleanBizNo = String(bizNo || '').replace(/\D/g, '');
+  const cleanStartDate = String(startDate || '').replace(/\D/g, '');
+  if (!/^\d{10}$/.test(cleanBizNo)) return validationError(res, '사업자등록번호 10자리가 필요합니다');
+  if (!/^\d{8}$/.test(cleanStartDate)) return validationError(res, '개업일자 8자리가 필요합니다');
+  if (!isNonEmptyString(ceoName, 30)) return validationError(res, '대표자명이 필요합니다');
+  try {
+    const nts = await verifyBusinessWithNts({ bizNo:cleanBizNo, startDate:cleanStartDate, ceoName, businessName });
+    if (!nts.authentic || !nts.active) {
+      return res.json({ success:true, data:{ valid:false, authentic:nts.authentic, active:nts.active, status:nts.status, message:!nts.authentic?'입력 정보가 국세청 등록정보와 일치하지 않습니다.':'현재 계속사업자 상태가 아닙니다.' } });
+    }
+    const verificationToken = jwt.sign({ role:'partner_business_verification', bizNo:cleanBizNo, ceoName:String(ceoName).trim(), businessStatus:nts.status, taxType:nts.taxType, verifiedAt:new Date().toISOString() }, JWT_SECRET, { expiresIn:'30m' });
+    res.json({ success:true, data:{ valid:true, authentic:true, active:true, status:nts.status, taxType:nts.taxType, verificationToken } });
+  } catch (error) {
+    console.error('국세청 사업자 검증 실패:', error.message);
+    res.status(error.status || 500).json({ success:false, error:{ code:error.code || 'NTS_VERIFY_ERROR', message:error.message || '사업자 검증 중 오류가 발생했습니다' } });
+  }
+});
+// 구버전 화면 호환: 대표자명 버튼도 동일한 국세청 진위확인을 사용한다.
+app.post('/api/verify/ceo-name', socialAuthLimiter, partnerSignupRequired, async (req, res) => {
+  const { bizNo, startDate, ceoName, businessName } = req.body;
+  try {
+    const nts = await verifyBusinessWithNts({ bizNo, startDate, ceoName, businessName });
+    res.json({ success:true, data:{ match:nts.authentic && nts.active, status:nts.status } });
+  } catch (error) {
+    res.status(error.status || 500).json({ success:false, error:{ code:error.code || 'NTS_VERIFY_ERROR', message:error.message } });
+  }
 });
 
 // ===== 10. 정산 내보내기 =====
