@@ -1698,10 +1698,19 @@ app.get('/api/qrcode', async (req, res) => {
 // 달라서 express.static이 파일을 못 찾고 계속 404를 반환했음(Mac에서만 재현되던 문제).
 // → 폴더를 실제로 스캔해서, 정규화(NFC) 기준으로 이름이 같은 파일을 찾아 그 "실제 파일명"으로 서빙
 function findIndexFileNormalized() {
-  const targetNFC = '루머03.html'.normalize('NFC');
   const files = fs.readdirSync(__dirname);
-  const found = files.find(f => f.normalize('NFC') === targetNFC);
-  return found ? path.join(__dirname, found) : null;
+  const acceptedNames = new Set(['루머03.html', 'roomer03.html'].map(name => name.normalize('NFC')));
+  const candidates = files.filter(file => acceptedNames.has(file.normalize('NFC')));
+  // 한글/NFD 파일명과 영문 다운로드 파일명을 모두 지원하되,
+  // ZIP·오류문·TXT가 잘못 이름바꾸기된 파일은 선택하지 않는다.
+  for (const file of candidates) {
+    const candidatePath = path.join(__dirname, file);
+    try {
+      const prefix = fs.readFileSync(candidatePath, { encoding:'utf8' }).slice(0, 4096).replace(/^\uFEFF/, '').trimStart().toLowerCase();
+      if (prefix.includes('<!doctype html') || prefix.includes('<html')) return candidatePath;
+    } catch (error) { /* 다음 후보를 확인한다. */ }
+  }
+  return candidates.length ? path.join(__dirname, candidates[0]) : null;
 }
 
 // 보안수정(루머28): __dirname 전체를 정적 공개하면 /app/server.js, /app/db.js 및 DB 파일까지
@@ -1712,7 +1721,7 @@ function sendRoomerApp(req, res) {
     return res.status(503).json({ success:false, error:{ code:'FRONTEND_NOT_FOUND', message:'루머03.html 파일이 배포되지 않았습니다' } });
   }
   try {
-    const prefix = fs.readFileSync(appFile, { encoding:'utf8' }).slice(0, 256).toLowerCase();
+    const prefix = fs.readFileSync(appFile, { encoding:'utf8' }).slice(0, 4096).replace(/^\uFEFF/, '').trimStart().toLowerCase();
     if (!prefix.includes('<!doctype html') && !prefix.includes('<html')) {
       return res.status(503).json({ success:false, error:{ code:'FRONTEND_INVALID', message:'배포된 루머03.html 파일의 내용이 올바르지 않습니다' } });
     }
