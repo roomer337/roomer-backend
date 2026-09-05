@@ -59,6 +59,42 @@ CREATE TABLE IF NOT EXISTS partners (
   UNIQUE(login_provider, login_id)
 );
 
+-- 사업장 주소와 별도로 파트너가 실제 공사 가능한 활동지역을 최대 5개까지 저장한다.
+-- 기존 partners.region은 대표 활동지역 호환 필드로 계속 유지한다.
+CREATE TABLE IF NOT EXISTS partner_service_regions (
+  id TEXT PRIMARY KEY,
+  partner_id TEXT NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
+  region_code TEXT NOT NULL,
+  sido TEXT NOT NULL,
+  sigungu TEXT NOT NULL,
+  is_primary INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(partner_id, region_code)
+);
+
+CREATE TABLE IF NOT EXISTS partner_identity_verifications (
+  id TEXT PRIMARY KEY,
+  login_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  provider_verification_id TEXT NOT NULL UNIQUE,
+  applicant_name TEXT,
+  phone TEXT,
+  ci_hash TEXT,
+  status TEXT NOT NULL DEFAULT 'prepared',
+  verified_at TEXT,
+  consumed_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS partner_verification_consents (
+  id TEXT PRIMARY KEY,
+  partner_id TEXT NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
+  consent_type TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  agreed_at TEXT NOT NULL,
+  UNIQUE(partner_id, consent_type, policy_version)
+);
+
 CREATE TABLE IF NOT EXISTS portfolio_projects (
   id TEXT PRIMARY KEY,
   partner_id TEXT REFERENCES partners(id),
@@ -293,10 +329,40 @@ function ensureColumn(table, column, definition) {
 }
 ensureColumn('partners', 'login_provider', 'TEXT');
 ensureColumn('partners', 'login_id', 'TEXT');
+ensureColumn('partners', 'phone', 'TEXT');
+ensureColumn('partners', 'applicant_name', 'TEXT');
+ensureColumn('partners', 'applicant_role', "TEXT NOT NULL DEFAULT 'representative'");
+ensureColumn('partners', 'identity_verified_at', 'TEXT');
+ensureColumn('partners', 'ci_hash', 'TEXT');
+ensureColumn('partners', 'authorization_doc_url', 'TEXT');
+ensureColumn('partners', 'business_verified_at', 'TEXT');
+ensureColumn('partners', 'business_status', 'TEXT');
+ensureColumn('partners', 'business_tax_type', 'TEXT');
+ensureColumn('partners', 'postal_code', 'TEXT');
+ensureColumn('partners', 'road_address', 'TEXT');
+ensureColumn('partners', 'address_detail', 'TEXT');
 ensureColumn('otp_codes', 'purpose', "TEXT NOT NULL DEFAULT 'consumer'");
 ensureColumn('otp_codes', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('otp_codes', 'consumed_at', 'TEXT');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_partners_login ON partners(login_provider, login_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_otp_target_purpose ON otp_codes(target, purpose, created_at DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_partner_service_region_code ON partner_service_regions(region_code, partner_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_partner_identity_login ON partner_identity_verifications(login_id, created_at DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_partner_verification_consents ON partner_verification_consents(partner_id, agreed_at DESC)');
+
+// 기존 단일 region 데이터가 있는 파트너는 최초 실행 때 대표 활동지역 한 건으로 안전하게 이관한다.
+const legacyPartners = db.prepare(`SELECT id, region FROM partners p
+  WHERE region IS NOT NULL AND trim(region)<>''
+  AND NOT EXISTS (SELECT 1 FROM partner_service_regions r WHERE r.partner_id=p.id)`).all();
+const insertLegacyRegion = db.prepare(`INSERT OR IGNORE INTO partner_service_regions
+  (id, partner_id, region_code, sido, sigungu, is_primary) VALUES (?,?,?,?,?,1)`);
+const migrateLegacyRegions = db.transaction(rows => {
+  rows.forEach(row => {
+    const regionCode = String(row.region).trim();
+    const parts = regionCode.split(/\s+/);
+    insertLegacyRegion.run(require('crypto').randomUUID(), row.id, regionCode, parts[0] || regionCode, parts.slice(1).join(' ') || parts[0] || regionCode);
+  });
+});
+migrateLegacyRegions(legacyPartners);
 
 module.exports = db;
