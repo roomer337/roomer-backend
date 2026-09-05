@@ -7283,8 +7283,33 @@ async function verifyTel04(){
   }finally{btn.disabled=false;}
 }
 // 신규(사용자요청): 다음(카카오) 우편번호 서비스 — API키 불필요, 실제로 동작하는 진짜 기능
-function openZipSearch04(){
-  if(typeof daum === 'undefined' || !daum.Postcode){ alert('우편번호 서비스를 불러오지 못했어요. 잠시 후 다시 시도해주세요.'); return; }
+function getKakaoPostcodeConstructor04(){
+  if(window.kakao&&typeof window.kakao.Postcode==='function') return window.kakao.Postcode;
+  if(window.daum&&typeof window.daum.Postcode==='function') return window.daum.Postcode;
+  return null;
+}
+function loadKakaoPostcodeSdk04(){
+  var existing=getKakaoPostcodeConstructor04();
+  if(existing) return Promise.resolve(existing);
+  if(window._kakaoPostcodeLoading04) return window._kakaoPostcodeLoading04;
+  window._kakaoPostcodeLoading04=new Promise(function(resolve,reject){
+    var script=document.createElement('script');
+    script.src='https://t1.kakaocdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js?autoload=true';
+    script.async=true;
+    script.onload=function(){
+      var Constructor=getKakaoPostcodeConstructor04();
+      window._kakaoPostcodeLoading04=null;
+      if(Constructor) resolve(Constructor); else reject(new Error('카카오 우편번호 SDK가 정상적으로 초기화되지 않았습니다'));
+    };
+    script.onerror=function(){ window._kakaoPostcodeLoading04=null; reject(new Error('카카오 우편번호 SDK 네트워크 로딩에 실패했습니다')); };
+    document.head.appendChild(script);
+  });
+  return window._kakaoPostcodeLoading04;
+}
+async function openZipSearch04(){
+  var PostcodeConstructor;
+  try{ PostcodeConstructor=await loadKakaoPostcodeSdk04(); }
+  catch(error){ alert('우편번호 서비스를 불러오지 못했어요. 네트워크를 확인한 후 다시 시도해주세요.'); console.error('우편번호 SDK 로딩 오류:',error); return; }
   var oldLayer=document.getElementById('roomer-postcode-layer');
   if(oldLayer) oldLayer.remove();
   var layer=document.createElement('div');
@@ -7299,7 +7324,7 @@ function openZipSearch04(){
   document.getElementById('roomer-postcode-close').onclick=closePostcodeLayer;
   layer.addEventListener('click',function(event){ if(event.target===layer) closePostcodeLayer(); });
   var embedEl=document.getElementById('roomer-postcode-embed');
-  var postcode=new daum.Postcode({
+  var postcode=new PostcodeConstructor({
     oncomplete: function(data){
       var zipcodeEl=document.getElementById('in-zipcode');
       var addressEl=document.getElementById('in-addr');
