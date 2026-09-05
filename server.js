@@ -239,18 +239,26 @@ app.post('/api/auth/social/kakao/callback', socialAuthLimiter, async (req, res) 
   const { code, redirectUri, consent } = req.body;
   if (!isNonEmptyString(code, 500)) return validationError(res, 'code가 필요합니다');
   if (!hasRequiredConsent(consent)) return validationError(res, '필수 이용약관과 개인정보 수집 동의가 필요합니다');
-  const restApiKey = process.env.KAKAO_REST_API_KEY || 'b7216abaaa27c838ba8bb998b7cc1f5f';
+  const restApiKey = process.env.KAKAO_REST_API_KEY;
+  if (!restApiKey) {
+    return res.status(501).json({ success: false, error: { code: 'KAKAO_NOT_CONFIGURED', message: '카카오 로그인이 아직 설정되지 않았어요.' } });
+  }
+  // 신규(사용자요청 — 카카오 앱이 "클라이언트 시크릿" 활성화 상태로 발급되어, 토큰교환시
+  // client_secret이 없으면 실패하는 문제 발견·수정): 환경변수로만 관리(코드에 절대 하드코딩 금지)
+  const clientSecret = process.env.KAKAO_CLIENT_SECRET;
   try {
     // 1) 인가코드 → 액세스 토큰 교환
+    const tokenParams = {
+      grant_type: 'authorization_code',
+      client_id: restApiKey,
+      redirect_uri: redirectUri || 'https://roomer-backend.onrender.com/oauth/kakao/callback',
+      code: code
+    };
+    if (clientSecret) tokenParams.client_secret = clientSecret;
     const tokenRes = await fetch('https://kauth.kakao.com/oauth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: restApiKey,
-        redirect_uri: redirectUri || 'https://roomer-backend.onrender.com/oauth/kakao/callback',
-        code: code
-      })
+      body: new URLSearchParams(tokenParams)
     });
     const tokenBody = await tokenRes.json();
     if (!tokenRes.ok || !tokenBody.access_token) {
@@ -345,15 +353,14 @@ app.post('/api/auth/social/naver/callback', socialAuthLimiter, async (req, res) 
 // 신규(사용자요청 — 실제 이메일 인증코드 발송): Resend API로 실제 이메일 발송.
 // 6자리 코드를 생성해 DB에 5분 만료로 저장하고, 실제 이메일을 보낸다.
 app.post('/api/otp/email/send', otpSendLimiter, async (req, res) => {
-  const { email, forPartner, partnerMode, consumerMode } = req.body;
+  const { email, forPartner, partnerMode } = req.body;
   if (!isNonEmptyString(email, 200) || !EMAIL_RE.test(email)) return validationError(res, '올바른 이메일 형식이 아닙니다');
   if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
-  if (!forPartner && !['signup', 'login'].includes(consumerMode)) return validationError(res, '소비자 인증 목적이 올바르지 않습니다');
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const codeHash = bcrypt.hashSync(code, 10);
   const id = randomUUID();
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer_' + consumerMode;
+  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer';
   db.prepare('UPDATE otp_codes SET consumed_at=datetime(\'now\') WHERE target=? AND purpose=? AND consumed_at IS NULL').run(email.toLowerCase(), purpose);
   db.prepare('INSERT INTO otp_codes (id, target, code, expires_at, purpose) VALUES (?,?,?,?,?)').run(id, email.toLowerCase(), codeHash, expiresAt, purpose);
   const resendKey = process.env.RESEND_API_KEY;
@@ -391,12 +398,11 @@ app.post('/api/otp/email/send', otpSendLimiter, async (req, res) => {
 // 신규(사용자요청): 이메일 인증코드 확인. 일치하면 users upsert(신규면 29,000크레딧) 후 JWT 발급.
 // 파트너 가입 흐름에서는 단순 확인(verified)만 쓰고, 유저 생성은 프론트에서 별도 처리.
 app.post('/api/otp/email/verify', otpVerifyLimiter, (req, res) => {
-  const { email, code, forPartner, partnerMode, consumerMode } = req.body;
+  const { email, code, forPartner, partnerMode } = req.body;
   if (!isNonEmptyString(email, 200) || !isNonEmptyString(code, 10)) return validationError(res, 'email과 code가 필요합니다');
   if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
-  if (!forPartner && !['signup', 'login'].includes(consumerMode)) return validationError(res, '소비자 인증 목적이 올바르지 않습니다');
   const normalizedEmail = email.toLowerCase();
-  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer_' + consumerMode;
+  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer';
   const row = db.prepare('SELECT * FROM otp_codes WHERE target=? AND purpose=? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1').get(normalizedEmail, purpose);
   if (!row) return res.status(400).json({ success: false, error: { code: 'OTP_NOT_FOUND', message: '인증코드를 먼저 요청해주세요.' } });
   if (new Date(row.expires_at) < new Date()) return res.status(400).json({ success: false, error: { code: 'OTP_EXPIRED', message: '인증코드가 만료됐어요. 다시 요청해주세요.' } });
@@ -417,9 +423,6 @@ app.post('/api/otp/email/verify', otpVerifyLimiter, (req, res) => {
     return res.json({ success: true, data: { token: signupToken, verified: true } });
   }
   let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get('email', normalizedEmail);
-  if (consumerMode === 'login' && !user) {
-    return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: '이 이메일로 가입된 소비자 계정을 찾을 수 없습니다.' } });
-  }
   if (!user) {
     const id = randomUUID();
     db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, email, cash_balance) VALUES (?,?,?,?,?,?)')
