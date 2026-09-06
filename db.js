@@ -1,6 +1,9 @@
 // 루머 ROOMER 백엔드 - DB 초기화 (SQLite, 실서비스에서는 PostgreSQL로 교체)
 const Database = require('better-sqlite3');
-const db = new Database('roomer.db');
+// 신규(사용자요청 — DB 영속성 점검): Render에 Persistent Disk를 마운트하면 DB_PATH 환경변수로
+// 그 마운트 경로(예: /data/roomer.db)를 지정만 하면 재배포시에도 데이터가 유지됨.
+// 환경변수가 없으면 기존과 동일하게 상대경로 사용(로컬 개발 호환).
+const db = new Database(process.env.DB_PATH || 'roomer.db');
 
 db.pragma('foreign_keys = ON');
 
@@ -110,6 +113,23 @@ CREATE TABLE IF NOT EXISTS portfolio_photos (
   sort_order INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS stored_files (
+  id TEXT PRIMARY KEY,
+  storage_key TEXT NOT NULL UNIQUE,
+  owner_type TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  original_name TEXT,
+  mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  public_url TEXT,
+  visibility TEXT NOT NULL DEFAULT 'private',
+  retention_until TEXT,
+  deleted_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_stored_files_owner ON stored_files(owner_type, owner_id, purpose);
+
 CREATE TABLE IF NOT EXISTS cases (
   id TEXT PRIMARY KEY,
   partner_id TEXT REFERENCES partners(id),
@@ -139,8 +159,27 @@ CREATE TABLE IF NOT EXISTS quotes (
   type TEXT DEFAULT 'initial',
   pyeong INTEGER,
   total_amount INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  parent_quote_id TEXT REFERENCES quotes(id),
+  status TEXT NOT NULL DEFAULT 'sent',
+  viewed_at TEXT,
+  accepted_at TEXT,
+  rejected_at TEXT,
+  revision_requested_at TEXT,
+  expires_at TEXT,
   sent_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS quote_decisions (
+  id TEXT PRIMARY KEY,
+  quote_id TEXT NOT NULL REFERENCES quotes(id) ON DELETE CASCADE,
+  actor_role TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_quote_decisions_quote ON quote_decisions(quote_id,created_at,id);
 
 CREATE TABLE IF NOT EXISTS quote_items (
   id TEXT PRIMARY KEY,
@@ -161,6 +200,8 @@ CREATE TABLE IF NOT EXISTS contracts (
   middle_amount INTEGER DEFAULT 0,
   final_amount INTEGER DEFAULT 0,
   status TEXT DEFAULT 'confirmed',
+  quote_version INTEGER,
+  quote_snapshot TEXT,
   confirmed_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -175,6 +216,50 @@ CREATE TABLE IF NOT EXISTS settlements (
   payout_date TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS payments (
+  id TEXT PRIMARY KEY,
+  payment_id TEXT NOT NULL UNIQUE,
+  contract_id TEXT NOT NULL REFERENCES contracts(id),
+  consumer_id TEXT NOT NULL REFERENCES users(id),
+  partner_id TEXT NOT NULL REFERENCES partners(id),
+  installment_type TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'KRW',
+  status TEXT NOT NULL DEFAULT 'ready',
+  provider TEXT NOT NULL DEFAULT 'portone_v2',
+  provider_transaction_id TEXT,
+  paid_at TEXT,
+  cancelled_at TEXT,
+  failure_reason TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(contract_id, installment_type)
+);
+
+CREATE TABLE IF NOT EXISTS payment_events (
+  id TEXT PRIMARY KEY,
+  payment_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  provider_status TEXT,
+  payload TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(payment_id, event_type, provider_status)
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  recipient_role TEXT NOT NULL,
+  recipient_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT,
+  target_type TEXT,
+  target_id TEXT,
+  read_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_role, recipient_id, read_at, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS disputes (
   id TEXT PRIMARY KEY,
@@ -248,7 +333,17 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   sender_id TEXT NOT NULL,
   text TEXT NOT NULL,
   msg_type TEXT DEFAULT 'text',
+  client_message_id TEXT,
   created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS room_read_states (
+  room_id TEXT NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
+  reader_role TEXT NOT NULL,
+  reader_id TEXT NOT NULL,
+  last_read_seq INTEGER NOT NULL DEFAULT 0,
+  read_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY(room_id, reader_role, reader_id)
 );
 
 CREATE TABLE IF NOT EXISTS meas_jobs (
@@ -256,10 +351,27 @@ CREATE TABLE IF NOT EXISTS meas_jobs (
   status TEXT DEFAULT 'none',
   slots TEXT DEFAULT '[]',
   chosen_slot_id TEXT,
+  site_notes TEXT DEFAULT '[]',
+  meetings TEXT DEFAULT '{"site":false,"design":false,"material":false}',
+  confirm_checks TEXT DEFAULT '{"photo":false,"adjust":false}',
   reschedule_count INTEGER DEFAULT 0,
   noshow_log TEXT DEFAULT '[]',
+  revision INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS measurement_events (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
+  actor_role TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  from_status TEXT,
+  to_status TEXT,
+  payload TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_measurement_events_room ON measurement_events(room_id, created_at, id);
 
 CREATE TABLE IF NOT EXISTS ad_slots (
   id TEXT PRIMARY KEY,
@@ -344,6 +456,23 @@ ensureColumn('partners', 'address_detail', 'TEXT');
 ensureColumn('otp_codes', 'purpose', "TEXT NOT NULL DEFAULT 'consumer'");
 ensureColumn('otp_codes', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('otp_codes', 'consumed_at', 'TEXT');
+ensureColumn('meas_jobs', 'site_notes', "TEXT DEFAULT '[]'");
+ensureColumn('meas_jobs', 'meetings', "TEXT DEFAULT '{\"site\":false,\"design\":false,\"material\":false}'");
+ensureColumn('meas_jobs', 'confirm_checks', "TEXT DEFAULT '{\"photo\":false,\"adjust\":false}'");
+ensureColumn('meas_jobs', 'revision', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('chat_messages', 'client_message_id', 'TEXT');
+ensureColumn('quotes', 'version', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('quotes', 'parent_quote_id', 'TEXT');
+ensureColumn('quotes', 'status', "TEXT NOT NULL DEFAULT 'sent'");
+ensureColumn('quotes', 'viewed_at', 'TEXT');
+ensureColumn('quotes', 'accepted_at', 'TEXT');
+ensureColumn('quotes', 'rejected_at', 'TEXT');
+ensureColumn('quotes', 'revision_requested_at', 'TEXT');
+ensureColumn('quotes', 'expires_at', 'TEXT');
+ensureColumn('contracts', 'quote_version', 'INTEGER');
+ensureColumn('contracts', 'quote_snapshot', 'TEXT');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_message_client_id ON chat_messages(room_id, sender_id, client_message_id) WHERE client_message_id IS NOT NULL');
+db.exec('CREATE INDEX IF NOT EXISTS idx_chat_messages_room_seq ON chat_messages(room_id, seq)');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_partners_login ON partners(login_provider, login_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_otp_target_purpose ON otp_codes(target, purpose, created_at DESC)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_partner_service_region_code ON partner_service_regions(region_code, partner_id)');
@@ -364,5 +493,19 @@ const migrateLegacyRegions = db.transaction(rows => {
   });
 });
 migrateLegacyRegions(legacyPartners);
+
+// 신규(사용자요청 — 메신저 사진·파일 전송 API 실제 구현): 첨부메시지가 참조하는 stored_files.id를
+// 저장. Base64 원본은 여기 저장하지 않고 오직 ID(참조)만 저장한다.
+ensureColumn('chat_messages', 'attachment_id', 'TEXT');
+
+// 신규(사용자요청 — PG사를 포트원 경유가 아닌 토스페이먼츠 자체 API로 직접 연동하기로 확정):
+// 토스페이먼츠는 orderId(가맹점 주문번호, 기존 payment_id 컬럼을 그대로 재사용)와
+// paymentKey(토스가 발급하는 고유 결제식별자, 결제 승인 성공 후에만 확정됨) 두 값을 함께 관리해야 함.
+ensureColumn('payments', 'payment_key', 'TEXT');
+
+
+ensureColumn('inspections', 'price', 'INTEGER DEFAULT 0');
+ensureColumn('inspections', 'photo_count', 'INTEGER');
+ensureColumn('inspections', 'trip_key', 'TEXT');
 
 module.exports = db;
