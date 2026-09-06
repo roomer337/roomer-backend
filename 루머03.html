@@ -2299,6 +2299,14 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   <div class="content" style="background:linear-gradient(180deg,#FAF8F5,transparent 200px)">
     <!-- 재설계(사용자요청 — 업체 마이페이지 통합 1단계): 인사말+사업자정보+등급+수수료를 하나의 카드로 통합 -->
     <div id="partner-greeting-card" style="margin:24px 0 20px;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:20px"></div>
+    <div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:18px;margin-bottom:20px">
+      <div style="font-size:16px;font-weight:800;color:var(--charcoal);margin-bottom:5px">활동지역 관리</div>
+      <div class="caption" style="margin-bottom:12px">첫 번째 지역이 대표 활동지역이며, 최대 5곳까지 등록할 수 있어요.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:7px"><select id="mypage-region-sido" onchange="onMypageRegionSidoChange()"></select><select id="mypage-region-gu"></select><button type="button" class="btn btn-outline" style="width:auto;padding:8px 13px" onclick="addMypageServiceRegion()">추가</button></div>
+      <div id="mypage-service-region-chips" style="display:flex;gap:7px;flex-wrap:wrap;margin-top:12px"></div>
+      <div id="mypage-region-status" class="caption" style="margin-top:9px"></div>
+      <button type="button" class="btn btn-primary" style="margin-top:12px" onclick="saveMypageServiceRegions()">활동지역 저장</button>
+    </div>
     <div id="partner-meas-progress" onclick="go('chat')" style="display:none;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px;margin-bottom:20px;cursor:pointer"></div>
     <!-- 메모: 사용자 확정 문구(2차 수정본), 추후 수정시 이 텍스트만 교체 -->
     <div style="margin-bottom:20px;background:linear-gradient(135deg,#2C4A63,#1F3A4E);border-radius:10px;padding:13px 14px;box-shadow:0 3px 10px rgba(44,74,99,.25)"><span style="font-size:12.5px;color:#E8DFD0;line-height:1.65">계약과 관련된 모든 내용은 루머(ROOMER) 메신저에서 진행해주세요. 플랫폼 밖 거래는 미수금 발생과 분쟁이 생길 경우 플랫폼에서 도와드릴 수 없습니다.</span></div>
@@ -2366,6 +2374,9 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
       <div class="h2" id="t-feeinfo" style="margin-bottom:14px;text-align:center"></div>
       <div id="fee-breakdown"></div>
       <div class="caption" style="margin-top:14px;line-height:1.7" id="d-feeinfo"></div>
+      <div id="toss-payment-widget" style="display:none;margin-top:14px"></div>
+      <div id="toss-agreement-widget" style="display:none;margin-top:8px"></div>
+      <button type="button" id="btn-toss-pay-confirm" onclick="requestTossPaymentConfirm()" class="btn btn-primary" style="display:none;width:100%;margin-top:10px">결제하기</button>
       <button class="btn btn-outline" style="margin-top:18px" onclick="closeToReturn()" id="btn-feeinfo-close"></button>
     </div>
   </div>
@@ -3220,10 +3231,12 @@ window.MVP = window.MVP || (function(){
   }
   return { live:true, apiBase: location.protocol + '//' + location.host };
 })();
-// 11/12 실시간 설정: auto=WebSocket→SSE→폴링, websocket/sse/polling으로 서버 능력에 맞게 고정 가능.
+// 11/12 실시간 설정: 실제 동작은 WebSocket→폴링(서버에 SSE는 구현되어 있지 않음).
+// websocket/polling으로 서버 능력에 맞게 고정 가능.
 window.MVP.realtimeMode=window.MVP.realtimeMode||'auto';
 window.MVP.realtimeWsUrl=window.MVP.realtimeWsUrl||null;
-window.MVP.realtimeSseUrl=window.MVP.realtimeSseUrl||null;
+// 결함정리(사용자요청 — 안전정리): realtimeSseUrl은 서버에 SSE가 구현되어 있지 않아
+// 어디서도 참조되지 않으므로 제거함(나중에 SSE를 실제로 구현하면 다시 추가할 것).
 window.MVP.vapidPublicKey=window.MVP.vapidPublicKey||null;
 // 12/12 출시 전 기준: 서버 업로드 이미지는 최대 10MB, JPEG/PNG/WebP만 허용한다.
 window.MVP.chatAttachmentMaxBytes=Number(window.MVP.chatAttachmentMaxBytes)||10*1024*1024;
@@ -3431,7 +3444,7 @@ window.PRICE_TABLE = { perPyeongMin: 1500000, perPyeongMax: 2500000 };
 // 가입·로그인·새로고침·서버응답이 모두 아래 단일 프로필 어댑터를 거치게 한다.
 // 초기 데모값은 비회원 화면용일 뿐 실제 로그인 계정의 프로필로 간주하지 않는다.
 window.PARTNER_PROFILE = {
-  id:null, loginId:null, name:'강남 인테리어 스튜디오', tier:'면허 파트너',
+  id:null, loginId:null, name:null, tier:'면허 파트너',
   contracts:62, reviews:48, rating:4.9, totalDisplay:'19.8억', years:8, responseRate:98,
   profileStatus:'default', profileSource:'demo', profileRestoreState:'default'
 };
@@ -3465,6 +3478,7 @@ function normalizePartnerProfilePayload(payload){
     ceoName:firstPartnerDefined(root.ceoName, root.ceo_name),
     tier:firstPartnerDefined(root.tier, root.tierName, root.tier_name),
     verifyStatus:firstPartnerDefined(root.verifyStatus, root.verify_status, root.status),
+    rejectReason:firstPartnerDefined(root.rejectReason, root.reject_reason),
     region:firstPartnerDefined(root.region, root.serviceRegion, root.service_region),
     contracts:firstPartnerDefined(root.contracts, root.contractCount, root.contract_count),
     reviews:firstPartnerDefined(root.reviews, root.reviewCount, root.review_count, root.reviews_count),
@@ -3959,8 +3973,8 @@ document.getElementById('reg-portfolio-input').addEventListener('change', functi
 function renderRegPortfolioPreview(){
   var box = document.getElementById('reg-portfolio-box');
   if(!window._regPortfolioImages.length){
-    box.innerHTML = '<span id="reg-portfolio-placeholder">탭하여 사진 선택</span><input type="file" id="reg-portfolio-input" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0">';
-    document.getElementById('reg-portfolio-input').addEventListener('change', function(e){ handleRegPortfolioFiles(e.target.files); });
+    box.innerHTML = '<span>탭하여 사진 선택</span><input type="file" id="reg-portfolio-input-reset" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0">';
+    document.getElementById('reg-portfolio-input-reset').addEventListener('change', function(e){ handleRegPortfolioFiles(e.target.files); });
     return;
   }
   box.innerHTML = window._regPortfolioImages.map(function(src){
@@ -3971,6 +3985,24 @@ function renderRegPortfolioPreview(){
 }
 function renderAdminPendingPartnersList(){
   var el = document.getElementById('admin-pending-partners-list'); if(!el) return;
+  if(window.MVP.live && !window._pendingPartnersLoaded && !window._pendingPartnersLoading){
+    window._pendingPartnersLoading=true;
+    el.innerHTML=emptyStateBox('신규 업체 심사목록을 불러오는 중이에요.');
+    apiFetch('/api/admin/partners/pending',{method:'GET'}).then(function(rows){
+      window.PENDING_PARTNERS=(rows||[]).map(function(row){return {
+        id:row.id,name:row.businessName,ceoName:row.ceoName,bizNo:row.businessRegNumber,
+        addr:row.roadAddress||row.address||'',region:(row.serviceRegions||[])[0]||'',tier:row.tier,
+        applicantName:row.applicantName,applicantRole:row.applicantRole,maskedPhone:row.maskedPhone,
+        status:row.verifyStatus||'pending',appliedAt:row.createdAt,rejectReason:row.rejectReason,
+        bizNoVerified:!!row.businessVerified,ceoVerified:!!row.identityVerified,
+        docUploaded:!!(row.documents&&row.documents.businessRegistration),
+        extUploaded:!!(row.documents&&row.documents.officeExterior),
+        intUploaded:!!(row.documents&&row.documents.officeInterior),_server:true
+      };});
+      window._pendingPartnersLoaded=true;window._pendingPartnersLoading=false;renderAdminPendingPartnersList();
+    }).catch(function(e){window._pendingPartnersLoading=false;el.innerHTML=emptyStateBox('심사목록을 불러오지 못했어요.<br>'+escapeConsumerIdentityHtml(e.message||'서버 오류'));});
+    return;
+  }
   var list = (window.PENDING_PARTNERS||[]).filter(function(a){return a.status==='pending';});
   if(!list.length){ el.innerHTML = emptyStateBox('대기 중인 신규 등록이 없어요.'); return; }
   el.innerHTML = '<div class="caption" style="margin-bottom:10px">대기중 '+list.length+'곳</div>' + list.map(function(a){
@@ -3983,6 +4015,17 @@ function renderAdminPendingPartnersList(){
 }
 function renderAdminPendingPartnerDetail(id){
   var a = (window.PENDING_PARTNERS||[]).filter(function(x){return x.id===id;})[0]; if(!a) return;
+  if(window.MVP.live && !a._detailLoaded){
+    apiFetch('/api/admin/partners/'+encodeURIComponent(id)+'/review',{method:'GET'}).then(async function(row){
+      a._detailLoaded=true;a.applicantName=row.applicantName;a.applicantRole=row.applicantRole;
+      a.maskedPhone=row.maskedPhone;a.region=(row.serviceRegions||[]).join(', ');a.rejectReason=row.rejectReason;
+      var files=row.documentFiles||{};
+      var loaded=await Promise.all([files.businessRegistration,files.officeExterior,files.officeInterior,files.authorization].map(loadAdminPrivateFileUrl));
+      a.ocrImg=loaded[0];a.extImg=loaded[1];a.intImg=loaded[2];a.authorizationImg=loaded[3];
+      renderAdminPendingPartnerDetail(id);
+    }).catch(function(e){alert('심사 상세정보를 불러오지 못했어요.\n'+e.message);});
+    return;
+  }
   window.currentPendingPartnerId = id;
   var v = aiPreVerdict(a);
   var el = document.getElementById('admin-pending-partner-detail-body');
@@ -4001,12 +4044,26 @@ function renderAdminPendingPartnerDetail(id){
     + photoBox('사업자등록증', a.ocrImg, a.docUploaded)
     + photoBox('사무실 외부', a.extImg, a.extUploaded)
     + photoBox('사무실 내부', a.intImg, a.intUploaded)
+    + (a.applicantRole==='manager' ? photoBox('대표자 위임·재직 증빙',a.authorizationImg,!!a.authorizationImg) : '')
     + '<button class="btn btn-primary" style="margin-top:8px" onclick="approvePendingPartner()">승인</button>'
     + '<button class="btn btn-outline" style="margin-top:8px;color:var(--danger);border-color:var(--danger)" onclick="rejectPendingPartner()">반려</button>';
+}
+async function loadAdminPrivateFileUrl(ref){
+  if(!ref||!ref.fileId) return null;
+  var headers={};if(window.authToken&&window.MVP.authMode!=='cookie')headers.Authorization='Bearer '+window.authToken;
+  var response=await fetch(window.MVP.apiBase+'/api/admin/files/'+encodeURIComponent(ref.fileId),{credentials:'include',headers:headers});
+  if(!response.ok) throw new Error('증빙파일을 불러오지 못했습니다');
+  return URL.createObjectURL(await response.blob());
 }
 function approvePendingPartner(){
   if(!requireRoomerRole('admin')) return;
   var a = (window.PENDING_PARTNERS||[]).filter(function(x){return x.id===window.currentPendingPartnerId;})[0]; if(!a) return;
+  if(window.MVP.live){
+    apiFetch('/api/admin/partners/'+encodeURIComponent(a.id)+'/approve',{method:'PUT',body:'{}'}).then(function(){
+      window._pendingPartnersLoaded=false;window.PENDING_PARTNERS=[];alert('승인 처리됐어요.');renderAdminPendingPartnersList();go('admin-pending-partners');
+    }).catch(function(e){alert('승인 처리에 실패했어요.\n'+e.message);});
+    return;
+  }
   a.status = 'approved';
   // 결함수정(사용자요청): 승인해도 PARTNER_PROFILE/소비자용 상세페이지에 전혀 반영 안 되던 끊긴 파이프라인 연결
   if(window.PARTNER_PROFILE && window.PARTNER_PROFILE.name === a.name){
@@ -4038,6 +4095,12 @@ function rejectPendingPartner(){
   var a = (window.PENDING_PARTNERS||[]).filter(function(x){return x.id===window.currentPendingPartnerId;})[0]; if(!a) return;
   var reason = prompt('반려 사유를 입력해주세요.');
   if(!reason) return;
+  if(window.MVP.live){
+    apiFetch('/api/admin/partners/'+encodeURIComponent(a.id)+'/reject',{method:'PUT',body:JSON.stringify({reason:reason})}).then(function(){
+      window._pendingPartnersLoaded=false;window.PENDING_PARTNERS=[];alert('반려 처리됐어요.');renderAdminPendingPartnersList();go('admin-pending-partners');
+    }).catch(function(e){alert('반려 처리에 실패했어요.\n'+e.message);});
+    return;
+  }
   a.status = 'rejected'; a.rejectReason = reason;
   adminLog('신규 업체 반려: '+a.name+' · 사유: '+reason);
   alert('반려 처리됐어요.');
@@ -4155,7 +4218,7 @@ function renderDisputeFileForm(){
       + mine.map(function(d){
           var typeLabel = (DISPUTE_TYPES.filter(function(t){return t.key===d.type;})[0]||{}).label || d.type;
           var verdictBox = d.aiVerdict
-            ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--stone);font-size:13px;color:var(--charcoal);line-height:1.6"><b>AI 판정:</b> '+d.aiVerdict.rec+'</div>'
+            ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--stone);font-size:13px;color:var(--charcoal);line-height:1.6"><b>자동 유형 분류·권고:</b> '+d.aiVerdict.rec+'</div>'
             : '';
           return '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px;margin-bottom:10px">'
             + '<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:15px;font-weight:700;color:var(--charcoal)">'+typeLabel+'</span><span style="font-size:12px;color:var(--slate)">'+(d.at||'')+'</span></div>'
@@ -4371,7 +4434,7 @@ var TIER_QUAL={
   '인증사업자':{docs:['실내건축 관련 자격증','하자보증보험 가입증서'], license:false, note:'인증 자격 서류를 제출하면 운영자가 확인합니다.'},
   '면허 파트너':{docs:['실내건축공사업 등록면허증'], license:true, note:'실내건축공사업 면허번호·발급기관을 확인합니다. (실서비스: 국가기관 조회)'}
 };
-window.tierApplicant = window.tierApplicant || { name:(window.PARTNER_PROFILE&&window.PARTNER_PROFILE.name)||'강남 인테리어 스튜디오', tier:(window.PARTNER_PROFILE&&window.PARTNER_PROFILE.tier)||'부분공사가능업체' };
+window.tierApplicant = window.tierApplicant || { name:(window.PARTNER_PROFILE&&window.PARTNER_PROFILE.name)||null, tier:(window.PARTNER_PROFILE&&window.PARTNER_PROFILE.tier)||'부분공사가능업체' };
 window.TIER_UPGRADES = window.TIER_UPGRADES || [
   {id:'tu1', partner:'모던하우스 인테리어', from:'부분공사가능업체', to:'인증사업자', license:'-', issuer:'한국실내건축가협회', docName:'실내건축 자격증', status:'admin_review', at:'07-02'}
 ];
@@ -4448,11 +4511,34 @@ function rejectTier(){ if(!requireRoomerRole('admin')) return; var u=(window.TIE
 
 /* ===== 2단계 S5(#20): AI 공사 감리 (메신저 진입, 로드맵 명세) ===== */
 // 수정 여지: 요금제·판정 모두 배열 분리
+// 결함정리(사용자요청 — 2026-09-07 사업모델 전면개편): 기존 BASIC/PREMIUM/FULL 3단계
+// 요금제를 폐지하고, "AI무료 + 사진감리(장수과금) + 전문가감리(고정+출장비)" 구조로 전환.
+// INSPECT_PLANS는 다른 화면(관리자 정책설정 등)에서 참조하므로 호환을 위해 이름은 유지하되,
+// 각 항목에 pricingType을 추가해서 openInspectPlan()이 유형별로 다른 입력UI를 그리게 한다.
 var INSPECT_PLANS=[
-  {key:'basic',   label:'BASIC · AI 빠른 확인',  price:9900, desc:'AI가 사진을 즉시 분석해서 이상 유무만 빠르게 확인'},
-  {key:'premium', label:'PREMIUM · 전문가 사진감리', price:39000, desc:'AI 1차 분석 + 실제 전문가(건축 경력자)가 사진을 직접 검토하고 답변제출'},
-  {key:'full',    label:'FULL · 전문가 정밀감리(총 2회)', price:79000, desc:'전문가가 상세 리포트 작성 + 재감리 1회 + 하자 판단 자료 제공'}
+  {key:'ai',     label:'AI 감리',    pricingType:'free',   price:0, desc:'AI가 사진을 즉시 분석해서 참고 소견을 드려요'},
+  {key:'photo',  label:'사진감리',   pricingType:'perPhoto', unitPrice:8000, minCount:5, desc:'전문가가 사진 1장당 상세 답변을 드려요'},
+  {key:'expert', label:'전문가 감리', pricingType:'expert', basePrice:300000, desc:'전문가가 깊이있게 종합 검토·답변을 드려요'}
 ];
+// 출장비(전문가 감리 옵션) — 지역별 추가금
+var INSPECT_TRIP_FEES=[
+  {key:'seoul',  label:'서울·경기권', fee:50000},
+  {key:'chung',  label:'충청권',     fee:100000},
+  {key:'others', label:'전라·강원·경상권', fee:150000},
+  {key:'jeju',   label:'제주권',     fee:200000}
+];
+// 사진감리 가격 계산(장수×단가, 최소장수 보정)
+function calcPhotoPrice(count){
+  var p = INSPECT_PLANS.filter(function(x){return x.key==='photo';})[0];
+  var c = Math.max(p.minCount, parseInt(count)||p.minCount);
+  return c * p.unitPrice;
+}
+// 전문가감리 가격 계산(고정+출장비 선택)
+function calcExpertPrice(tripKey){
+  var p = INSPECT_PLANS.filter(function(x){return x.key==='expert';})[0];
+  var trip = INSPECT_TRIP_FEES.filter(function(t){return t.key===tripKey;})[0];
+  return p.basePrice + (trip ? trip.fee : 0);
+}
 var INSPECT_VERDICTS=[
   {grade:'양호', color:'var(--success)',   score:92, opinion:'전반적으로 시공 품질이 양호합니다. 타일 수평·도배 이음새가 기준을 충족합니다.', advice:'현재 상태로 다음 공정을 진행해도 좋습니다.'},
   {grade:'주의', color:'var(--warning)',    score:76, opinion:'대체로 양호하나 일부 마감에서 편차가 보입니다. 욕실 코킹 두께 불균일이 의심됩니다.', advice:'해당 부분 재점검을 업체에 요청하고, 사진을 추가로 받아 확인하는 것을 권장합니다.'},
@@ -4470,25 +4556,91 @@ function inspectVerdict(){
   if(photos===0) return INSPECT_VERDICTS[1];
   return INSPECT_VERDICTS[0];
 }
+// 결함정리(사용자요청 — 2026-09-07 사업모델 전면개편): 3단계(AI무료/사진감리/전문가감리)
+// 유형별로 다른 입력UI(장수입력, 출장지역선택)를 그리고, 유료 상품은 신청 직전 반드시
+// 법적 안전문구+동의체크박스를 거치도록 재작성.
 function openInspectPlan(){
   if(!requireRoomerRole('consumer','AI 공사 감리는 소비자 계정에서만 신청할 수 있습니다.')) return;
-  var rows=INSPECT_PLANS.map(function(p){ return '<button type="button" onclick="applyInspection(\''+p.key+'\')" style="width:100%;text-align:left;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:13px 14px;margin-bottom:8px;cursor:pointer;font-family:inherit"><div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:16px;font-weight:700;color:var(--charcoal)">'+p.label+'</span><span style="font-size:15px;font-weight:800;color:var(--terracotta)">'+p.price.toLocaleString()+'원</span></div><div style="font-size:13px;color:var(--slate);margin-top:3px">'+p.desc+'</div></button>'; }).join('');
-  openMeasSheet('<div style="font-size:17.5px;font-weight:800;margin-bottom:4px">AI 공사 감리 신청</div><div class="caption" style="margin-bottom:6px;line-height:1.6">최고의 AI가 고객이 제공한 현장사진을 분석해 <b>감리 보고서</b>를 즉시 제공합니다. 전국 동일 품질·24시간 감리 신청·감리사 파견 없음.</div><div class="caption" style="margin-bottom:12px;color:var(--slate)">요금제를 선택하세요.</div>'+rows+'<button class="btn btn-outline" style="margin-top:6px" onclick="closeMeasSheet()">닫기</button>');
+  var aiPlan = INSPECT_PLANS.filter(function(x){return x.key==='ai';})[0];
+  var photoPlan = INSPECT_PLANS.filter(function(x){return x.key==='photo';})[0];
+  var html = '<div style="font-size:17.5px;font-weight:800;margin-bottom:4px">감리 신청</div>'
+    + '<div class="caption" style="margin-bottom:14px;line-height:1.6">필요하신 감리 종류를 선택하세요.</div>'
+    + '<button type="button" onclick="applyInspection(\'ai\')" style="width:100%;text-align:left;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:13px 14px;margin-bottom:10px;cursor:pointer;font-family:inherit">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:16px;font-weight:700;color:var(--charcoal)">'+aiPlan.label+'</span><span style="font-size:15px;font-weight:800;color:var(--success)">무료</span></div>'
+      + '<div style="font-size:13px;color:var(--slate);margin-top:3px">'+aiPlan.desc+'</div></button>'
+    + '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:13px 14px;margin-bottom:10px">'
+      + '<div style="font-size:16px;font-weight:700;color:var(--charcoal);margin-bottom:2px">'+photoPlan.label+'</div>'
+      + '<div style="font-size:13px;color:var(--slate);margin-bottom:8px">'+photoPlan.desc+'</div>'
+      + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:13.5px;color:var(--charcoal)">사진 장수</span><input type="number" id="inspPhotoCount" value="'+photoPlan.minCount+'" min="'+photoPlan.minCount+'" oninput="updateInspPhotoPricePreview()" style="width:64px;padding:6px 8px;border:1px solid var(--stone);border-radius:var(--radius-input);font-family:inherit"><span style="font-size:12.5px;color:var(--slate)">장(최소 '+photoPlan.minCount+'장)</span></div>'
+      + '<div style="text-align:right;font-size:15.5px;font-weight:800;color:var(--terracotta);margin-bottom:8px" id="inspPhotoPricePreview">'+calcPhotoPrice(photoPlan.minCount).toLocaleString()+'원</div>'
+      + '<button type="button" class="btn btn-primary" style="width:100%" onclick="applyInspection(\'photo\')">신청하기</button>'
+    + '</div>'
+    + '<div style="background:#fff;border:1.5px solid var(--terracotta);border-radius:var(--radius-input);padding:13px 14px;margin-bottom:10px">'
+      + '<div style="font-size:16px;font-weight:700;color:var(--charcoal);margin-bottom:2px">전문가 감리</div>'
+      + '<div style="font-size:13px;color:var(--slate);margin-bottom:8px">전문가가 깊이있게 종합 검토·답변을 드려요</div>'
+      + '<div style="text-align:right;font-size:15.5px;font-weight:800;color:var(--terracotta);margin-bottom:8px">300,000원</div>'
+      + '<label style="display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--charcoal);cursor:pointer;margin-bottom:6px"><input type="checkbox" id="inspVisitToggle" onchange="toggleInspTripRegion()"> 현장 방문(출장)이 필요해요</label>'
+      + '<div id="inspTripRegionBox" style="display:none;margin-bottom:8px">'
+        + '<select id="inspTripRegion" onchange="updateInspExpertPricePreview()" style="width:100%;padding:8px;border:1px solid var(--stone);border-radius:var(--radius-input);font-family:inherit">'
+          + INSPECT_TRIP_FEES.map(function(t){return '<option value="'+t.key+'">'+t.label+' (+'+t.fee.toLocaleString()+'원)</option>';}).join('')
+        + '</select></div>'
+      + '<div style="text-align:right;font-size:15.5px;font-weight:800;color:var(--terracotta);margin-bottom:8px" id="inspExpertPricePreview">300,000원</div>'
+      + '<button type="button" class="btn btn-primary" style="width:100%" onclick="applyInspection(\'expert\')">신청하기</button>'
+    + '</div>'
+    + '<button class="btn btn-outline" style="margin-top:6px" onclick="closeMeasSheet()">닫기</button>';
+  openMeasSheet(html);
+}
+function updateInspPhotoPricePreview(){
+  var el=document.getElementById('inspPhotoPricePreview'); if(!el) return;
+  el.textContent = calcPhotoPrice(document.getElementById('inspPhotoCount').value).toLocaleString()+'원';
+}
+function toggleInspTripRegion(){
+  var box=document.getElementById('inspTripRegionBox');
+  box.style.display = document.getElementById('inspVisitToggle').checked ? 'block' : 'none';
+  updateInspExpertPricePreview();
+}
+function updateInspExpertPricePreview(){
+  var el=document.getElementById('inspExpertPricePreview'); if(!el) return;
+  var tripKey = document.getElementById('inspVisitToggle').checked ? document.getElementById('inspTripRegion').value : null;
+  el.textContent = calcExpertPrice(tripKey).toLocaleString()+'원';
+}
+// 신규(사용자요청 — 결제 진입 전 법적 안전문구+동의 필수): AI(무료)는 바로 진행,
+// 유료(사진감리/전문가감리)는 반드시 이 동의 절차를 거쳐야 다음 단계로 진행됨
+function confirmInspectionLegalNotice(planKey, extra){
+  var noticeHtml = '<div style="font-size:17px;font-weight:800;margin-bottom:12px">구매 전 꼭 확인해주세요</div>'
+    + '<div style="background:#FFF8E1;border:1px solid var(--warning);border-radius:var(--radius-input);padding:14px;margin-bottom:16px;font-size:13.5px;color:var(--charcoal);line-height:1.7">'
+    + icon('alertTriangle',T.warning,13)+' 본 감리는 <b>참고용 소견</b>이며, 법적 소송에서의 공식 증거자료(법원 감정)와는 다릅니다.<br>'
+    + '실제 소송을 준비 중이시라면 법원 감정인 제도 또는 변호사 상담을 권장드립니다.</div>'
+    + '<label style="display:flex;align-items:flex-start;gap:8px;font-size:13.5px;color:var(--charcoal);cursor:pointer;margin-bottom:16px"><input type="checkbox" id="inspLegalAgree" onchange="document.getElementById(\'inspLegalConfirmBtn\').disabled=!this.checked;document.getElementById(\'inspLegalConfirmBtn\').style.opacity=this.checked?1:.45"><span>위 내용을 확인했으며 동의합니다</span></label>'
+    + '<button id="inspLegalConfirmBtn" class="btn btn-primary" style="width:100%;opacity:.45" disabled onclick=\'proceedApplyInspection("'+planKey+'",'+JSON.stringify(extra||{}).replace(/"/g,'&quot;')+')\'>결제 진행하기</button>'
+    + '<button class="btn btn-outline" style="margin-top:8px" onclick="closeMeasSheet()">취소</button>';
+  openMeasSheet(noticeHtml);
 }
 async function applyInspection(planKey){
   if(!requireRoomerRole('consumer','AI 공사 감리는 소비자 계정에서만 신청할 수 있습니다.')) return;
+  if(planKey==='ai'){ return proceedApplyInspection('ai',{}); } // 무료는 동의절차 없이 즉시 진행
+  var extra = {};
+  if(planKey==='photo'){ extra.photoCount = Math.max(INSPECT_PLANS.filter(function(x){return x.key==='photo';})[0].minCount, parseInt(document.getElementById('inspPhotoCount').value)||5); }
+  if(planKey==='expert'){ extra.tripKey = document.getElementById('inspVisitToggle').checked ? document.getElementById('inspTripRegion').value : null; }
+  confirmInspectionLegalNotice(planKey, extra);
+}
+async function proceedApplyInspection(planKey, extra){
+  extra = extra || {};
   var activeContractId = window.MVP.live ? getCurrentRoomServerId('contractId') : null;
-  if(window.MVP.live && !activeContractId){ alert('계약이 확인된 대화방에서만 AI 공사 감리를 신청할 수 있습니다.'); return; }
+  if(window.MVP.live && !activeContractId){ alert('계약이 확인된 대화방에서만 감리를 신청할 수 있습니다.'); return; }
   var p=planByKey(planKey);
-  var insp={ id:'ins'+Date.now(), plan:planKey, planLabel:p.label, price:p.price, status:'unpaid', method:null, at:(typeof measNow==='function'?measNow():'') };
+  var price = planKey==='ai' ? 0 : planKey==='photo' ? calcPhotoPrice(extra.photoCount) : calcExpertPrice(extra.tripKey);
+  var planLabel = p.label + (planKey==='photo' ? ' ('+extra.photoCount+'장)' : (planKey==='expert' && extra.tripKey ? ' (출장포함)' : ''));
+  var insp={ id:'ins'+Date.now(), plan:planKey, planLabel:planLabel, price:price, status: price>0?'unpaid':'paid', method:null, at:(typeof measNow==='function'?measNow():''), photoCount:extra.photoCount, tripKey:extra.tripKey };
   if(window.MVP.live){
     try{
-      var data = await apiFetch('/api/inspections', {method:'POST', body: JSON.stringify({contractId: activeContractId, plan: planKey})});
-      insp.serverId = data.id;
-    }catch(e){ reportLiveActionFailure('AI 공사 감리 신청', e); return; }
+      var data = await apiFetch('/api/inspections', {method:'POST', body: JSON.stringify({contractId: activeContractId, plan: planKey, photoCount: extra.photoCount, tripKey: extra.tripKey})});
+      insp.serverId = data.id; insp.price = data.price != null ? data.price : price;
+    }catch(e){ reportLiveActionFailure('감리 신청', e); return; }
   }
   closeMeasSheet();
   window.INSPECTIONS.push(insp); window.currentInspId=insp.id; window.inspPayMethod=null;
+  if(insp.status==='paid'){ alert('무료 AI 감리가 신청되었습니다. 메신저에서 결과를 확인해주세요.'); go('chat'); return; }
   renderInspectionPay(); go('inspection-pay');
 }
 var PAY_METHODS=[['카드결제','card'],['카카오페이','kakao'],['토스페이','toss']]; // 수정 여지: 결제수단 배열
@@ -4897,9 +5049,9 @@ function buildInspectCard(inspId){
     + '<div style="padding:14px">'
       + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><div><div style="font-size:12.5px;color:var(--slate)">종합 판정</div><div style="font-size:21px;font-weight:800;color:'+vcol+'">'+d.grade+'</div></div><div style="text-align:right"><div style="font-size:12.5px;color:var(--slate)">품질 점수</div><div style="font-size:21px;font-weight:800;color:var(--charcoal)">'+d.score+'<span style="font-size:13.5px;color:var(--slate)">/100</span></div></div></div>'
       + '<div style="height:6px;background:var(--ivory);border-radius:3px;overflow:hidden;margin-bottom:12px"><div style="height:100%;width:'+d.score+'%;background:'+vcol+'"></div></div>'
-      + '<div style="font-size:13px;font-weight:700;color:var(--charcoal);margin-bottom:3px">'+icon('sparkle',T.steelblue,11)+' AI 소견</div><div style="font-size:14.5px;color:var(--charcoal);line-height:1.6;margin-bottom:10px">'+d.opinion+'</div>'
+      + '<div style="font-size:13px;font-weight:700;color:var(--charcoal);margin-bottom:3px">'+icon('sparkle',T.steelblue,11)+' 자동 판정 소견</div><div style="font-size:14.5px;color:var(--charcoal);line-height:1.6;margin-bottom:10px">'+d.opinion+'</div>'
       + '<div style="background:var(--ivory);border-radius:var(--radius-input);padding:10px 12px"><div style="font-size:13px;font-weight:700;color:var(--terracotta);margin-bottom:3px">소비자 행동 권고</div><div style="font-size:13.5px;color:var(--charcoal);line-height:1.6">'+d.advice+'</div></div>'
-      + '<div style="font-size:12px;color:var(--slate);margin-top:10px;line-height:1.5">'+icon('shieldCheck',T.slate,11)+' '+d.planLabel+' · 보고서는 서버에 자동 저장되어 분쟁·하자 시 증거로 활용됩니다. 실서비스에서는 Claude Vision이 실제 사진을 분석합니다.</div>'
+      + '<div style="font-size:12px;color:var(--slate);margin-top:10px;line-height:1.5">'+icon('shieldCheck',T.slate,11)+' '+d.planLabel+' · 보고서는 서버에 자동 저장되어 분쟁·하자 시 증거로 활용됩니다. 현재 판정은 등록된 사진 수·하자 접수 여부 등을 기준으로 한 규칙 기반 자동 산출이며, 실제 AI Vision 분석 연동은 준비 중입니다.</div>'
     + '</div>';
 }
 
@@ -4998,7 +5150,7 @@ function go(id){
     var formEl=document.getElementById('quote-form-08'), roEl=document.getElementById('quote-readonly-08');
     if(formEl && roEl){
       if(isPartner()){ formEl.style.display='block'; roEl.style.display='none'; if(typeof renderQuoteRecipient08==='function') renderQuoteRecipient08(); }
-      else { formEl.style.display='none'; roEl.style.display='block'; if(typeof renderQuoteReadonly08==='function') renderQuoteReadonly08(); }
+      else { formEl.style.display='none'; roEl.style.display='block'; if(typeof loadLiveQuotesForCurrentRequest==='function'&&window.MVP.live) loadLiveQuotesForCurrentRequest(); else if(typeof renderQuoteReadonly08==='function') renderQuoteReadonly08(); }
     }
   }
   // 결함 수정(통합점검 중 발견): signup-overlay가 body 최상위로 이동된 이후, 화면전환이
@@ -5073,7 +5225,7 @@ function go(id){
   // consumer-home 진입시 자동 호출되지 않으면 인사말카드+메뉴목록이 항상 빈칸으로 남는 치명적 버그가 됨
   if(id === 'consumer-home' && typeof renderMypage==='function'){ renderMypage(); }
   if(id === 'consumer-home' && typeof updateConsumerAlertBadge==='function'){ updateConsumerAlertBadge(); }
-  if(id === 'consumer-alert-list' && window.CONSUMER_ALERTS){ window.CONSUMER_ALERTS.forEach(function(a){ a.read=true; }); if(typeof updateConsumerAlertBadge==='function') updateConsumerAlertBadge(); }
+  if(id === 'consumer-alert-list' && window.CONSUMER_ALERTS){ if(typeof loadServerNotifications==='function')loadServerNotifications().then(function(){renderConsumerAlertList();}); else renderConsumerAlertList(); }
   if(id === '07' && typeof renderMemberFeed==='function'){ renderMemberFeed(); }
   if(id === 'request' && typeof renderRequestRecipient==='function'){ if(typeof ensureQuoteRequestDraft==='function') ensureQuoteRequestDraft(); renderRequestRecipient(); }
   if(id === 'cprofile' && typeof renderCprofile==='function'){ renderCprofile(); }
@@ -5099,7 +5251,7 @@ function go(id){
   // 도달하지 않음(renderMypage()는 이제 'consumer-home' 훅에서 자동 호출됨, 위쪽 참고)
   if(id === 'mydata' && typeof renderMydata === 'function'){ renderMydata(); }
   if(id === 'chat' && typeof renderChat === 'function'){ if(typeof loadRoomChatLog==='function' && window.currentRoomId) loadRoomChatLog(window.currentRoomId); if(typeof restoreLiveOutboxForRoom==='function') restoreLiveOutboxForRoom(window.currentRoomId); if(typeof syncCurrentServerIdsFromRoom==='function') syncCurrentServerIdsFromRoom(window.currentRoomId); if(typeof loadMeasJob==='function') loadMeasJob(); if(typeof currentRoom==='function' && currentRoom()){ window.contractAmounts = currentRoom().contractAmounts; } if(typeof recoverPendingMessagesForRoom==='function') recoverPendingMessagesForRoom(window.currentRoomId); if(typeof markRoomRead==='function') markRoomRead(window.currentRoomId, isPartner()?'partner':'consumer'); if(typeof renderChatlist==='function') renderChatlist(); renderChat(); if(typeof updatePartnerTabBadges==='function') updatePartnerTabBadges(); if(typeof renderChatLegalNotice==='function') renderChatLegalNotice(); if(typeof renderChatHeader==='function') renderChatHeader(); if(typeof renderChatNotifNudge==='function') renderChatNotifNudge();
-    // 11/12: WebSocket→SSE→폴링 순서의 transport 관리자가 현재 Room만 구독한다.
+    // 11/12: WebSocket→폴링(서버 미구현 SSE 제외) 순서의 transport 관리자가 현재 Room만 구독한다.
     if(typeof startChatTransport==='function') startChatTransport();
     else if(typeof startChatPolling==='function') startChatPolling();
     if(typeof loadRoomShared==='function' && window.currentRoomId){
@@ -5126,10 +5278,12 @@ function go(id){
   // 신규(사용자요청): 칼럼 전체보기 화면 진입시 자동으로 목록 렌더링
   if(id === 'column-list' && typeof renderColumnListScreen === 'function'){ renderColumnListScreen(); }
   if(id === 'partner-home' && typeof renderPartnerGreeting === 'function'){ renderPartnerGreeting(); }
+  if(id === 'partner-home' && typeof initMypageServiceRegions === 'function'){ initMypageServiceRegions(); }
   // 결함수정(사용자요청 — 통합과정에서 발견): 메뉴목록(partner-mypage-menu)이 대시보드 진입시 렌더링되지 않아
   // 항상 빈칸으로 남던 치명적 버그. 통합 이전엔 별도 화면(partner-mypage) 진입시에만 호출됐음.
   if(id === 'partner-home' && typeof renderPartnerMypage === 'function'){ renderPartnerMypage(); }
   if(id === 'partner-home' && typeof updatePartnerTabBadges === 'function'){ updatePartnerTabBadges(); }
+  if(id === 'feeinfo' && typeof renderContractPayments === 'function'){ renderContractPayments(); }
   // 신규(사용자요청 — 3단계: 견적탭 뱃지 정확도 보장): 대시보드 진입시 채팅방 목록을 백그라운드로
   // 미리 갱신해서, 신규 견적요청 뱃지가 최신 상태를 반영하도록 함(화면 전환을 막지 않는 비동기 처리)
   if(id === 'partner-home' && window.MVP && window.MVP.live){
@@ -5138,7 +5292,7 @@ function go(id){
       if(typeof updatePartnerTabBadges === 'function') updatePartnerTabBadges();
     }).catch(function(){ /* 조용히 무시 — 뱃지는 부가기능이라 실패해도 화면 진입에 지장 없음 */ });
   }
-  if(id === 'partner-alert-list' && window.PARTNER_ALERTS){ window.PARTNER_ALERTS.forEach(function(a){ a.read=true; }); if(typeof updatePartnerTabBadges==='function') updatePartnerTabBadges(); }
+  if(id === 'partner-alert-list' && window.PARTNER_ALERTS){ if(typeof loadServerNotifications==='function')loadServerNotifications().then(function(){renderPartnerAlertList();}); else renderPartnerAlertList(); }
   if(id === 'partner-home' && typeof renderFeeStatusPh === 'function'){ renderFeeStatusPh(); } // 결함수정: 진입할때마다 실제 SETTLEMENTS 기준으로 재계산(실시간 반영)
   // 신규(사용자요청): 업체 대시보드에도 소비자와 동일하게 실측진행상황 노출(클릭시 메신저로 이동)
   if(id === 'partner-home' && typeof renderMeasProgress === 'function'){ renderMeasProgress('partner-meas-progress'); }
@@ -5271,6 +5425,44 @@ function validatePartnerRegionSelect(){
 // 첫 번째 선택값은 기존 단일 region 필드와의 하위호환용 대표 활동지역이다.
 function getPartnerSelectedRegion(){
   return window.partnerSelectedRegions[0] || null;
+}
+function initMypageServiceRegions(){
+  var sidoEl=document.getElementById('mypage-region-sido'); if(!sidoEl) return;
+  if(!sidoEl.options.length) Object.keys(REGION_DATA).forEach(function(sido){var opt=document.createElement('option');opt.value=sido;opt.textContent=sido;sidoEl.appendChild(opt);});
+  onMypageRegionSidoChange();renderMypageServiceRegions();
+}
+function onMypageRegionSidoChange(){
+  var sidoEl=document.getElementById('mypage-region-sido'),guEl=document.getElementById('mypage-region-gu');if(!sidoEl||!guEl)return;
+  guEl.innerHTML='';(REGION_DATA[sidoEl.value]||[]).forEach(function(gu){var opt=document.createElement('option');opt.value=gu;opt.textContent=gu;guEl.appendChild(opt);});
+}
+function addMypageServiceRegion(){
+  var sido=(document.getElementById('mypage-region-sido')||{}).value||'',gu=(document.getElementById('mypage-region-gu')||{}).value||'',region=(sido+' '+gu).trim();
+  if(!sido||!gu){alert('추가할 활동지역을 선택해주세요.');return;}
+  window.partnerSelectedRegions=Array.isArray(window.partnerSelectedRegions)?window.partnerSelectedRegions:[];
+  if(window.partnerSelectedRegions.indexOf(region)!==-1){alert('이미 추가한 활동지역입니다.');return;}
+  if(window.partnerSelectedRegions.length>=5){alert('활동지역은 최대 5개까지 등록할 수 있어요.');return;}
+  window.partnerSelectedRegions.push(region);renderMypageServiceRegions();
+}
+function removeMypageServiceRegion(index){
+  if(!Array.isArray(window.partnerSelectedRegions)||index<0||index>=window.partnerSelectedRegions.length)return;
+  if(window.partnerSelectedRegions.length===1){alert('활동지역은 한 곳 이상 필요합니다.');return;}
+  window.partnerSelectedRegions.splice(index,1);renderMypageServiceRegions();
+}
+function makeMypageServiceRegionPrimary(index){
+  if(!Array.isArray(window.partnerSelectedRegions)||index<=0||index>=window.partnerSelectedRegions.length)return;
+  var selected=window.partnerSelectedRegions.splice(index,1)[0];window.partnerSelectedRegions.unshift(selected);renderMypageServiceRegions();
+}
+function renderMypageServiceRegions(){
+  var box=document.getElementById('mypage-service-region-chips'),status=document.getElementById('mypage-region-status');if(!box)return;
+  var regions=Array.isArray(window.partnerSelectedRegions)?window.partnerSelectedRegions:[];
+  box.innerHTML=regions.map(function(region,index){return '<span style="display:inline-flex;align-items:center;gap:5px;border:1px solid '+(index===0?'var(--steelblue)':'var(--stone)')+';border-radius:var(--radius-pill);padding:6px 9px;font-size:12.5px;font-weight:700">'+(index===0?'<b style="color:var(--steelblue)">대표</b> ':'')+escapeConsumerIdentityHtml(region)+(index>0?' <button type="button" onclick="makeMypageServiceRegionPrimary('+index+')" style="border:0;background:none;color:var(--steelblue);cursor:pointer">대표지정</button>':'')+' <button type="button" aria-label="삭제" onclick="removeMypageServiceRegion('+index+')" style="border:0;background:none;color:var(--slate);cursor:pointer">×</button></span>';}).join('');
+  if(status)status.textContent=regions.length+'/5개 등록';
+}
+async function saveMypageServiceRegions(){
+  var regions=(window.partnerSelectedRegions||[]).slice(0,5),status=document.getElementById('mypage-region-status');if(!regions.length){alert('활동지역은 한 곳 이상 필요합니다.');return;}
+  if(!window.MVP.live){window.PARTNER_PROFILE.serviceRegions=regions.slice();window.PARTNER_PROFILE.region=regions[0];savePrototypePartnerProfile();if(status)status.textContent='저장 완료 · 프로토타입';return;}
+  try{var data=await apiFetch('/api/partners/me/service-regions',{method:'PUT',body:JSON.stringify({serviceRegions:regions})});applyPartnerProfile(data,{source:'server',status:'connected'});if(status)status.textContent='서버에 저장되었습니다.';}
+  catch(e){if(status)status.textContent='저장 실패: '+e.message;}
 }
 // 3단계(읍·면·동) 데이터 — 대표 동 위주. 없는 구는 구 단위로 자동 폴백. (실서비스: 행정동 표준코드 전체)
 var DONG_DATA = {
@@ -6747,14 +6939,8 @@ function finishConsumerLight(options){
     createPrototypeKakaoProfile();
     window.userProfile.authMode = 'prototype';
   } else if(window.MVP.live && isKakaoAccount && kakaoOAuthEnabled && !opts.skipRemoteAuth){
-    var kakaoState = getKakaoProfileState();
-    apiFetch('/api/auth/social/kakao', {method:'POST', body: JSON.stringify({
-      providerUserId:kakaoState.providerUserId, nickname:kakaoState.nickname, email:kakaoState.email
-    })})
-      .then(function(data){
-        applyKakaoAuthResponse(data, 'server');
-      })
-      .catch(function(e){ console.error('로그인 실패:', e.message); });
+    // 운영 로그인은 OAuth callback에서 이미 서버 토큰을 발급받는다. 임의 socialId를 받던 구형 API는 운영에서 차단한다.
+    console.warn('카카오 OAuth callback 응답 없이 가입 완료 단계가 호출되었습니다.');
   }
   if(!isKakaoAccount) window.userProfile.authMode = (window.MVP.live&&opts.skipRemoteAuth)?'server':'prototype';
   // 결함정리(사용자요청 — ChatGPT협업 병합중 발견한 회귀버그 3/3): "!window.MVP.live"만 체크하면
@@ -7232,6 +7418,10 @@ document.getElementById('btn-next1').textContent = '다음';
 window.partnerIdentityVerificationToken=null;
 window.partnerIdentityApplicantName='';
 window.partnerAuthorizationDoc=null;
+function uploadPartnerSignupEvidence(file,purpose){
+  var form=new FormData();form.append('purpose',purpose);form.append('file',file,file.name||'evidence');
+  return apiFetch('/api/partner-signup/files',{method:'POST',body:form,noRetry:true});
+}
 function onPartnerApplicantRoleChange(){
   var role=document.getElementById('in-applicant-role').value;
   var wrap=document.getElementById('partner-authorization-wrap');
@@ -7244,7 +7434,13 @@ function handlePartnerAuthorizationDoc(files){
   window.partnerAuthorizationDoc=null;
   if(!file) return;
   if(['image/jpeg','image/png','application/pdf'].indexOf(file.type)===-1){ status.style.color='var(--danger)';status.textContent='JPG, PNG 또는 PDF만 업로드할 수 있어요.';return; }
-  if(file.size>700*1024){ status.style.color='var(--danger)';status.textContent='현재 가입 단계에서는 700KB 이하 파일만 업로드할 수 있어요.';return; }
+  if(file.size>10*1024*1024){ status.style.color='var(--danger)';status.textContent='파일은 10MB 이하만 업로드할 수 있어요.';return; }
+  if(window.MVP.live){
+    status.style.color='var(--slate)';status.textContent='비공개 저장소에 업로드 중…';
+    uploadPartnerSignupEvidence(file,'authorization').then(function(data){window.partnerAuthorizationDoc=data.fileId;status.style.color='var(--success)';status.textContent='위임 증빙이 안전하게 저장됐어요: '+file.name;})
+      .catch(function(e){status.style.color='var(--danger)';status.textContent='업로드 실패: '+e.message;});
+    return;
+  }
   var reader=new FileReader();
   reader.onload=function(e){window.partnerAuthorizationDoc=e.target.result;status.style.color='var(--success)';status.textContent='위임 증빙이 첨부됐어요: '+file.name;};
   reader.onerror=function(){status.style.color='var(--danger)';status.textContent='파일을 읽지 못했습니다.';};
@@ -7426,6 +7622,14 @@ window.pendingPartnerUpload = window.pendingPartnerUpload || { ocrImg:null, extI
 document.getElementById('ocr-file-input').addEventListener('change', function(){
   const input = document.getElementById('ocr-file-input');
   if(!input.files || !input.files[0]) return;
+  if(window.MVP.live){
+    var file=input.files[0],r=document.getElementById('ocrresult');r.style.display='block';r.textContent='비공개 저장소에 업로드 중…';
+    uploadPartnerSignupEvidence(file,'business_registration').then(function(data){
+      window.pendingPartnerUpload.ocrImg=data.fileId;window.pendingPartnerUpload.docUploaded=true;window.pendingPartnerUpload.needsManualReview=true;
+      var box=document.getElementById('ocrbox');box.innerHTML='<div class="caption" style="padding:20px">'+escapeConsumerIdentityHtml(file.name)+'</div>';box.style.borderColor='var(--success)';
+      r.innerHTML=icon('checkCircle',T.success,13)+' 사업자등록증이 안전하게 저장되었습니다.';document.getElementById('ocr-required-note').style.display='none';
+    }).catch(function(e){r.style.color='var(--danger)';r.textContent='업로드 실패: '+e.message;});return;
+  }
   const reader = new FileReader();
   reader.onload = function(e){
     const box = document.getElementById('ocrbox');
@@ -7502,6 +7706,10 @@ document.getElementById('btn-next3').textContent = '다음';
 document.getElementById('vision-file-input-ext').addEventListener('change', function(){
   const input = document.getElementById('vision-file-input-ext');
   if(!input.files || !input.files[0]) return;
+  if(window.MVP.live){
+    var file=input.files[0],r=document.getElementById('visionresult-ext');r.style.display='block';r.textContent='비공개 저장소에 업로드 중…';
+    uploadPartnerSignupEvidence(file,'office_exterior').then(function(data){window.pendingPartnerUpload.extImg=data.fileId;window.pendingPartnerUpload.extUploaded=true;r.innerHTML='<div style="color:var(--success)">외부전경 사진이 안전하게 저장되었습니다.</div>';checkVisionComplete04();}).catch(function(e){r.style.color='var(--danger)';r.textContent='업로드 실패: '+e.message;});return;
+  }
   const reader = new FileReader();
   reader.onload = function(e){
     const box = document.getElementById('visionbox-ext');
@@ -7522,6 +7730,10 @@ document.getElementById('vision-file-input-ext').addEventListener('change', func
 document.getElementById('vision-file-input-int').addEventListener('change', function(){
   const input = document.getElementById('vision-file-input-int');
   if(!input.files || !input.files[0]) return;
+  if(window.MVP.live){
+    var file=input.files[0],r=document.getElementById('visionresult-int');r.style.display='block';r.textContent='비공개 저장소에 업로드 중…';
+    uploadPartnerSignupEvidence(file,'office_interior').then(function(data){window.pendingPartnerUpload.intImg=data.fileId;window.pendingPartnerUpload.intUploaded=true;r.innerHTML='<div style="color:var(--success)">사무실 내부 사진이 안전하게 저장되었습니다.</div>';checkVisionComplete04();}).catch(function(e){r.style.color='var(--danger)';r.textContent='업로드 실패: '+e.message;});return;
+  }
   const reader = new FileReader();
   reader.onload = function(e){
     const box = document.getElementById('visionbox-int');
@@ -7677,7 +7889,8 @@ document.getElementById('project-photos-input').addEventListener('change', funct
 function renderProjectPhotosPreview(){
   var box = document.getElementById('project-photos-box');
   if(!window._projectPhotos.length){
-    box.innerHTML = '<span id="project-photos-placeholder">탭하여 사진 선택</span><input type="file" id="project-photos-input" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0">';
+    box.innerHTML = '<span>탭하여 사진 선택</span><input type="file" id="project-photos-input-reset" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0">';
+    document.getElementById('project-photos-input-reset').addEventListener('change', function(e){ addPortfolioPhotoFiles(e.target.files); });
     return;
   }
   box.innerHTML = window._projectPhotos.map(function(src){
@@ -9804,6 +10017,13 @@ function loadRoomChatLog(roomId){
 window._bootstrappingRooms=true;
 restorePrototypeRoomDirectory();
 try{ window._preferredRoomId=sessionStorage.getItem(ROOM_ACTIVE_STORAGE_KEY)||null; }catch(e){ window._preferredRoomId=null; }
+// 결함정리(사용자요청 — 감사보고서 지적사항 최우선 수정: 메신저 고정이름 완전제거):
+// 이전에는 이 데모 Room 생성이 조건 없이 항상 실행되어, 실제 배포(운영) 환경에서도
+// "강남 인테리어 스튜디오"·"박OO"·"이OO" 고정 데모 대화가 그대로 만들어지고 있었음.
+// window.MVP.live(실서버 모드 여부, location.protocol==='file:' 이면 false로 자동감지됨)가
+// true인 실제 배포 환경에서는 이 블록 전체를 건너뛴다. file://로 직접 연 로컬 프로토타입
+// 체험(live=false)에서는 기존과 동일하게 데모 데이터가 보인다.
+if(!window.MVP.live){
 // 데모용 초기 방 1개 생성. 첫 방은 현재 소비자 소유로 표시해 가입 후 실제 displayName이 연결되게 한다.
 var _demoRoomId = makeRoomId('consumer_demo', 'partner_demo');
 var _initialConsumerIdentity = getConsumerIdentity();
@@ -9836,11 +10056,12 @@ syncCurrentPartnerIdentityToRooms(getPartnerProfileState());
 // 기본 활성방을 데모방으로 지정 — 이러면 기존 진입점들이 안 깨지고, chatlist에서 다른 방 선택시 정상 전환됨
 if(!window.currentRoomId) activateRoom(_demoRoomId);
 else syncCurrentServerIdsFromRoom(window.currentRoomId);
+} // end if(!window.MVP.live) — 데모 Room 생성 블록
 window._bootstrappingRooms=false;
 
-const CHAT_ROOMS = [
-  {partner:'강남 인테리어 스튜디오', last:'네 좋습니다. 다음 주부터 착공 가능하신가요?', time:'방금'},
-];
+const CHAT_ROOMS = [];
+// 결함정리(사용자요청 — 감사보고서 지적사항): CHAT_ROOMS는 실제로 어디서도 렌더링에 쓰이지
+// 않는 죽은 고정배열이었음(강남 인테리어 스튜디오 하드코딩). 빈 배열로 안전하게 비활성화.
 // 결함수정(사용자 실제 발견 — 심각): 이전엔 로컬 고정 데모데이터(window.ROOMS)만 보여줘서,
 // 실제로 만든 채팅방(테스트채팅 등)이 이 목록에 전혀 안 나타나고, 소비자 화면에선 같은 업체명이
 // 반복되어 "누가 누구와 대화 중인지" 전혀 구분이 안 되던 문제
@@ -9977,9 +10198,15 @@ function renderChatHeader(){
   var nameEl = document.getElementById('chat-partner-name');
   var subEl = document.getElementById('chat-partner-sub');
   if(room){
-    nameEl.textContent = isPartner() ? room.consumerName : room.partnerName;
+    // 결함정리(사용자요청 — 감사보고서 지적사항): room은 있는데 실제 이름이 비어있는 경우도
+    // 고정업체명이 아니라 역할별 정직한 문구로 표시한다.
+    nameEl.textContent = isPartner()
+      ? (room.consumerName || '상대 사용자')
+      : (room.partnerName || '상대 업체 정보를 불러오지 못했습니다');
   } else {
-    nameEl.textContent = (window.PARTNER_PROFILE && window.PARTNER_PROFILE.name) || '강남 인테리어 스튜디오';
+    // 결함정리(사용자요청 — 감사보고서 지적사항: 메신저 고정이름 완전제거): room을 못 찾은 경우
+    // "강남 인테리어 스튜디오" 같은 고정 데모 업체명을 표시하지 않는다. 역할에 맞는 정직한 안내문.
+    nameEl.textContent = isPartner() ? '상대 사용자' : '상대 업체 정보를 불러오지 못했습니다';
   }
   // 결함수정(사용자 실제 발견): 부제목이 최상위스크립트에서 "면허 파트너 · 검증 완료"로 고정돼 있어서,
   // 소비자와 대화 중(상대가 소비자)인데도 업체용 인증 문구가 잘못 붙던 문제 → 상대방 역할에 맞게 동적 표시
@@ -10318,7 +10545,8 @@ function stopChatPolling(){
   if(window._chatPollTimer){clearTimeout(window._chatPollTimer);window._chatPollTimer=null;}
   window._chatPollRoomId=null;
 }
-// 11/12: 실시간 transport 관리자. 서버 기능에 따라 WebSocket → SSE → 기존 cursor 폴링으로 안전하게 전환한다.
+// 11/12: 실시간 transport 관리자. 실제 동작은 WebSocket → 기존 cursor 폴링으로 안전하게 전환한다.
+// (서버에 SSE는 구현되어 있지 않아 SSE 폴백 시도는 제거되어 있음)
 window.CHAT_TRANSPORT=window.CHAT_TRANSPORT||{
   status:'idle',mode:'idle',roomId:null,desiredRoomId:null,socket:null,eventSource:null,reconnectTimer:null,
   connectTimer:null,reconnectAttempts:0,generation:0,recentEventIds:[],autoSseTried:false
@@ -10356,15 +10584,18 @@ function chatTransportUrl(kind,roomId){
   var base=new URL(window.MVP.apiBase||location.href,location.href);
   if(kind==='websocket'){
     var configured=window.MVP.realtimeWsUrl;
-    if(configured) return chatTransportAllowedUrl(configured,'websocket');
-    base.protocol=base.protocol==='https:'?'wss:':'ws:'; base.pathname='/api/realtime'; base.search='';
-    return chatTransportAllowedUrl(base.toString(),'websocket');
+    var wsUrl;
+    if(configured) wsUrl=new URL(configured,location.href);
+    else{ base.protocol=base.protocol==='https:'?'wss:':'ws:'; base.pathname='/api/realtime'; base.search=''; wsUrl=base; }
+    // 신규(사용자요청 — 9순위 실시간 메신저): WebSocket 표준은 커스텀헤더를 못 보내므로
+    // 서버가 검증할 인증토큰을 쿼리파라미터로 전달(서버는 upgrade 시점에 이 token으로 JWT 검증)
+    if(window.authToken) wsUrl.searchParams.set('token',window.authToken);
+    return chatTransportAllowedUrl(wsUrl.toString(),'websocket');
   }
-  var sseConfigured=window.MVP.realtimeSseUrl;
-  var url=sseConfigured?new URL(sseConfigured,window.MVP.apiBase||location.href):new URL('/api/realtime/events',base);
-  url.searchParams.set('roomId',roomId);
-  var room=window.ROOMS&&window.ROOMS[roomId]; url.searchParams.set('sinceSeq',String(room&&room.lastSeenSeq||0));
-  return chatTransportAllowedUrl(url.toString(),'sse');
+  // 결함정리(사용자요청 — 안전정리): 서버에 SSE(/api/realtime/events)가 구현되어 있지 않아
+  // 'sse' kind로 이 함수가 호출될 일이 없음(호출부 자체가 제거됨). 혹시 남은 호출이 있어도
+  // 안전하게 null을 반환하도록 유지.
+  return null;
 }
 function chatRealtimeEventSeen(event){
   var state=window.CHAT_TRANSPORT;
@@ -10470,29 +10701,23 @@ function connectChatWebSocket(roomId,generation){
   state.socket.onclose=function(){
     if(state.connectTimer){clearTimeout(state.connectTimer);state.connectTimer=null;}
     if(generation!==state.generation||!state.desiredRoomId) return; state.socket=null;
-    var preference=window.MVP.realtimeMode||'auto';
-    if(preference==='auto'&&!state.autoSseTried){state.autoSseTried=true;if(connectChatSse(roomId,generation)) return;}
+    // 결함정리(사용자요청 — 명세정정): SSE 미구현이라 폴백 시도 제거, 곧바로 재접속(폴링 포함) 스케줄로
     scheduleChatTransportReconnect();
   };
   return true;
 }
-function connectChatSse(roomId,generation){
-  if(typeof EventSource==='undefined') return false;
-  var url=chatTransportUrl('sse',roomId); if(!url) return false;
-  var state=window.CHAT_TRANSPORT;state.mode='sse';setChatTransportStatus('connecting','sse');
-  try{state.eventSource=new EventSource(url,{withCredentials:true});}catch(e){state.eventSource=null;return false;}
-  state.connectTimer=setTimeout(function(){if(generation===state.generation&&state.eventSource&&state.status==='connecting'){closeRealtimeHandles();scheduleChatTransportReconnect();}},5000);
-  state.eventSource.onopen=function(){if(generation!==state.generation){closeRealtimeHandles();return;}if(state.connectTimer){clearTimeout(state.connectTimer);state.connectTimer=null;}state.reconnectAttempts=0;stopChatPolling();setChatTransportStatus('connected','sse');};
-  state.eventSource.onmessage=function(message){if(generation===state.generation) handleChatRealtimeEvent(message.data,roomId);};
-  state.eventSource.onerror=function(){if(generation!==state.generation||!state.desiredRoomId)return;closeRealtimeHandles();scheduleChatTransportReconnect();};
-  return true;
-}
+// 결함정리(사용자요청 — 명세정정): 서버에 /api/realtime/events(SSE)가 실제로 구현되어 있지 않음.
+// 결함정리(사용자요청 — 안전정리): 서버에 SSE(/api/realtime/events)가 구현되어 있지 않고,
+// tryPrimaryChatTransport()에서 SSE 분기를 이미 제거해서 이 함수를 호출하는 곳이 없었음.
+// 죽은 코드라 완전히 제거함(나중에 서버에 SSE를 실제로 구현하면 그때 새로 작성할 것).
 function tryPrimaryChatTransport(){
   var state=window.CHAT_TRANSPORT;var roomId=state.desiredRoomId; if(!roomId||roomId!==window.currentRoomId) return false;
   closeRealtimeHandles();
   var preference=window.MVP.realtimeMode||'auto'; var generation=state.generation;
+  // 결함정리(사용자요청 — 명세정정): 서버에 SSE(/api/realtime/events)가 실제로 구현되어 있지 않음.
+  // 이전에는 SSE로 폴백 시도했지만 항상 404라서 5초 타임아웃만 낭비하고 있었음. 정직하게 WebSocket
+  // 실패시 곧바로 폴링으로 넘어가도록 수정(SSE는 향후 실제 구현시 재활성화할 것).
   if((preference==='auto'||preference==='websocket')&&connectChatWebSocket(roomId,generation)) return true;
-  if((preference==='auto'||preference==='sse')&&connectChatSse(roomId,generation)) return true;
   beginPollingTransport(false); return false;
 }
 function startChatTransport(){
@@ -10907,10 +11132,27 @@ setTimeout(function(){
   else restoreConsumerSessionFromServer();
 },0);
 window._measStore = null;           // 프로토타입 인메모리 저장소(실서버 전환 시 삭제)
+function applyMeasServerData(data){
+  data=data||{};
+  window.measJob={
+    status:data.status||'none',slots:Array.isArray(data.slots)?data.slots:[],chosenSlotId:data.chosenSlotId||null,
+    siteNotes:Array.isArray(data.siteNotes)?data.siteNotes:[],log:Array.isArray(data.events)?data.events:[],
+    meetings:data.meetings||{site:false,design:false,material:false},
+    confirmChecks:data.confirmChecks||{photo:false,adjust:false},noshow:Array.isArray(data.noshow)?data.noshow:[],
+    rescheduleCount:data.rescheduleCount||0,revision:data.revision||0
+  };
+  if(typeof renderMeasProgress==='function') renderMeasProgress();
+  if(typeof renderChat==='function') renderChat();
+  return window.measJob;
+}
+function liveMeasAction(path,options,label){
+  return apiFetch('/api/meas-jobs/'+encodeURIComponent(window.currentRoomId)+path,options||{method:'POST',body:'{}'})
+    .then(function(data){return applyMeasServerData(data);})
+    .catch(function(error){reportLiveActionFailure(label||'실측 처리',error);throw error;});
+}
 function saveMeasJob(){
   if(window.MVP.live){
-    // 신규(2단계 프론트연동): 실제 서버 PUT /api/meas-jobs/:roomId 연결(경로는 server.js 실제 구현과 일치)
-    apiFetch('/api/meas-jobs/'+window.currentRoomId, {method:'PUT', body: JSON.stringify(window.measJob)}).catch(function(e){ console.error('실측저장 실패:', e.message); });
+    // 운영모드에서는 전체 객체 덮어쓰기를 금지한다. 각 행동 함수가 역할별 전용 API를 호출한다.
     return;
   }
   try{
@@ -10932,8 +11174,7 @@ function loadMeasJob(){
     // 신규(2단계 프론트연동): 실제 서버 GET /api/meas-jobs/:roomId 연결. 비동기라 즉시 반영이 아니라
     // 응답 도착 후 measJob을 갱신 + 화면을 다시 그려주는 방식(동기 함수 시그니처는 유지, 내부만 비동기 처리)
     apiFetch('/api/meas-jobs/'+window.currentRoomId).then(function(data){
-      window.measJob = { status:data.status, slots:data.slots, chosenSlotId:data.chosenSlotId, siteNotes:[], log:[], meetings:{site:false,design:false,material:false}, confirmChecks:{photo:false, adjust:false}, noshow:data.noshow||[], rescheduleCount:data.rescheduleCount||0 };
-      if(typeof renderMeasProgress==='function') renderMeasProgress();
+      applyMeasServerData(data);
     }).catch(function(e){ console.error('실측조회 실패:', e.message); });
     return;
   }
@@ -10970,20 +11211,34 @@ function reportLiveActionFailure(label, error){
 }
 // Phase B-1: 소비자 전용(명명규칙 적용) — 받은 가견적서 읽기전용 요약
 function renderQuoteReadonly08(){ return c_renderQuoteReadonly08(); }
+async function loadLiveQuotesForCurrentRequest(){
+  var requestId=getCurrentRoomServerId('requestId');if(!requestId){c_renderQuoteReadonly08();return;}
+  try{
+    var rows=await apiFetch('/api/quote-requests/'+encodeURIComponent(requestId)+'/quotes');
+    window.SENT_QUOTES=(rows||[]).map(function(q){return {id:q.id,version:q.version,status:q.status,type:q.type,total:q.total_amount,pyeong:q.pyeong,at:q.sent_at,items:q.items};});
+    var latest=window.SENT_QUOTES.slice().sort(function(a,b){return (b.version||0)-(a.version||0);})[0];
+    if(latest){setRoomServerId('quoteId',latest.id);if(latest.status==='sent'){try{var viewed=await apiFetch('/api/quotes/'+encodeURIComponent(latest.id)+'/view',{method:'POST',body:'{}'});latest.status=viewed.status;}catch(e){}}}
+    c_renderQuoteReadonly08();
+  }catch(e){reportLiveActionFailure('견적서 불러오기',e);c_renderQuoteReadonly08();}
+}
 function c_renderQuoteReadonly08(){
   var el=document.getElementById('quote-readonly-08'); if(!el) return;
   var list=window.SENT_QUOTES||[];
   if(!list.length){ el.innerHTML='<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:24px;text-align:center;margin:20px 0"><div class="caption" style="color:var(--slate)">아직 받은 가견적서가 없어요.<br>업체가 견적서를 작성하면 여기서 확인할 수 있어요.</div></div><button class="btn btn-outline" onclick="closeToReturn()">닫기</button>'; return; }
+  var latestVersion=Math.max.apply(null,list.map(function(q){return Number(q.version)||1;}));
   el.innerHTML=list.map(function(q){
     var phaseRows=[]; Object.keys(q.phases||{}).forEach(function(idx){ var rows=q.phases[idx]; if(rows) Object.values(rows).forEach(function(price){ phaseRows.push(price); }); });
     return '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:18px;margin:16px 0">'
-      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span style="font-size:15px;font-weight:700;color:var(--charcoal)">받은 가견적서</span><span style="font-size:13px;color:var(--slate)">'+(q.at||'')+'</span></div>'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span style="font-size:15px;font-weight:700;color:var(--charcoal)">'+(q.type==='revised'?'수정견적서':'받은 가견적서')+' v'+(q.version||1)+'</span><span style="font-size:13px;color:var(--slate)">'+(q.status||'')+'</span></div>'
       + '<div style="font-size:14.5px;color:var(--slate);margin-bottom:4px">'+(q.pyeong?q.pyeong+'평 기준':'')+'</div>'
       + '<div style="font-size:28px;font-weight:800;color:var(--terracotta)">'+(q.total||0).toLocaleString()+'원</div>'
       + '<div style="font-size:12.5px;color:var(--slate);margin-top:8px">'+icon('shieldCheck',T.slate,11)+' 실측 후 ±10% 내외 변동될 수 있습니다.</div>'
+      + ((Number(q.version||1)===latestVersion&&(q.status==='sent'||q.status==='viewed'))?'<div style="display:flex;gap:7px;margin-top:12px"><button class="btn btn-outline" style="flex:1" onclick="requestQuoteRevision(\''+q.id+'\')">수정 요청</button><button class="btn btn-outline" style="flex:1;color:var(--danger)" onclick="rejectReceivedQuote(\''+q.id+'\')">거절</button></div>':'')
     + '</div>';
   }).join('') + '<button class="btn btn-outline" style="margin-top:10px" onclick="closeToReturn()">닫기</button>';
 }
+async function requestQuoteRevision(quoteId){var reason=prompt('수정이 필요한 내용을 입력해주세요.');if(!reason||!reason.trim())return;try{await apiFetch('/api/quotes/'+encodeURIComponent(quoteId)+'/revision-request',{method:'POST',body:JSON.stringify({reason:reason.trim()})});await loadLiveQuotesForCurrentRequest();}catch(e){reportLiveActionFailure('견적 수정요청',e);}}
+async function rejectReceivedQuote(quoteId){var reason=prompt('견적을 거절하는 이유를 입력해주세요.');if(!reason||!reason.trim())return;try{await apiFetch('/api/quotes/'+encodeURIComponent(quoteId)+'/reject',{method:'POST',body:JSON.stringify({reason:reason.trim()})});await loadLiveQuotesForCurrentRequest();}catch(e){reportLiveActionFailure('견적 거절',e);}}
 function measDatesArr(){ var out=[],d=new Date(),w=['일','월','화','수','목','금','토']; for(var i=1;i<=6;i++){ var t=new Date(d.getTime()+i*86400000); out.push((t.getMonth()+1)+'/'+t.getDate()+'('+w[t.getDay()]+')'); } return out; }
 function measDateObjs(){ var out=[],d=new Date(),w=['일','월','화','수','목','금','토']; for(var i=1;i<=6;i++){ var t=new Date(d.getTime()+i*86400000); var iso=t.getFullYear()+'-'+('0'+(t.getMonth()+1)).slice(-2)+'-'+('0'+t.getDate()).slice(-2); out.push({label:(t.getMonth()+1)+'/'+t.getDate()+'('+w[t.getDay()]+')', iso:iso}); } return out; }
 function measDday(iso){ if(!iso) return null; var today=new Date(); today.setHours(0,0,0,0); var dt=new Date(iso+'T00:00:00'); return Math.round((dt-today)/86400000); }
@@ -10997,7 +11252,7 @@ function openLogSheet(){
   var rows=lg.length? lg.map(function(e){ return '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--ivory);font-size:14.5px"><span style="color:var(--slate);width:42px;flex-shrink:0">'+e.t+'</span><span style="font-weight:700;width:44px;flex-shrink:0;color:'+(e.actor==='업체'?'var(--steelblue)':'var(--terracotta)')+'">'+e.actor+'</span><span style="color:var(--charcoal)">'+e.action+'</span></div>'; }).join('') : '<div class="caption" style="color:var(--slate)">아직 이력이 없어요.</div>';
   openMeasSheet('<div style="font-size:17.5px;font-weight:800;margin-bottom:4px">실측 진행 이력</div><div class="caption" style="margin-bottom:12px">모든 액션이 시각·행위자와 함께 기록됩니다. (실서비스에선 감사추적으로 저장)</div>'+rows+'<button class="btn btn-outline" style="margin-top:14px" onclick="closeMeasSheet()">닫기</button>');
 }
-function measToggleCheck(k){ if(!requireRoomerRole('consumer','최종 확인 체크는 소비자 계정에서만 할 수 있습니다.')) return; window.measJob.confirmChecks=window.measJob.confirmChecks||{photo:false,adjust:false}; window.measJob.confirmChecks[k]=!window.measJob.confirmChecks[k]; saveMeasJob(); renderChat(); }
+async function measToggleCheck(k){ if(!requireRoomerRole('consumer','최종 확인 체크는 소비자 계정에서만 할 수 있습니다.')) return; window.measJob.confirmChecks=window.measJob.confirmChecks||{photo:false,adjust:false}; var checked=!window.measJob.confirmChecks[k]; if(window.MVP.live){try{await liveMeasAction('/confirmation',{method:'PUT',body:JSON.stringify({key:k,checked:checked})},'최종 확인항목 변경');return;}catch(e){return;}} window.measJob.confirmChecks[k]=checked; saveMeasJob(); renderChat(); }
 function renderMeasProgress(targetId){
   var el=document.getElementById(targetId||'meas-progress'); if(!el) return;
   var j=window.measJob;
@@ -11036,7 +11291,7 @@ function slotPickDate(el){ var p=el.parentNode; p.querySelectorAll('.chip').forE
 function slotAdd(){ var d=document.querySelector('#slot-dates .chip.active'); var date=d?d.textContent:measDatesArr()[0]; var time=document.getElementById('slot-time').value; window._slotDraft=window._slotDraft||[]; if(window._slotDraft.some(function(s){return s.date===date&&s.time===time;}))return; var _iso=(measDateObjs().filter(function(x){return x.label===date;})[0]||{}).iso; window._slotDraft.push({id:'sl'+Date.now()+Math.floor(Math.random()*99), date:date, iso:_iso, time:time}); renderSlotDraft(); }
 function renderSlotDraft(){ var el=document.getElementById('slot-list'); if(!el)return; var a=window._slotDraft||[]; el.innerHTML=a.length? a.map(function(s,i){ return '<div style="display:flex;justify-content:space-between;align-items:center;background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-input);padding:8px 12px;margin-bottom:6px"><span style="font-size:15px;font-weight:600">'+s.date+' · '+s.time+'</span><button type="button" onclick="slotDel('+i+')" style="border:none;background:none;color:var(--slate);font-size:17.5px;cursor:pointer">&times;</button></div>'; }).join('') : '<div class="caption" style="color:var(--slate)">추가된 일정이 없어요.</div>'; }
 function slotDel(i){ window._slotDraft.splice(i,1); renderSlotDraft(); }
-function sendSlotCard(){ if(!requireRoomerRole('partner')) return; var a=window._slotDraft||[]; if(!a.length){ var _do=measDateObjs(); a=[{id:'sl1',date:_do[0].label,iso:_do[0].iso,time:'10:30'},{id:'sl2',date:_do[1].label,iso:_do[1].iso,time:'14:30'},{id:'sl3',date:_do[2].label,iso:_do[2].iso,time:'16:00'}]; } window.measJob.slots=a; window.measJob.chosenSlotId=null; window.measJob.status='slots_proposed'; closeMeasSheet(); if(!CHAT_LOG.some(function(m){return m.who==='card'&&m.card==='slots';})){ CHAT_LOG.push({who:'card', card:'slots'}); } measLog('업체','실측 가능 일정 '+a.length+'개 제안'); saveMeasJob(); chatSys('업체가 실측 가능 일정 '+a.length+'개를 제안했어요.'); }
+async function sendSlotCard(){ if(!requireRoomerRole('partner')) return; var a=window._slotDraft||[]; if(!a.length){ var _do=measDateObjs(); a=[{id:'sl1',date:_do[0].label,iso:_do[0].iso,time:'10:30'},{id:'sl2',date:_do[1].label,iso:_do[1].iso,time:'14:30'},{id:'sl3',date:_do[2].label,iso:_do[2].iso,time:'16:00'}]; } if(window.MVP.live){try{await liveMeasAction('/slots',{method:'POST',body:JSON.stringify({slots:a})},'실측 일정 제안');closeMeasSheet();return;}catch(e){return;}} window.measJob.slots=a; window.measJob.chosenSlotId=null; window.measJob.status='slots_proposed'; closeMeasSheet(); if(!CHAT_LOG.some(function(m){return m.who==='card'&&m.card==='slots';})){ CHAT_LOG.push({who:'card', card:'slots'}); } measLog('업체','실측 가능 일정 '+a.length+'개 제안'); saveMeasJob(); chatSys('업체가 실측 가능 일정 '+a.length+'개를 제안했어요.'); }
 
 /* 특이사항 시트(업체) */
 function openNotesSheet(){
@@ -11045,11 +11300,11 @@ function openNotesSheet(){
   var rows=MEAS_PHASES.map(function(p){ var opts=MEAS_STATUS.map(function(s){ return '<option value="'+s+'">'+s+'</option>'; }).join(''); return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:7px"><span style="width:78px;flex-shrink:0;font-size:13.5px;color:var(--charcoal)">'+p+'</span><select class="note-status" style="flex:1;min-width:0;padding:7px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:13px;font-family:inherit;background:#fff">'+opts+'</select><input class="note-memo" placeholder="메모(선택)" style="width:86px;padding:7px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:13px;font-family:inherit"></div>'; }).join('');
   openMeasSheet('<div style="font-size:17.5px;font-weight:800;margin-bottom:4px">실측 결과 · 현장 특이사항</div><div class="caption" style="margin-bottom:12px">공정별 상태를 한 줄로 선택하세요. 금액은 견적서에서 확정하므로 여기선 넣지 않습니다.</div><div style="max-height:46vh;overflow-y:auto">'+rows+'</div><button class="btn btn-primary" style="margin-top:14px" onclick="sendNotesCard()">실측 결과 전송</button><button class="btn btn-outline" style="margin-top:8px" onclick="closeMeasSheet()">닫기</button>');
 }
-function sendNotesCard(){ if(!requireRoomerRole('partner')) return; var st=document.querySelectorAll('.note-status'), mm=document.querySelectorAll('.note-memo'); var notes=[]; for(var i=0;i<MEAS_PHASES.length;i++){ notes.push({phase:MEAS_PHASES[i], status:st[i].value, memo:(mm[i].value||'').trim()}); } var changed=notes.filter(function(n){return n.status!=='이상 없음';}).length; var hasPhoto=CHAT_LOG.some(function(m){return m.who==='photo';}); if(changed===0 && !hasPhoto){ chatSys(icon('triangleWarn',T.warning,13)+' 변동 공정도 없고 현장 사진도 없어요. 실측 결과에는 최소 하나가 필요합니다 (사진 전송 또는 공정 상태 변경).'); return; } window.measJob.siteNotes=notes; window.measJob.status='measured'; closeMeasSheet(); if(!CHAT_LOG.some(function(m){return m.who==='card'&&m.card==='result';})){ CHAT_LOG.push({who:'card', card:'result'}); } measLog('업체','실측 결과 전송 (변동 공정 '+changed+'개'+(hasPhoto?', 사진 포함':'')+')'); saveMeasJob(); chatSys('업체가 실측 결과를 보냈어요. 현장 사진은 사진 버튼으로 전송하고, 저장하려면 사진의 [저장]을 누르세요.'); }
+async function sendNotesCard(){ if(!requireRoomerRole('partner')) return; var st=document.querySelectorAll('.note-status'), mm=document.querySelectorAll('.note-memo'); var notes=[]; for(var i=0;i<MEAS_PHASES.length;i++){ notes.push({phase:MEAS_PHASES[i], status:st[i].value, memo:(mm[i].value||'').trim()}); } var changed=notes.filter(function(n){return n.status!=='이상 없음';}).length; var hasPhoto=CHAT_LOG.some(function(m){return m.who==='photo';}); if(changed===0 && !hasPhoto){ chatSys(icon('triangleWarn',T.warning,13)+' 변동 공정도 없고 현장 사진도 없어요. 실측 결과에는 최소 하나가 필요합니다 (사진 전송 또는 공정 상태 변경).'); return; } if(window.MVP.live){try{await liveMeasAction('/result',{method:'POST',body:JSON.stringify({siteNotes:notes})},'실측 결과 전송');closeMeasSheet();return;}catch(e){return;}} window.measJob.siteNotes=notes; window.measJob.status='measured'; closeMeasSheet(); if(!CHAT_LOG.some(function(m){return m.who==='card'&&m.card==='result';})){ CHAT_LOG.push({who:'card', card:'result'}); } measLog('업체','실측 결과 전송 (변동 공정 '+changed+'개'+(hasPhoto?', 사진 포함':'')+')'); saveMeasJob(); chatSys('업체가 실측 결과를 보냈어요. 현장 사진은 사진 버튼으로 전송하고, 저장하려면 사진의 [저장]을 누르세요.'); }
 
 /* 카드 상호작용 */
-function measSelectSlot(id){ if(!requireRoomerRole('consumer','일정 선택은 소비자 계정에서만 할 수 있습니다.')) return; if(window.measJob.status!=='slots_proposed'){ return; } window.measJob.chosenSlotId=id; window.measJob.status='slot_selected'; var s=window.measJob.slots.filter(function(x){return x.id===id;})[0]; measLog('소비자','실측 일정 선택: '+(s?s.date+' '+s.time:'')); saveMeasJob(); chatSys('소비자가 실측 일정을 선택했어요: '+(s?s.date+' · '+s.time:'')); }
-function sendFinalCard(){ if(!requireRoomerRole('partner','최종견적서 전송은 업체 계정에서만 할 수 있습니다.')) return; if(window.measJob.status!=='measured'){ chatSys(icon('shieldCheck',T.slate,13)+' 이미 최종견적서를 보냈어요 (되돌리기 잠금).'); return; } window.measJob.status='final_quote_sent'; if(!CHAT_LOG.some(function(m){return m.who==='card'&&m.card==='final';})){ CHAT_LOG.push({who:'card', card:'final'}); } measLog('업체','최종견적서 전송'); saveMeasJob(); chatSys('업체가 실측 기준 최종견적서를 보냈어요. 이제 현장·디자인·자재 미팅을 진행하세요.'); }
+async function measSelectSlot(id){ if(!requireRoomerRole('consumer','일정 선택은 소비자 계정에서만 할 수 있습니다.')) return; if(window.measJob.status!=='slots_proposed'){ return; } if(window.MVP.live){try{await liveMeasAction('/select',{method:'POST',body:JSON.stringify({slotId:id})},'실측 일정 선택');return;}catch(e){return;}} window.measJob.chosenSlotId=id; window.measJob.status='slot_selected'; var s=window.measJob.slots.filter(function(x){return x.id===id;})[0]; measLog('소비자','실측 일정 선택: '+(s?s.date+' '+s.time:'')); saveMeasJob(); chatSys('소비자가 실측 일정을 선택했어요: '+(s?s.date+' · '+s.time:'')); }
+async function sendFinalCard(){ if(!requireRoomerRole('partner','최종견적서 전송은 업체 계정에서만 할 수 있습니다.')) return; if(window.measJob.status!=='measured'){ chatSys(icon('shieldCheck',T.slate,13)+' 이미 최종견적서를 보냈어요 (되돌리기 잠금).'); return; } if(window.MVP.live){try{await liveMeasAction('/final-quote-sent',{method:'POST',body:'{}'},'최종견적 단계 전송');return;}catch(e){return;}} window.measJob.status='final_quote_sent'; if(!CHAT_LOG.some(function(m){return m.who==='card'&&m.card==='final';})){ CHAT_LOG.push({who:'card', card:'final'}); } measLog('업체','최종견적서 전송'); saveMeasJob(); chatSys('업체가 실측 기준 최종견적서를 보냈어요. 이제 현장·디자인·자재 미팅을 진행하세요.'); }
 async function measConfirmFinal(){
   if(!requireRoomerRole('consumer','최종 계약금액 확인은 소비자 계정에서만 할 수 있습니다.')) return;
   var cc=window.measJob.confirmChecks||{}; if(!(cc.photo && cc.adjust)){ chatSys(icon('triangleWarn',T.warning,13)+' 견적서 확인·계약금액 동의에 모두 체크해야 최종 확인할 수 있어요.'); return; }
@@ -11058,22 +11313,25 @@ async function measConfirmFinal(){
   if(window.MVP.live){
     // 신규(2단계 프론트연동 - 상태추적 갭 해결): 여기가 실제 "계약확정" 시점 → currentContractId를 채우면
     // 이후 분쟁신고/AI감리신청/하자보수접수 3곳이 자동으로 완전 연결됨
-    // 결함수정: window.contractAmounts는 {partner,consumer} 단일 합의금액 구조(분할금액 아님) — 소비자가 확인한 금액을 final로 전송
+    // 확정 총액을 서버 계약 대금일정(10/30/30/잔여 30%)으로 분할해 합계가 정확히 일치하도록 전송
     var finalAmount = (window.contractAmounts && window.contractAmounts.consumer) || window.total08 || 0;
     try{
-      var data = await apiFetch('/api/contracts', {method:'POST', body: JSON.stringify({ quoteId: activeQuoteId, final: finalAmount })});
+      var depositAmount=Math.floor(finalAmount*0.1),downAmount=Math.floor(finalAmount*0.3),middleAmount=Math.floor(finalAmount*0.3),balanceAmount=finalAmount-depositAmount-downAmount-middleAmount;
+      await apiFetch('/api/quotes/'+encodeURIComponent(activeQuoteId)+'/accept',{method:'POST',body:'{}'});
+      var data = await apiFetch('/api/contracts', {method:'POST', body: JSON.stringify({ quoteId: activeQuoteId, deposit:depositAmount, down:downAmount, middle:middleAmount, final:balanceAmount })});
       setRoomServerId('contractId', data.id);
       hydrateRoomServerIdsFromPayload(data, window.currentRoomId);
+      await liveMeasAction('/contract-confirmed',{method:'POST',body:JSON.stringify({contractId:data.id})},'계약 상태 확정');
     }catch(e){ reportLiveActionFailure('최종 계약 확정', e); return; }
   }
   window.measJob.status='contract_confirmed'; measLog('소비자','최종 계약금액 확인 완료'); saveMeasJob();
   chatSys('소비자가 최종 계약금액을 확인했어요. 계약을 진행하세요.');
 }
 function pushMeetingsCard(){ if(!CHAT_LOG.some(function(m){return m.who==='card'&&m.card==='meetings';})){ CHAT_LOG.push({who:'card',card:'meetings'}); } measLog(isPartner()?'업체':'소비자','미팅 단계 시작'); saveMeasJob(); renderChat(); }
-function toggleMeeting(k){ if(!requireRoomerRole('partner','미팅 완료 체크는 업체 계정에서만 할 수 있습니다.')) return; if(window.measJob.status==='quote_finalized' || window.measJob.status==='contract_confirmed'){ chatSys(icon('shieldCheck',T.slate,13)+' 견적서 확정 후에는 미팅 상태를 변경할 수 없어요 (되돌리기 잠금).'); return; } window.measJob.meetings=window.measJob.meetings||{site:false,design:false,material:false}; window.measJob.meetings[k]=!window.measJob.meetings[k]; var m=window.measJob.meetings; if(m.site&&m.design&&m.material){ window.measJob.status='meetings_done'; } else if(window.measJob.status==='meetings_done'){ window.measJob.status='final_quote_sent'; } saveMeasJob(); renderChat(); }
-function finalizeQuote(){ if(!requireRoomerRole('partner','견적서 확정은 업체 계정에서만 할 수 있습니다.')) return; if(window.measJob.status==='contract_confirmed'){ chatSys(icon('shieldCheck',T.slate,13)+' 이미 최종 계약금액이 확정되어 변경할 수 없어요 (되돌리기 잠금).'); return; } var m=window.measJob.meetings||{}; if(!(m.site&&m.design&&m.material)){ chatSys(icon('triangleWarn',T.warning,13)+' 현장·디자인·자재 미팅을 모두 완료해야 견적서를 확정할 수 있어요.'); return; } window.measJob.status='quote_finalized'; if(!CHAT_LOG.some(function(x){return x.who==='card'&&x.card==='contract';})){ CHAT_LOG.push({who:'card',card:'contract'}); } measLog('업체','실제 견적서 확정 작성 완료'); saveMeasJob(); chatSys('업체가 실제 견적서를 확정해 보냈어요. 최종 계약금액을 확인하세요.'); }
-function measRequestReschedule(){ if(window.measJob.status!=='slot_selected'){ return; } var by=isPartner()?'업체':'소비자'; window.measJob.chosenSlotId=null; window.measJob.status='slots_proposed'; window.measJob.rescheduleCount=(window.measJob.rescheduleCount||0)+1; measLog(by,'일정 변경 요청 (재조율 '+window.measJob.rescheduleCount+'회)'); saveMeasJob(); notifyMeas(by+'가 실측 일정 변경을 요청했어요. 다시 선택해 주세요.'); }
-function measReportNoshow(){ if(window.measJob.status!=='slot_selected'){ return; } var by=isPartner()?'업체':'소비자', other=isPartner()?'소비자':'업체'; window.measJob.noshow=window.measJob.noshow||[]; window.measJob.noshow.push({by:by, at:measNow()}); window.measJob.chosenSlotId=null; window.measJob.status='slots_proposed'; measLog(by, other+' 노쇼 신고 → 일정 재조율'); saveMeasJob(); notifyMeas(by+'가 '+other+' 노쇼를 신고했어요. 일정을 다시 잡아주세요.'+(window.measJob.noshow.length>=2?' ⚠ 반복 노쇼 기록됨(어뷰징 검토 대상)':'')); }
+async function toggleMeeting(k){ if(!requireRoomerRole('partner','미팅 완료 체크는 업체 계정에서만 할 수 있습니다.')) return; if(window.measJob.status==='quote_finalized' || window.measJob.status==='contract_confirmed'){ chatSys(icon('shieldCheck',T.slate,13)+' 견적서 확정 후에는 미팅 상태를 변경할 수 없어요 (되돌리기 잠금).'); return; } window.measJob.meetings=window.measJob.meetings||{site:false,design:false,material:false}; var completed=!window.measJob.meetings[k]; if(window.MVP.live){try{await liveMeasAction('/meetings/'+encodeURIComponent(k),{method:'PUT',body:JSON.stringify({completed:completed})},'미팅 상태 변경');return;}catch(e){return;}} window.measJob.meetings[k]=completed; var m=window.measJob.meetings; if(m.site&&m.design&&m.material){ window.measJob.status='meetings_done'; } else if(window.measJob.status==='meetings_done'){ window.measJob.status='final_quote_sent'; } saveMeasJob(); renderChat(); }
+async function finalizeQuote(){ if(!requireRoomerRole('partner','견적서 확정은 업체 계정에서만 할 수 있습니다.')) return; if(window.measJob.status==='contract_confirmed'){ chatSys(icon('shieldCheck',T.slate,13)+' 이미 최종 계약금액이 확정되어 변경할 수 없어요 (되돌리기 잠금).'); return; } var m=window.measJob.meetings||{}; if(!(m.site&&m.design&&m.material)){ chatSys(icon('triangleWarn',T.warning,13)+' 현장·디자인·자재 미팅을 모두 완료해야 견적서를 확정할 수 있어요.'); return; } if(window.MVP.live){try{var currentQuoteId=getCurrentRoomServerId('quoteId');if(!currentQuoteId)throw new Error('현재 Room에 연결된 견적서가 없습니다.');var source=(window.SENT_QUOTES||[]).slice().reverse().find(function(q){return Array.isArray(q.items)&&q.items.length;});var revisionItems=source&&source.items?source.items:(typeof finalQuoteItems!=='undefined'?Object.values(finalQuoteItems||{}):[]);if(!revisionItems.length)throw new Error('수정견적에 포함할 공정별 금액이 없습니다.');var revised=await apiFetch('/api/quotes/'+encodeURIComponent(currentQuoteId)+'/revisions',{method:'POST',body:JSON.stringify({pyeong:Number(document.getElementById('pyeong-input-08').value)||0,items:revisionItems.map(function(it){return {phaseLabel:it.phaseLabel||null,name:it.name,price:Number(it.price)||0};})})});setRoomServerId('quoteId',revised.id);hydrateRoomServerIdsFromPayload(revised,window.currentRoomId);window.SENT_QUOTES.push({id:revised.id,version:revised.version,type:'revised',total:revised.total_amount,items:revised.items,at:(typeof measNow==='function'?measNow():'')});await liveMeasAction('/quote-finalized',{method:'POST',body:'{}'},'견적서 확정');return;}catch(e){reportLiveActionFailure('수정견적 확정',e);return;}} window.measJob.status='quote_finalized'; if(!CHAT_LOG.some(function(x){return x.who==='card'&&x.card==='contract';})){ CHAT_LOG.push({who:'card',card:'contract'}); } measLog('업체','실제 견적서 확정 작성 완료'); saveMeasJob(); chatSys('업체가 실제 견적서를 확정해 보냈어요. 최종 계약금액을 확인하세요.'); }
+async function measRequestReschedule(){ if(window.measJob.status!=='slot_selected'){ return; } if(window.MVP.live){try{await liveMeasAction('/reschedule',{method:'POST',body:'{}'},'실측 일정 재조율');return;}catch(e){return;}} var by=isPartner()?'업체':'소비자'; window.measJob.chosenSlotId=null; window.measJob.status='slots_proposed'; window.measJob.rescheduleCount=(window.measJob.rescheduleCount||0)+1; measLog(by,'일정 변경 요청 (재조율 '+window.measJob.rescheduleCount+'회)'); saveMeasJob(); notifyMeas(by+'가 실측 일정 변경을 요청했어요. 다시 선택해 주세요.'); }
+async function measReportNoshow(){ if(window.measJob.status!=='slot_selected'){ return; } if(window.MVP.live){try{await liveMeasAction('/noshow',{method:'POST',body:'{}'},'노쇼 신고');return;}catch(e){return;}} var by=isPartner()?'업체':'소비자', other=isPartner()?'소비자':'업체'; window.measJob.noshow=window.measJob.noshow||[]; window.measJob.noshow.push({by:by, at:measNow()}); window.measJob.chosenSlotId=null; window.measJob.status='slots_proposed'; measLog(by, other+' 노쇼 신고 → 일정 재조율'); saveMeasJob(); notifyMeas(by+'가 '+other+' 노쇼를 신고했어요. 일정을 다시 잡아주세요.'+(window.measJob.noshow.length>=2?' ⚠ 반복 노쇼 기록됨(어뷰징 검토 대상)':'')); }
 // ⚡MVP-SWITCH 알림 어댑터 — 실서버 전환 시 FCM 발송부 활성화
 function notifyMeas(msg){ /* ⚡MVP-SWITCH: 실서버 → await fetch('/api/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:'실측 알림',body:msg})}); (FCM) */ var _dot='<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--terracotta);margin-right:5px;vertical-align:middle"></span>'; CHAT_LOG.push({who:'system', text:_dot+msg}); updateMeasBadge(); renderChat(); }
 function updateMeasBadge(){ if(typeof renderChatlist==='function') renderChatlist(); }
@@ -11129,13 +11387,75 @@ renderChecklist();
 /* ===== 신규: 대금납부 안내(명세 기능4) ===== */
 document.getElementById('btn-feeinfo-back').innerHTML = icon('chevronRight',T.charcoal,18);
 document.getElementById('t-feeinfo').textContent = '대금 납부 안내';
-document.getElementById('fee-breakdown').innerHTML =
-  '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:0.5px solid var(--stone);font-size:15px"><span>계약금 (10%)</span><b>3,000,000원</b></div>'+
-  '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:0.5px solid var(--stone);font-size:15px"><span>선금 (30%)</span><b>9,000,000원</b></div>'+
-  '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:0.5px solid var(--stone);font-size:15px"><span>중도금 (30%)</span><b>9,000,000원</b></div>'+
-  '<div style="display:flex;justify-content:space-between;padding:8px 0;font-size:15px"><span>잔금 (30%)</span><b>9,000,000원</b></div>'+
-  '<div style="font-size:13px;color:var(--slate);padding:10px 0 2px;line-height:1.6">'+icon('shieldCheck',T.success,12)+' 준공일로부터 1년간 무상 하자보수 · 잔금은 최종 점검 후 지급 권장</div>';
-document.getElementById('d-feeinfo').textContent = '계약금액 3,000만원 기준입니다. 납부는 안내된 계좌로 직접 이체해주세요. 플랫폼은 결제를 중개하지 않습니다.';
+function renderContractPayments(){
+  var box=document.getElementById('fee-breakdown'),desc=document.getElementById('d-feeinfo');if(!box)return;
+  var total=(window.contractAmounts&&window.contractAmounts.consumer)||window.contractAmountValue||window.total08||0;
+  var dep=Math.floor(total*.1),down=Math.floor(total*.3),middle=Math.floor(total*.3),fin=total-dep-down-middle;
+  var rows=[['deposit','계약금 (10%)',dep],['down','선금 (30%)',down],['middle','중도금 (30%)',middle],['final','잔금 (30%)',fin]];
+  box.innerHTML=rows.map(function(row){return '<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:0.5px solid var(--stone);font-size:15px"><span>'+row[1]+'</span><span style="display:flex;align-items:center;gap:8px"><b>'+Number(row[2]).toLocaleString()+'원</b>'+(window.MVP.live?'<button type="button" onclick="payContractInstallment(\''+row[0]+'\')" style="border:1px solid var(--steelblue);background:#fff;color:var(--steelblue);border-radius:7px;padding:5px 8px;cursor:pointer">결제</button>':'')+'</span></div>';}).join('')+'<div style="font-size:13px;color:var(--slate);padding:10px 0 2px;line-height:1.6">'+icon('shieldCheck',T.success,12)+' 준공일로부터 1년간 무상 하자보수 · 잔금은 최종 점검 후 지급 권장</div>';
+  if(desc)desc.textContent=window.MVP.live?'토스페이먼츠에서 승인된 결제만 서버가 금액을 다시 검증해 반영합니다.':'프로토타입에서는 결제 안내만 확인할 수 있습니다.';
+}
+// 결함정리(사용자요청 — PG사를 포트원 경유가 아닌 토스페이먼츠 자체 API로 직접 연동하기로 확정):
+// 결제 흐름 전체를 토스페이먼츠 결제위젯(Payment Widget) SDK 방식으로 교체.
+// 본인확인(loadPortOneIdentitySdk)은 그대로 포트원을 유지하되, 결제만 별도 SDK 로더 사용.
+function loadTossPaymentsSdk(){
+  if(window.TossPayments) return Promise.resolve(window.TossPayments);
+  if(window._tossSdkPromise) return window._tossSdkPromise;
+  window._tossSdkPromise=new Promise(function(resolve,reject){
+    var script=document.createElement('script');script.src='https://js.tosspayments.com/v2/standard';script.async=true;
+    script.onload=function(){window.TossPayments?resolve(window.TossPayments):reject(new Error('결제 SDK를 초기화하지 못했습니다'));};
+    script.onerror=function(){reject(new Error('결제 SDK를 불러오지 못했습니다'));};document.head.appendChild(script);
+  });
+  return window._tossSdkPromise;
+}
+async function payContractInstallment(installmentType){
+  var contractId=getCurrentRoomServerId('contractId');if(!contractId){alert('현재 대화방에 연결된 계약이 없습니다.');return;}
+  try{
+    var order=await apiFetch('/api/contracts/'+encodeURIComponent(contractId)+'/payments',{method:'POST',body:JSON.stringify({installmentType:installmentType})});
+    var TossPaymentsSdk=await loadTossPaymentsSdk();
+    // customerKey는 유추 가능한 값(이메일·전화번호·자동증가 숫자) 사용 금지 — 무작위 UUID 사용
+    var customerKey=(window.crypto&&window.crypto.randomUUID)?window.crypto.randomUUID():('cust-'+Date.now()+'-'+Math.random().toString(36).slice(2));
+    var tossPayments=TossPaymentsSdk(order.clientKey);
+    var widgets=tossPayments.widgets({customerKey:customerKey});
+    await widgets.setAmount({currency:'KRW',value:order.amount});
+    var widgetBox=document.getElementById('toss-payment-widget'),agreementBox=document.getElementById('toss-agreement-widget'),confirmBtn=document.getElementById('btn-toss-pay-confirm');
+    widgetBox.style.display='block';agreementBox.style.display='block';confirmBtn.style.display='block';
+    await widgets.renderPaymentMethods({selector:'#toss-payment-widget',variantKey:'DEFAULT'});
+    await widgets.renderAgreement({selector:'#toss-agreement-widget'});
+    // 결제 요청 전, 서버가 이 orderId·금액을 이미 알고 있으므로(방금 생성 API에서) 별도 임시저장 불필요
+    window._tossPendingWidgets=widgets;
+    window._tossPendingOrder=order;
+  }catch(e){alert('결제 준비를 완료하지 못했습니다: '+e.message);}
+}
+async function requestTossPaymentConfirm(){
+  var widgets=window._tossPendingWidgets,order=window._tossPendingOrder;
+  if(!widgets||!order){alert('결제 준비 정보를 찾을 수 없습니다. 다시 시도해주세요.');return;}
+  try{
+    // successUrl/failUrl은 현재 페이지로 리다이렉트(SPA 구조라 쿼리파라미터로 결과를 감지해 처리)
+    var base=location.origin+location.pathname;
+    await widgets.requestPayment({
+      orderId:order.orderId, orderName:order.orderName,
+      successUrl: base+'?tossPaySuccess=1', failUrl: base+'?tossPayFail=1'
+    });
+  }catch(e){alert('결제 요청에 실패했습니다: '+e.message);}
+}
+// 결제 성공/실패 리다이렉트 복귀 처리: 페이지 로드시 URL 쿼리파라미터를 확인해서 자동으로 승인 API 호출
+(function handleTossPaymentRedirectReturn(){
+  try{
+    var params=new URLSearchParams(location.search);
+    if(params.get('tossPaySuccess')==='1'&&params.get('paymentKey')&&params.get('orderId')){
+      var paymentKey=params.get('paymentKey'), orderId=params.get('orderId');
+      history.replaceState(null,'',location.pathname); // 쿼리파라미터 정리(새로고침시 중복승인 방지)
+      apiFetch('/api/payments/'+encodeURIComponent(orderId)+'/confirm',{method:'POST',body:JSON.stringify({paymentKey:paymentKey})})
+        .then(function(confirmed){ alert(confirmed.status==='paid'?'결제가 확인되었습니다.':'결제 상태를 확인 중입니다.'); })
+        .catch(function(e){ alert('결제 승인 확인에 실패했습니다: '+e.message); });
+    } else if(params.get('tossPayFail')==='1'){
+      history.replaceState(null,'',location.pathname);
+      alert('결제가 취소되었거나 실패했습니다: '+(params.get('message')||''));
+    }
+  }catch(e){}
+})();
+renderContractPayments();
 document.getElementById('btn-feeinfo-close').textContent = '닫기';
 
 /* ===== 신규: 추가 견적서 발행(명세 기능5) ===== */
@@ -11602,6 +11922,15 @@ function notifyConsumer(type, message, severity, targetScreen){
   if(typeof updateConsumerAlertBadge === 'function') updateConsumerAlertBadge();
   return a;
 }
+function loadServerNotifications(){
+  if(!window.MVP.live||!window.currentUserLoggedIn)return Promise.resolve([]);
+  return apiFetch('/api/notifications/mine',{method:'GET',noRetry:true}).then(function(data){
+    var payload=data&&data.items?data:{items:Array.isArray(data)?data:[]};
+    var mapped=(payload.items||[]).map(function(n){return {id:n.id,type:n.title||n.type,message:n.body||'',severity:(n.type==='dispute_filed'||n.type==='defect_filed')?'danger':'warn',target:null,read:!!n.read_at,at:n.created_at||''};});
+    if(window.currentAccountMode==='partner')window.PARTNER_ALERTS=mapped;else window.CONSUMER_ALERTS=mapped;
+    updateConsumerAlertBadge();if(typeof updatePartnerTabBadges==='function')updatePartnerTabBadges();return mapped;
+  }).catch(function(){return [];});
+}
 function updateConsumerAlertBadge(){
   var iconEl = document.getElementById('bell-icon-consumer');
   if(iconEl && !iconEl.innerHTML) iconEl.innerHTML = icon('bell', T.charcoal, 17);
@@ -11625,6 +11954,7 @@ function renderConsumerAlertList(){
 function openConsumerAlert(id){
   var a = (window.CONSUMER_ALERTS||[]).filter(function(x){return x.id===id;})[0]; if(!a) return;
   a.read = true; renderConsumerAlertList(); updateConsumerAlertBadge();
+  if(window.MVP.live)apiFetch('/api/notifications/'+encodeURIComponent(id)+'/read',{method:'PUT',body:'{}',noRetry:true}).catch(function(){});
   if(a.target){ go(a.target); }
 }
 
@@ -11643,6 +11973,7 @@ function renderPartnerAlertList(){
 function openPartnerAlert(id){
   var a = (window.PARTNER_ALERTS||[]).filter(function(x){return x.id===id;})[0]; if(!a) return;
   a.read = true; renderPartnerAlertList();
+  if(window.MVP.live)apiFetch('/api/notifications/'+encodeURIComponent(id)+'/read',{method:'PUT',body:'{}',noRetry:true}).catch(function(){});
   if(a.target){ go(a.target); }
 }
 buildTabbar('tabbar-partner-alert-list', true, null);
@@ -12531,6 +12862,7 @@ function renderPartnerGreeting(){
     '<div style="font-size:19px;font-weight:800;color:var(--charcoal);margin-bottom:4px">'+safePartnerName+'님</div>'
     + '<div style="font-size:14px;color:var(--slate);margin-bottom:5px">'+safePartnerTier+' · 수수료 '+fee.pct+'</div>'
     + '<div id="partner-profile-restore-status" style="font-size:12.5px;color:'+profileStateColor+';font-weight:700;margin-bottom:14px">'+profileStateText+'</div>'
+    + (pf.verifyStatus==='rejected' ? '<div style="background:#E08A5B14;border:1px solid #E08A5B55;border-radius:var(--radius-input);padding:11px 13px;margin-bottom:14px;font-size:13px;color:var(--terracotta);line-height:1.6"><b>파트너 가입 심사 반려</b><br>반려 사유: '+escapeConsumerIdentityHtml(pf.rejectReason||'관리자 검토 결과를 고객센터에 문의해주세요.')+'</div>' : '')
     + '<div style="border-top:1px solid var(--ivory);padding-top:12px;display:flex;flex-direction:column;gap:7px">'
       + '<div style="display:flex;justify-content:space-between;font-size:13.5px"><span style="color:var(--slate)">대표자</span><span style="color:var(--charcoal);font-weight:600">'+safeCeoName+'</span></div>'
       + '<div style="display:flex;justify-content:space-between;font-size:13.5px"><span style="color:var(--slate)">경력</span><span style="color:var(--charcoal);font-weight:600">'+(pf.years?(pf.years+'년'):'신규')+'</span></div>'
@@ -12641,6 +12973,7 @@ renderFeeStatusPh();
 // ── 신규(로드맵 #13): 완공 후 하자보수 접수 시스템 ──
 window.defectReports = [];
 window.defectDraftPhotos = [];
+window.defectDraftFiles = [];
 window.defectDraftText = '';
 // ── 신규(로드맵 #13 확장): AI 하자 긴급도 3등급 자동분류 + 차등 SLA + 잠수 대비 대체업체·비용 후청구 ──
 // [주의] 키워드 사전은 잠정값 — 운영 중 접수 데이터로 지속 보강 권장
@@ -12675,7 +13008,7 @@ function onDefectFiles(files){
   var arr = Array.prototype.slice.call(files).filter(function(f){ return f.type && f.type.indexOf('image')===0; });
   if(!arr.length) return; var rem=arr.length;
   function done(){ rem--; if(rem<=0) renderDefectForm(); }
-  arr.forEach(function(file){ var r=new FileReader(); r.onload=function(e){ window.defectDraftPhotos.push(e.target.result); done(); }; r.onerror=done; r.readAsDataURL(file); });
+  arr.forEach(function(file){ var r=new FileReader(); r.onload=function(e){ window.defectDraftPhotos.push(e.target.result);window.defectDraftFiles.push(file);done(); }; r.onerror=done; r.readAsDataURL(file); });
 }
 async function submitDefect(){
   if(!requireRoomerRole('consumer','하자 접수는 소비자 계정에서만 할 수 있습니다.')) return;
@@ -12692,12 +13025,17 @@ async function submitDefect(){
   var rep = {photos: window.defectDraftPhotos.slice(), text: txt.trim(), status:'received', grade: cls.grade, matched: cls.matched, temp:(cls.grade==='critical'? tempActionFor(txt):''), verdict:'', id: Date.now()};
   if(window.MVP.live){
     try{
-      var data = await apiFetch('/api/defects', {method:'POST', body: JSON.stringify({contractId: activeContractId, photos: rep.photos, description: rep.text})});
+      var storedPhotoIds=[];
+      for(var file of window.defectDraftFiles){
+        var form=new FormData();form.append('purpose','defect');form.append('file',file,file.name||'defect-photo');
+        var stored=await apiFetch('/api/contracts/'+encodeURIComponent(activeContractId)+'/files',{method:'POST',body:form,noRetry:true});storedPhotoIds.push(stored.fileId);
+      }
+      var data = await apiFetch('/api/defects', {method:'POST', body: JSON.stringify({contractId: activeContractId, photos: storedPhotoIds, description: rep.text})});
       rep.serverId = data.id; rep.serverUrgency = data.urgency;
     }catch(e){ reportLiveActionFailure('하자 접수', e); return; }
   }
   window.defectReports.unshift(rep);
-  window.defectDraftPhotos=[]; window.defectDraftText='';
+  window.defectDraftPhotos=[];window.defectDraftFiles=[]; window.defectDraftText='';
   renderDefectForm(); renderDefectList();
   if(window.CHAT_LOG && typeof renderChat==='function'){ CHAT_LOG.push({who:'system', text:'[하자 접수] 접수되었습니다. AI가 긴급도를 분류하고 완공 사진과 대조 중입니다.'}); renderChat(); }
   setTimeout(function(){
