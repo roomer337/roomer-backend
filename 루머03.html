@@ -3277,6 +3277,14 @@ window.MVP.authMode=window.MVP.authMode||'auto'; // 운영 권장: HttpOnly cook
 // 루머27 인증 안전장치: SMS 서버가 실제 준비됐을 때만 운영 휴대폰 OTP를 켠다.
 // false인 운영환경에서는 프로토타입 코드를 노출하지 않고 휴대폰 인증을 명확히 차단한다.
 window.MVP.smsOtpEnabled=window.MVP.smsOtpEnabled===true;
+// 결함정리(사용자요청 — 알리고 환경변수를 넣어도 프론트가 전혀 몰라서 smsOtpEnabled가
+// 영원히 false였던 문제): 실서버 모드에서는 서버에 실제 알리고 설정 여부를 물어봐서 자동반영.
+// 관리자가 Render에 ALIGO_* 3종을 등록하면 코드 수정 없이 즉시 휴대폰 가입이 열림.
+if(window.MVP.live){
+  fetch((window.MVP.apiBase||'')+'/api/public/config').then(function(r){return r.json();})
+    .then(function(d){ if(d&&d.success) window.MVP.smsOtpEnabled = !!(d.data&&d.data.smsOtpEnabled); })
+    .catch(function(e){ console.error('SMS 설정여부 조회 실패(기본값 비활성화 유지):', e.message); });
+}
 window.MVP.portfolioMaxPhotos=Math.max(1,Number(window.MVP.portfolioMaxPhotos)||10);
 window.MVP.portfolioImageMaxBytes=Math.max(1024,Number(window.MVP.portfolioImageMaxBytes)||10*1024*1024);
 window.MVP.portfolioImageOrigins=Array.isArray(window.MVP.portfolioImageOrigins)?window.MVP.portfolioImageOrigins:[];
