@@ -263,6 +263,13 @@ async function waitReady(){for(let i=0;i<30;i++){try{const r=await fetch(`http:/
   db2.prepare('INSERT INTO admins (id, email, password_hash, role) VALUES (?,?,?,?)').run(adminId,'e2e-admin@roomer.com',require('bcryptjs').hashSync('E2ePass1234!',10),'super');
   r=await api('POST','/api/admin/auth/login',{email:'e2e-admin@roomer.com',password:'E2ePass1234!'});const adminTok=r.json.data.token;
 
+  // 신규(사용자요청 — 본인확인 온오프 정책 검증): 기본값(false)에서는 본인확인 없이도 가입
+  // 가능해야 하며, 관리자가 정책을 켜면(true) 아래 E2E 시나리오(이름불일치 등)가 다시 작동해야 함
+  r=await api('PUT','/api/admin/policy',{key:'identity_verification_required',value:true},adminTok);
+  check('본인확인 정책 켜기(관리자)',r.status===200,r.status);
+  r=await api('GET','/api/public/policy/identity-verification-required',null,null);
+  check('본인확인 정책 공개API 즉시반영',r.status===200&&r.json.data.required===true,JSON.stringify(r.json));
+
   // 5순위 활동지역 검증의 일부: 관리자 심사화면에 활동지역(최대5개) 표시 확인(adminTok 준비된 이후 수행)
   r=await api('PUT','/api/partners/me/service-regions',{serviceRegions:['서울 강남구','서울 서초구','서울 송파구','서울 용산구','서울 마포구']},p1);
   r=await api('GET','/api/admin/partners/p1/review',null,adminTok);
