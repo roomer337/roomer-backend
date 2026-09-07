@@ -2642,6 +2642,14 @@ app.get('/api/admin/policy/:key', adminAuthRequired(), (req, res) => {
 app.get('/api/public/policy/identity-verification-required', (req, res) => {
   res.json({ success:true, data: { required: getAdminPolicy('identity_verification_required', false) } });
 });
+// 신규(사용자요청 — 휴대폰 가입 UI는 이미 있는데, 알리고 환경변수가 실제로 설정됐는지
+// 프론트가 알 방법이 전혀 없어서 window.MVP.smsOtpEnabled가 영원히 false로 고정되어 있던 문제):
+// 민감정보(키 값 자체)는 노출하지 않고, "설정 여부(true/false)"만 공개
+app.get('/api/public/config', (req, res) => {
+  res.json({ success:true, data: {
+    smsOtpEnabled: !!(process.env.ALIGO_API_KEY && process.env.ALIGO_USER_ID && process.env.ALIGO_SENDER)
+  } });
+});
 
 // ===== 15. QR코드 생성 =====
 // 실제로 동작하는 QR코드(외부 서비스 계약 불필요, npm qrcode 라이브러리 사용)
