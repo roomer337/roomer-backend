@@ -62,6 +62,15 @@ const adminLoginLimiter = rateLimit({
   legacyHeaders: false,
   message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '로그인 시도가 너무 많습니다. 15분 후 다시 시도해주세요' } }
 });
+// 신규(사용자요청 — 최초 관리자 부트스트랩 API 보호): 관리자가 아직 없는 짧은 시간 동안
+// 공격자가 먼저 이 API를 호출해서 관리자 계정을 선점하는 것을 막기 위해 매우 엄격하게 제한
+const adminBootstrapLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '시도가 너무 많습니다. 1시간 후 다시 시도해주세요' } }
+});
 // 결함수정: 소셜로그인도 무제한 호출 가능해서 대량 계정생성 남용 위험 → IP당 15분에 30회로 완만하게 제한
 const socialAuthLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -228,6 +237,22 @@ app.post('/api/admin/auth/seed-dev-only', blockInProduction, (req, res) => {
   const hash = bcrypt.hashSync(password, 10);
   db.prepare('INSERT INTO admins (id, email, password_hash, role) VALUES (?,?,?,?)').run(id, email, hash, role || 'super');
   res.json({ success: true, data: { id, message: '개발용 관리자 계정이 생성됐습니다(실배포 전 이 엔드포인트 제거 필수)' } });
+});
+
+// 결함정리(사용자요청 — 운영환경에서 관리자 계정을 만들 방법이 전혀 없던 문제 발견):
+// seed-dev-only는 blockInProduction이 걸려있어 운영에서 쓸 수 없는데, 관리자 계정을 만드는
+// 다른 경로가 전혀 없었음. DB에 관리자가 "1명도 없을 때만" 동작하는 안전한 최초설정 API를
+// 신규 추가. 관리자가 1명이라도 생기면 이후 영구적으로 403 차단되므로 운영에 남겨둬도 안전함.
+app.post('/api/admin/auth/bootstrap', adminBootstrapLimiter, (req, res) => {
+  const existingCount = db.prepare('SELECT COUNT(*) c FROM admins').get().c;
+  if (existingCount > 0) return res.status(403).json({ success: false, error: { code: 'ALREADY_BOOTSTRAPPED', message: '이미 관리자 계정이 존재합니다. 이 API는 최초 1회만 사용할 수 있습니다.' } });
+  const { email, password } = req.body;
+  if (!isNonEmptyString(email) || !EMAIL_RE.test(email)) return validationError(res, '올바른 이메일 형식이 아닙니다');
+  if (!isNonEmptyString(password) || password.length < 10) return validationError(res, '비밀번호는 10자 이상이어야 합니다(최초 관리자 계정이므로 더 엄격하게 검증)');
+  const id = randomUUID();
+  const hash = bcrypt.hashSync(password, 10);
+  db.prepare('INSERT INTO admins (id, email, password_hash, role) VALUES (?,?,?,?)').run(id, email, hash, 'super');
+  res.json({ success: true, data: { id, message: '최초 관리자 계정이 생성됐습니다. 이 API는 이제 영구적으로 비활성화됩니다.' } });
 });
 
 
