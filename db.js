@@ -507,5 +507,9 @@ ensureColumn('payments', 'payment_key', 'TEXT');
 ensureColumn('inspections', 'price', 'INTEGER DEFAULT 0');
 ensureColumn('inspections', 'photo_count', 'INTEGER');
 ensureColumn('inspections', 'trip_key', 'TEXT');
+// 신규(사용자요청 — 관리자 전문인력 검토 워크플로): 사람이 직접 작성하는 답변 저장용
+ensureColumn('inspections', 'expert_answer', 'TEXT');
+ensureColumn('inspections', 'answered_at', 'TEXT');
+ensureColumn('inspections', 'answered_by', 'TEXT');
 
 module.exports = db;
