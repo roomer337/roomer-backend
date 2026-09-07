@@ -488,16 +488,21 @@ app.post('/api/otp/sms/send', otpSendLimiter, async (req, res) => {
     return res.status(503).json({ success: false, error: { code: 'SMS_NOT_CONFIGURED', message: '휴대폰 인증 서비스 설정이 필요합니다' } });
   }
   try {
+    // 신규(사용자요청 — 알리고 실사용 전 테스트모드 확인): ALIGO_TEST_MODE=true 이면 testmode_yn=Y로
+    // 호출해서 실제 문자 발송·과금 없이 API 연동(인증키·형식) 자체만 검증할 수 있음.
+    // 실제 서비스 전환 시에는 이 환경변수를 제거(또는 false)하기만 하면 되고 코드 수정은 불필요.
+    const params = {
+      key: aligoKey,
+      user_id: aligoUserId,
+      sender: aligoSender,
+      receiver: normalizedPhone,
+      msg: '[루머 ROOMER] 인증코드 ' + code + ' (5분 이내 입력)'
+    };
+    if (process.env.ALIGO_TEST_MODE === 'true') params.testmode_yn = 'Y';
     const smsRes = await fetch('https://apis.aligo.in/send/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
-      body: new URLSearchParams({
-        key: aligoKey,
-        user_id: aligoUserId,
-        sender: aligoSender,
-        receiver: normalizedPhone,
-        msg: '[루머 ROOMER] 인증코드 ' + code + ' (5분 이내 입력)'
-      })
+      body: new URLSearchParams(params)
     });
     const smsBody = await smsRes.json();
     if (!smsRes.ok || String(smsBody.result_code) !== '1') {
@@ -1506,26 +1511,107 @@ app.post('/api/inspections', authRequired, (req, res) => {
   res.json({ success: true, data: { id, plan, price, status: price > 0 ? 'unpaid' : 'reported', ...(aiResult || {}) } });
 });
 
+// 결함정리(사용자요청 — 사진감리·전문가감리는 사람 전문인력이 실제로 검토·답변해야 함):
+// 소비자가 결제 후 사진을 업로드하는 API. 1장이라도 올라오면 즉시 상태가 in_review로
+// 바뀌어 관리자 대기열에 노출된다(순차적으로, 전체 장수를 다 기다리지 않음).
+const inspectionPhotoUpload = express.raw({ type: 'multipart/form-data', limit: '12mb' });
+app.post('/api/inspections/:id/photos', authRequired, inspectionPhotoUpload, async (req, res, next) => {
+  const inspection = db.prepare('SELECT * FROM inspections WHERE id=?').get(req.params.id);
+  if (!inspection) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
+  if (req.user.role !== 'consumer' || !contractForMember(inspection.contract_id, req.user)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인의 감리 신청에만 사진을 올릴 수 있습니다' } });
+  if (inspection.status !== 'paid' && inspection.status !== 'in_review') return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: '사진을 업로드할 수 있는 상태가 아닙니다' } });
+  let parsed;
+  try { parsed = parseMultipartBody(req); } catch (e) { return validationError(res, 'multipart/form-data 형식의 파일 업로드가 필요합니다'); }
+  const fileEntry = parsed.files.find(file => file.field === 'file');
+  if (!fileEntry || fileEntry.data.length === 0) return validationError(res, '전송할 파일이 없습니다');
+  if (fileEntry.data.length > 10 * 1024 * 1024) return validationError(res, '파일은 최대 10MB까지 전송할 수 있습니다');
+  const detected = detectPortfolioImage(fileEntry);
+  if (!detected) return validationError(res, 'JPG, PNG, WebP 사진만 전송할 수 있어요');
+  const fileId = randomUUID();
+  const key = `private/inspection/${req.params.id}/${fileId}.${detected.ext}`;
+  try { await objectStorage.putObject({ key, body: fileEntry.data, contentType: detected.mime, isPublic: false }); }
+  catch (e) {
+    if (e && e.code === 'OBJECT_STORAGE_NOT_CONFIGURED') return res.status(503).json({ success: false, error: { code: 'OBJECT_STORAGE_NOT_CONFIGURED', message: '파일 저장소가 아직 설정되지 않았습니다' } });
+    return next(e);
+  }
+  db.prepare(`INSERT INTO stored_files (id,storage_key,owner_type,owner_id,purpose,original_name,mime_type,size_bytes,public_url,visibility)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(fileId, key, 'inspection', req.params.id, 'inspection_photo', normalizeUploadFilename(fileEntry.filename), detected.mime, fileEntry.data.length, null, 'private');
+  if (inspection.status === 'paid') db.prepare("UPDATE inspections SET status='in_review' WHERE id=?").run(req.params.id);
+  const photoCount = db.prepare("SELECT COUNT(*) AS c FROM stored_files WHERE owner_type='inspection' AND owner_id=? AND deleted_at IS NULL").get(req.params.id).c;
+  res.json({ success: true, data: { photoId: fileId, uploadedCount: photoCount } });
+});
+
+// 관리자 감리 처리 대기열: in_review(사진 도착중) 또는 최근 reported(완료) 건 목록
+app.get('/api/admin/inspections/queue', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare(`SELECT i.*, c.consumer_id, c.partner_id, u.nickname AS consumer_name, p.business_name AS partner_name
+    FROM inspections i JOIN contracts c ON c.id=i.contract_id JOIN users u ON u.id=c.consumer_id JOIN partners p ON p.id=c.partner_id
+    WHERE i.plan IN ('photo','expert') AND i.status IN ('in_review','reported') ORDER BY i.applied_at DESC LIMIT 100`).all();
+  const data = rows.map(r => ({
+    id: r.id, plan: r.plan, price: r.price, status: r.status, photoCount: r.photo_count, tripKey: r.trip_key,
+    consumerName: r.consumer_name, partnerName: r.partner_name, appliedAt: r.applied_at,
+    uploadedPhotoCount: db.prepare("SELECT COUNT(*) AS c FROM stored_files WHERE owner_type='inspection' AND owner_id=? AND deleted_at IS NULL").get(r.id).c
+  }));
+  res.json({ success: true, data });
+});
+
+app.get('/api/admin/inspections/:id', adminAuthRequired(), (req, res) => {
+  const r = db.prepare(`SELECT i.*, c.consumer_id, c.partner_id, u.nickname AS consumer_name, p.business_name AS partner_name, p.tier AS partner_tier
+    FROM inspections i JOIN contracts c ON c.id=i.contract_id JOIN users u ON u.id=c.consumer_id JOIN partners p ON p.id=c.partner_id WHERE i.id=?`).get(req.params.id);
+  if (!r) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
+  const photos = db.prepare("SELECT id, mime_type, size_bytes, created_at FROM stored_files WHERE owner_type='inspection' AND owner_id=? AND deleted_at IS NULL ORDER BY created_at ASC").all(req.params.id)
+    .map(f => ({ id: f.id, url: `/api/admin/inspections/${req.params.id}/photos/${f.id}`, mimeType: f.mime_type, sizeBytes: f.size_bytes }));
+  res.json({ success: true, data: {
+    id: r.id, plan: r.plan, price: r.price, status: r.status, photoCount: r.photo_count, tripKey: r.trip_key,
+    consumerName: r.consumer_name, partnerName: r.partner_name, partnerTier: r.partner_tier, appliedAt: r.applied_at,
+    grade: r.grade, score: r.score, report: r.report, photos
+  } });
+});
+
+// 관리자가 감리 사진 원본을 열람(비공개 파일이라 관리자 인증 필수)
+app.get('/api/admin/inspections/:id/photos/:fileId', adminAuthRequired(), async (req, res, next) => {
+  const file = db.prepare("SELECT * FROM stored_files WHERE id=? AND owner_type='inspection' AND owner_id=? AND deleted_at IS NULL").get(req.params.fileId, req.params.id);
+  if (!file) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '파일을 찾을 수 없습니다' } });
+  try {
+    const stored = await objectStorage.getObject(file.storage_key);
+    res.set('Content-Type', file.mime_type); res.set('Cache-Control', 'private,no-store');
+    stored.Body.pipe(res);
+  } catch (e) {
+    if (e && e.code === 'OBJECT_STORAGE_NOT_CONFIGURED') return res.status(503).json({ success: false, error: { code: 'OBJECT_STORAGE_NOT_CONFIGURED', message: '파일 저장소가 아직 설정되지 않았습니다' } });
+    next(e);
+  }
+});
+
+// 전문인력(관리자)이 직접 판정+답변 작성 → 완료처리(소비자에게 즉시 전달됨)
+app.put('/api/admin/inspections/:id/answer', adminAuthRequired(), (req, res) => {
+  const { grade, opinion, advice } = req.body;
+  if (!['양호', '주의', '문제'].includes(grade)) return validationError(res, '올바른 판정 등급이 아닙니다(양호/주의/문제)');
+  if (!isNonEmptyString(opinion, 2000) || !isNonEmptyString(advice, 1000)) return validationError(res, '소견과 권고사항을 입력해주세요');
+  const inspection = db.prepare('SELECT * FROM inspections WHERE id=?').get(req.params.id);
+  if (!inspection) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
+  const scoreMap = { '양호': 90, '주의': 75, '문제': 55 };
+  const report = JSON.stringify({ grade, score: scoreMap[grade], opinion, advice, answeredBy: 'expert' });
+  db.prepare("UPDATE inspections SET status='reported', grade=?, score=?, report=?, paid_at=COALESCE(paid_at,datetime('now')) WHERE id=?")
+    .run(grade, scoreMap[grade], report, req.params.id);
+  const contract = db.prepare('SELECT * FROM contracts WHERE id=?').get(inspection.contract_id);
+  if (contract) createNotification('consumer', contract.consumer_id, 'inspection_answered', '전문가 감리 답변이 도착했어요', opinion.slice(0, 80), 'contract', contract.id);
+  res.json({ success: true, data: { id: req.params.id, status: 'reported', grade, score: scoreMap[grade] } });
+});
+
 // 결제 성공 콜백에서만 보고서 생성(되돌리기 잠금 — 미결제 상태에서는 절대 보고서 안 나옴)
 // ⚡MVP-SWITCH: 실서버 → 실제 PG 결제 API 호출 후 성공 콜백에서 아래 로직 실행
+// 결함정리(사용자요청 — 사진감리·전문가감리는 사람이 직접 검토해야 하므로, 결제완료시
+// 자동판정을 만들지 않고 "사진대기(paid)" 상태로만 전환. 실제 판정/답변은 사진 제출 후
+// 관리자(자체 전문인력)가 직접 작성한다.
 app.post('/api/inspections/:id/pay', blockInProduction, authRequired, (req, res) => {
-  const { method } = req.body;
   const inspection = db.prepare('SELECT * FROM inspections WHERE id=?').get(req.params.id);
   if (!inspection) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
   if (req.user.role !== 'consumer' || !contractForMember(inspection.contract_id, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인의 감리 신청만 결제할 수 있습니다' } });
-  if (inspection.status === 'reported') return res.status(400).json({ success: false, error: { code: 'ALREADY_PAID', message: '이미 결제·보고서 생성이 완료됐습니다' } });
-
-  // ⚡MVP-SWITCH: 실서버 → 업로드된 공정 사진을 Claude Vision에 전달해 실제 판정. 지금은 결정적 mock
-  const grades = Object.keys(INSPECT_VERDICTS);
-  const grade = grades[Math.floor(Math.random() * grades.length)];
-  const verdict = INSPECT_VERDICTS[grade];
-  const report = JSON.stringify({ grade, score: verdict.score, opinion: verdict.opinion, advice: verdict.advice });
-
-  db.prepare("UPDATE inspections SET status='reported', grade=?, score=?, report=?, paid_at=datetime('now') WHERE id=?")
-    .run(grade, verdict.score, report, req.params.id);
-  res.json({ success: true, data: { grade, score: verdict.score, opinion: verdict.opinion, advice: verdict.advice } });
+  if (inspection.status !== 'unpaid') return res.status(400).json({ success: false, error: { code: 'ALREADY_PAID', message: '이미 결제가 완료됐습니다' } });
+  db.prepare("UPDATE inspections SET status='paid', paid_at=datetime('now') WHERE id=?").run(req.params.id);
+  res.json({ success: true, data: { status: 'paid' } });
 });
 
+// 소비자가 감리건에 시공사진을 업로드(사진감리/전문가감리 전용, 결제완료 후에만 가능)
 app.get('/api/inspections/mine', authRequired, (req, res) => {
   const list = db.prepare(`
     SELECT i.* FROM inspections i JOIN contracts c ON i.contract_id = c.id
@@ -2189,10 +2275,12 @@ app.get('/api/admin/dashboard/counts', adminAuthRequired(), (req, res) => {
   const partners = db.prepare("SELECT COUNT(*) c FROM partners WHERE verify_status='pending'").get().c;
   const dispute = db.prepare("SELECT COUNT(*) c FROM disputes WHERE status IN ('filed','ai_judged')").get().c;
   const inspect = db.prepare("SELECT COUNT(*) c FROM inspections WHERE status='unpaid'").get().c;
+  // 신규(사용자요청 — 감리 처리 대기열): 사진감리·전문가감리 중 사진이 도착해 사람 답변을 기다리는 건 카운트
+  const inspectionQueue = db.prepare("SELECT COUNT(*) c FROM inspections WHERE plan IN ('photo','expert') AND status='in_review'").get().c;
   const settleHold = db.prepare("SELECT COUNT(*) c FROM settlements WHERE status='hold'").get().c;
   const abuseCandidates = db.prepare("SELECT room_id, noshow_log FROM meas_jobs").all()
     .filter(j => { try { return JSON.parse(j.noshow_log).length >= 2; } catch (e) { return false; } }).length;
-  res.json({ success: true, data: { ads, partners, dispute, abuse: abuseCandidates, inspect, settleHold, tier: 0 } });
+  res.json({ success: true, data: { ads, partners, dispute, abuse: abuseCandidates, inspect, inspectionQueue, settleHold, tier: 0 } });
 });
 
 // ===== 1-5(팀장 지시): API 문서 자동화(Swagger) — /api-docs 에서 43개 전체 확인·직접 테스트 가능 =====
