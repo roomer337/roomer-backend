@@ -3263,6 +3263,14 @@ window.MVP.realtimeWsUrl=window.MVP.realtimeWsUrl||null;
 // 결함정리(사용자요청 — 안전정리): realtimeSseUrl은 서버에 SSE가 구현되어 있지 않아
 // 어디서도 참조되지 않으므로 제거함(나중에 SSE를 실제로 구현하면 다시 추가할 것).
 window.MVP.vapidPublicKey=window.MVP.vapidPublicKey||null;
+// 신규(사용자요청 — 본인확인 온오프를 관리자가 정책으로 제어): 기본값은 비활성화(false).
+// 실서버 모드에서는 공개 정책API로 실제 값을 조회해서 덮어씀(관리자가 나중에 켜면 자동 반영).
+window.identityVerificationRequired = false;
+if(window.MVP.live){
+  fetch((window.MVP.apiBase||'')+'/api/public/policy/identity-verification-required').then(function(r){return r.json();})
+    .then(function(d){ if(d&&d.success) window.identityVerificationRequired = !!(d.data&&d.data.required); })
+    .catch(function(e){ console.error('본인확인 정책 조회 실패(기본값 비활성화 유지):', e.message); });
+}
 // 12/12 출시 전 기준: 서버 업로드 이미지는 최대 10MB, JPEG/PNG/WebP만 허용한다.
 window.MVP.chatAttachmentMaxBytes=Number(window.MVP.chatAttachmentMaxBytes)||10*1024*1024;
 window.MVP.authMode=window.MVP.authMode||'auto'; // 운영 권장: HttpOnly cookie, 기존 Bearer 서버는 auto로 호환
@@ -5577,16 +5585,18 @@ function renderPartnerServiceRegions(){
 function getPartnerSelectedRegions(){ return window.partnerSelectedRegions.slice(0,5); }
 // 가입 1단계 "다음" 버튼에서 호출 — 활동지역 1~5개 검증
 function validatePartnerRegionSelect(){
-  var consentIds=['consent-partner-business','consent-partner-identity','consent-partner-review'];
-  if(consentIds.some(function(id){var el=document.getElementById(id);return !el||!el.checked;})){ alert('파트너 검증을 위한 필수 동의 3가지를 모두 확인해주세요.'); return false; }
+  var consentIds=window.identityVerificationRequired ? ['consent-partner-business','consent-partner-identity','consent-partner-review'] : ['consent-partner-business','consent-partner-review'];
+  if(consentIds.some(function(id){var el=document.getElementById(id);return !el||!el.checked;})){ alert('파트너 검증을 위한 필수 동의를 모두 확인해주세요.'); return false; }
   var postalCode=(document.getElementById('in-zipcode')||{}).value||'';
   var roadAddress=(document.getElementById('in-addr')||{}).value||'';
   if(!/^\d{5}$/.test(postalCode)||!roadAddress.trim()){ alert('우편번호 찾기를 눌러 실제 사업장 주소를 선택해주세요.'); return false; }
   if(window.MVP.live && !window.partnerBusinessVerificationToken){ alert('국세청 사업자 진위확인을 먼저 완료해주세요.'); return false; }
-  if(window.MVP.live && !window.partnerIdentityVerificationToken){ alert('휴대폰 본인확인을 먼저 완료해주세요.'); return false; }
+  // 결함정리(사용자요청 — 본인확인은 관리자 정책으로 온오프 가능하게 전환): 정책이 꺼져있으면
+  // (기본값) 본인확인 없이도 다음 단계로 진행 가능. 관리자가 나중에 정책을 켜면 다시 필수화됨.
+  if(window.MVP.live && window.identityVerificationRequired && !window.partnerIdentityVerificationToken){ alert('휴대폰 본인확인을 먼저 완료해주세요.'); return false; }
   var applicantRole=(document.getElementById('in-applicant-role')||{}).value||'representative';
   var ceoName=(document.getElementById('in-ceo')||{}).value||'';
-  if(window.MVP.live && applicantRole==='representative' && normalizePartnerIdentityValue(window.partnerIdentityApplicantName).replace(/\s+/g,'')!==normalizePartnerIdentityValue(ceoName).replace(/\s+/g,'')){ alert('휴대폰 본인확인 이름과 대표자명이 일치하지 않습니다. 담당자라면 가입자 역할을 업체 담당자로 변경해주세요.'); return false; }
+  if(window.MVP.live && window.identityVerificationRequired && applicantRole==='representative' && normalizePartnerIdentityValue(window.partnerIdentityApplicantName).replace(/\s+/g,'')!==normalizePartnerIdentityValue(ceoName).replace(/\s+/g,'')){ alert('휴대폰 본인확인 이름과 대표자명이 일치하지 않습니다. 담당자라면 가입자 역할을 업체 담당자로 변경해주세요.'); return false; }
   if(window.MVP.live && applicantRole==='manager' && !window.partnerAuthorizationDoc){ alert('업체 담당자는 대표자 위임 또는 재직 증빙을 첨부해야 합니다.'); return false; }
   if(!window.partnerSelectedRegions.length){ alert('활동지역을 한 곳 이상 추가해주세요.'); return false; }
   if(window.partnerSelectedRegions.length>5){ alert('활동지역은 최대 5개까지 등록할 수 있어요.'); return false; }
