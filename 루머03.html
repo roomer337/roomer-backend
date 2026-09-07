@@ -2655,7 +2655,32 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   </div>
 </div>
 
+<!-- 신규(사용자요청 — 관리자 자체 전문인력 감리 검토 워크플로): 사진감리·전문가감리는 사람이
+     직접 사진을 확인하고 답변을 작성해야 함. 사진 1장이라도 올라오면 이 대기열에 노출됨. -->
+<div class="scr" id="s-admin-inspection-queue">
+  <header class="header" style="background:var(--charcoal)"><button onclick="go('admin-home')" style="background:none;border:none;color:#fff;font-size:23px;cursor:pointer">&lsaquo;</button><span style="color:#fff;font-size:17.5px;font-weight:800;margin-left:10px">감리 처리 대기열</span></header>
+  <div class="content" style="">
+    <div class="caption" style="margin:12px 0 16px;line-height:1.6">사진감리·전문가감리 신청 중 사진이 도착한 건입니다. 확인 후 직접 답변해주세요.</div>
+    <div id="admin-inspection-queue-list"></div>
+    <div style="margin-top:16px"><button class="btn btn-outline" onclick="go('admin-home')">닫기</button></div>
+  </div>
+</div>
+<div class="scr" id="s-admin-inspection-detail">
+  <header class="header" style="background:var(--charcoal)"><button onclick="go('admin-inspection-queue')" style="background:none;border:none;color:#fff;font-size:23px;cursor:pointer">&lsaquo;</button><span style="color:#fff;font-size:17.5px;font-weight:800;margin-left:10px">감리 답변 작성</span></header>
+  <div class="content" style="">
+    <div id="admin-inspection-detail-body"></div>
+  </div>
+</div>
+
 <!-- 2단계 S5(#20): AI 공사 감리 결제 화면 (s-feepay 패턴) -->
+<div class="scr" id="s-ai-inspection">
+  <header class="header"><button onclick="closeToReturn()" style="background:none;border:none;cursor:pointer;font-size:23px;color:var(--charcoal)">&lsaquo;</button></header>
+  <div class="content" style="">
+    <div class="h1" style="margin:8px 0 4px">AI 공사 감리</div>
+    <div class="caption" style="margin-bottom:16px;line-height:1.6">시공 사진을 올리면 AI가 즉시 분석해서 이 화면에 바로 결과를 보여드려요. 무료이며, 최대 3장까지 업로드할 수 있어요.</div>
+    <div id="ai-inspection-body"></div>
+  </div>
+</div>
 <div class="scr" id="s-inspection-pay">
   <header class="header"><button onclick="closeToReturn()" style="background:none;border:none;cursor:pointer;font-size:23px;color:var(--charcoal)">&lsaquo;</button></header>
   <div class="content" style="">
@@ -3731,13 +3756,14 @@ function exportSettlement(){
 window._adminCountsCache = null;
 function adminCounts(){
   if(window.MVP.live){
-    if(window._adminCountsCache === null){ refreshAdminCountsFromServer(); return {dispute:0,abuse:0,inspect:0,settleHold:0,tier:0,ads:0}; }
+    if(window._adminCountsCache === null){ refreshAdminCountsFromServer(); return {dispute:0,abuse:0,inspect:0,inspectionQueue:0,settleHold:0,tier:0,ads:0}; }
     return window._adminCountsCache;
   }
   return {
     dispute: (window.DISPUTES||[]).filter(function(d){return d.status!=='resolved';}).length,
     abuse: (window.ABUSE_QUEUE||[]).filter(function(a){return a.status!=='handled';}).length + ((window.measJob&&window.measJob.noshow&&window.measJob.noshow.length>=2)?1:0),
     inspect: (window.INSPECT_QUEUE||[]).filter(function(i){return i.status==='pending';}).length,
+    inspectionQueue: (window.INSPECTIONS||[]).filter(function(i){return (i.plan==='photo'||i.plan==='expert')&&i.status==='awaiting_photo';}).length,
     settleHold: (window.SETTLEMENTS||[]).filter(function(s){return s.status==='hold';}).length,
     tier: (window.TIER_UPGRADES||[]).filter(function(u){return u.status!=='approved'&&u.status!=='rejected';}).length,
     ads: (window.AD_SLOTS||[]).filter(function(a){return a.status==='pending';}).length
@@ -3745,14 +3771,15 @@ function adminCounts(){
 }
 function refreshAdminCountsFromServer(){
   apiFetch('/api/admin/dashboard/counts').then(function(data){
-    window._adminCountsCache = { dispute:data.dispute, abuse:data.abuse, inspect:data.inspect, settleHold:data.settleHold, tier:data.tier, ads:data.ads };
+    window._adminCountsCache = { dispute:data.dispute, abuse:data.abuse, inspect:data.inspect, inspectionQueue:data.inspectionQueue||0, settleHold:data.settleHold, tier:data.tier, ads:data.ads };
     if(typeof renderAdminHome==='function') renderAdminHome();
-  }).catch(function(e){ console.error('관리자 카운트 조회 실패:', e.message); window._adminCountsCache = {dispute:0,abuse:0,inspect:0,settleHold:0,tier:0,ads:0}; });
+  }).catch(function(e){ console.error('관리자 카운트 조회 실패:', e.message); window._adminCountsCache = {dispute:0,abuse:0,inspect:0,inspectionQueue:0,settleHold:0,tier:0,ads:0}; });
 }
 var ADMIN_QUEUES=[
   {key:'dispute', label:'분쟁 조정', desc:'신고·AI 판단·조정', icon:'triangleWarn', target:'admin-dispute-queue', ready:true},
   {key:'abuse', label:'어뷰징 관리', desc:'반복 노쇼·잠수 신고', icon:'shieldOutline', target:'admin-abuse', ready:true},
   {key:'inspect', label:'완공검수 승인', desc:'AI 검수 → 승인·반려', icon:'checkCircle', target:'admin-inspect', ready:true},
+  {key:'inspectionQueue', label:'감리 처리 대기열', desc:'사진감리·전문가감리 답변작성', icon:'fileText', target:'admin-inspection-queue', ready:true},
   {key:'settleHold', label:'정산 감독', desc:'전체 업체·보류 건', icon:'fileText', target:'admin-settle', ready:true},
   {key:'tier', label:'승급 심사', desc:'파트너 등급 승급', icon:'medal', target:'admin-tier', ready:true},
   {key:'policy', label:'정책 설정', desc:'캐시·요금제·수수료율', icon:'sparkle', target:'admin-policy', ready:true},
@@ -4106,6 +4133,58 @@ function rejectPendingPartner(){
   alert('반려 처리됐어요.');
   renderAdminPendingPartnersList();
   go('admin-pending-partners');
+}
+
+// 신규(사용자요청 — 관리자 자체 전문인력 감리 검토 워크플로)
+function renderAdminInspectionQueue(){
+  var el = document.getElementById('admin-inspection-queue-list'); if(!el) return;
+  el.innerHTML = emptyStateBox('대기열을 불러오는 중이에요.');
+  if(!window.MVP.live){ el.innerHTML = emptyStateBox('실서버 모드에서만 대기열을 확인할 수 있어요.'); return; }
+  apiFetch('/api/admin/inspections/queue', {method:'GET'}).then(function(rows){
+    window.ADMIN_INSPECTION_QUEUE = rows || [];
+    if(!rows || !rows.length){ el.innerHTML = emptyStateBox('대기 중인 감리 건이 없어요.'); return; }
+    el.innerHTML = '<div class="caption" style="margin-bottom:10px">대기중 '+rows.length+'건</div>' + rows.map(function(r){
+      var statusLabel = r.status==='reported' ? '답변완료' : (r.uploadedPhotoCount||0)+'/'+(r.photoCount||'?')+'장 제출';
+      return '<button type="button" onclick="openAdminInspectionDetail(\''+r.id+'\')" style="width:100%;text-align:left;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px 16px;margin-bottom:10px;cursor:pointer;font-family:inherit">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px"><span style="font-size:15.5px;font-weight:700;color:var(--charcoal)">'+(r.plan==='photo'?'사진감리':'전문가감리')+' · '+(r.consumerName||'')+'</span><span style="font-size:11px;font-weight:700;color:'+(r.status==='reported'?'var(--success)':'var(--terracotta)')+'">'+statusLabel+'</span></div>'
+        + '<div class="caption">'+(r.partnerName||'')+' · '+(r.price||0).toLocaleString()+'원 · '+(r.appliedAt||'')+'</div></button>';
+    }).join('');
+  }).catch(function(e){ el.innerHTML = emptyStateBox('대기열을 불러오지 못했어요.<br>'+escapeConsumerIdentityHtml(e.message||'서버 오류')); });
+}
+function openAdminInspectionDetail(id){
+  window.currentAdminInspectionId = id;
+  var body = document.getElementById('admin-inspection-detail-body'); if(!body) return;
+  body.innerHTML = emptyStateBox('불러오는 중이에요.');
+  go('admin-inspection-detail');
+  apiFetch('/api/admin/inspections/'+encodeURIComponent(id), {method:'GET'}).then(function(r){
+    window.currentAdminInspectionData = r;
+    var photosHtml = (r.photos||[]).map(function(p){ return '<img src="'+p.url+'" style="width:96px;height:96px;object-fit:cover;border-radius:var(--radius-input);border:1px solid var(--stone);margin:0 8px 8px 0;display:inline-block;cursor:pointer" onclick="window.open(this.src,\'_blank\')">'; }).join('');
+    var isAnswered = r.status === 'reported';
+    var answerBox = isAnswered
+      ? '<div style="background:var(--ivory);border-radius:var(--radius-input);padding:12px 14px;margin-top:12px"><div style="font-size:13px;font-weight:700;color:var(--terracotta);margin-bottom:4px">답변완료</div><div style="font-size:13.5px;color:var(--charcoal);line-height:1.6">'+(r.grade||'')+' · '+(r.opinion||(r.report&&JSON.parse(r.report||'{}').opinion)||'')+'</div></div>'
+      : '<div style="margin-top:14px">'
+        + '<div class="caption" style="font-weight:700;margin-bottom:8px">판정 등급</div>'
+        + '<select id="adminInspGrade" style="width:100%;padding:10px;border:1px solid var(--stone);border-radius:var(--radius-input);margin-bottom:10px;font-family:inherit"><option value="양호">양호</option><option value="주의">주의</option><option value="문제">문제</option></select>'
+        + '<div class="caption" style="font-weight:700;margin-bottom:6px">소견(상세 답변)</div>'
+        + '<textarea id="adminInspOpinion" rows="5" placeholder="사진을 확인한 소견을 상세히 작성해주세요" style="width:100%;padding:10px;border:1px solid var(--stone);border-radius:var(--radius-input);margin-bottom:10px;font-family:inherit;resize:vertical"></textarea>'
+        + '<div class="caption" style="font-weight:700;margin-bottom:6px">소비자 행동 권고</div>'
+        + '<textarea id="adminInspAdvice" rows="3" placeholder="소비자가 다음에 무엇을 하면 좋을지 안내해주세요" style="width:100%;padding:10px;border:1px solid var(--stone);border-radius:var(--radius-input);margin-bottom:14px;font-family:inherit;resize:vertical"></textarea>'
+        + '<button class="btn btn-primary" style="width:100%" onclick="submitAdminInspectionAnswer()">답변완료·소비자에게 전송</button>'
+        + '</div>';
+    body.innerHTML = '<div class="h2" style="margin-bottom:4px">'+(r.plan==='photo'?'사진감리':'전문가감리')+'</div>'
+      + '<div class="caption" style="margin-bottom:14px">'+(r.consumerName||'')+' · '+(r.partnerName||'')+' · '+(r.price||0).toLocaleString()+'원</div>'
+      + '<div style="margin-bottom:10px">'+(photosHtml||'<div class="caption" style="color:var(--slate)">아직 업로드된 사진이 없어요.</div>')+'</div>'
+      + answerBox;
+  }).catch(function(e){ body.innerHTML = emptyStateBox('불러오지 못했어요.<br>'+escapeConsumerIdentityHtml(e.message||'서버 오류')); });
+}
+function submitAdminInspectionAnswer(){
+  var grade = document.getElementById('adminInspGrade').value;
+  var opinion = document.getElementById('adminInspOpinion').value.trim();
+  var advice = document.getElementById('adminInspAdvice').value.trim();
+  if(!opinion || !advice){ alert('소견과 권고사항을 모두 입력해주세요.'); return; }
+  apiFetch('/api/admin/inspections/'+encodeURIComponent(window.currentAdminInspectionId)+'/answer', {method:'PUT', body: JSON.stringify({grade:grade, opinion:opinion, advice:advice})})
+    .then(function(){ alert('답변이 전송됐어요.'); renderAdminInspectionQueue(); go('admin-inspection-queue'); })
+    .catch(function(e){ alert('답변 전송에 실패했어요.\\n'+e.message); });
 }
 
 function renderAdminEventsList(){
@@ -4516,7 +4595,7 @@ function rejectTier(){ if(!requireRoomerRole('admin')) return; var u=(window.TIE
 // INSPECT_PLANS는 다른 화면(관리자 정책설정 등)에서 참조하므로 호환을 위해 이름은 유지하되,
 // 각 항목에 pricingType을 추가해서 openInspectPlan()이 유형별로 다른 입력UI를 그리게 한다.
 var INSPECT_PLANS=[
-  {key:'ai',     label:'AI 감리',    pricingType:'free',   price:0, desc:'AI가 사진을 즉시 분석해서 참고 소견을 드려요'},
+  {key:'ai',     label:'AI 감리',    pricingType:'free',   price:0, maxPhotos:3, desc:'AI가 사진을 즉시 분석해서 참고 소견을 드려요'},
   {key:'photo',  label:'사진감리',   pricingType:'perPhoto', unitPrice:8000, minCount:5, desc:'전문가가 사진 1장당 상세 답변을 드려요'},
   {key:'expert', label:'전문가 감리', pricingType:'expert', basePrice:300000, desc:'전문가가 깊이있게 종합 검토·답변을 드려요'}
 ];
@@ -4618,7 +4697,9 @@ function confirmInspectionLegalNotice(planKey, extra){
 }
 async function applyInspection(planKey){
   if(!requireRoomerRole('consumer','AI 공사 감리는 소비자 계정에서만 신청할 수 있습니다.')) return;
-  if(planKey==='ai'){ return proceedApplyInspection('ai',{}); } // 무료는 동의절차 없이 즉시 진행
+  // 결함정리(사용자요청 — AI감리는 메신저로 넘어가지 않고 독립화면에서 사진업로드+즉시결과를
+  // 그 자리에서 보여줘야 함): 동의절차 없이 바로 독립 화면으로 이동(결제 자체가 없으므로)
+  if(planKey==='ai'){ closeMeasSheet(); return openAiInspectionScreen(); }
   var extra = {};
   if(planKey==='photo'){ extra.photoCount = Math.max(INSPECT_PLANS.filter(function(x){return x.key==='photo';})[0].minCount, parseInt(document.getElementById('inspPhotoCount').value)||5); }
   if(planKey==='expert'){ extra.tripKey = document.getElementById('inspVisitToggle').checked ? document.getElementById('inspTripRegion').value : null; }
@@ -4629,9 +4710,9 @@ async function proceedApplyInspection(planKey, extra){
   var activeContractId = window.MVP.live ? getCurrentRoomServerId('contractId') : null;
   if(window.MVP.live && !activeContractId){ alert('계약이 확인된 대화방에서만 감리를 신청할 수 있습니다.'); return; }
   var p=planByKey(planKey);
-  var price = planKey==='ai' ? 0 : planKey==='photo' ? calcPhotoPrice(extra.photoCount) : calcExpertPrice(extra.tripKey);
+  var price = planKey==='photo' ? calcPhotoPrice(extra.photoCount) : calcExpertPrice(extra.tripKey);
   var planLabel = p.label + (planKey==='photo' ? ' ('+extra.photoCount+'장)' : (planKey==='expert' && extra.tripKey ? ' (출장포함)' : ''));
-  var insp={ id:'ins'+Date.now(), plan:planKey, planLabel:planLabel, price:price, status: price>0?'unpaid':'paid', method:null, at:(typeof measNow==='function'?measNow():''), photoCount:extra.photoCount, tripKey:extra.tripKey };
+  var insp={ id:'ins'+Date.now(), plan:planKey, planLabel:planLabel, price:price, status:'unpaid', method:null, at:(typeof measNow==='function'?measNow():''), photoCount:extra.photoCount, tripKey:extra.tripKey };
   if(window.MVP.live){
     try{
       var data = await apiFetch('/api/inspections', {method:'POST', body: JSON.stringify({contractId: activeContractId, plan: planKey, photoCount: extra.photoCount, tripKey: extra.tripKey})});
@@ -4640,8 +4721,75 @@ async function proceedApplyInspection(planKey, extra){
   }
   closeMeasSheet();
   window.INSPECTIONS.push(insp); window.currentInspId=insp.id; window.inspPayMethod=null;
-  if(insp.status==='paid'){ alert('무료 AI 감리가 신청되었습니다. 메신저에서 결과를 확인해주세요.'); go('chat'); return; }
   renderInspectionPay(); go('inspection-pay');
+}
+// 결함정리(사용자요청 — AI감리 전용 독립화면: 메신저로 안 넘어가고, 사진업로드+분석결과를
+// 이 화면에서 바로 보여줌): 최대 3장까지 업로드 가능(무료 서비스 비용통제를 위한 제한)
+window.aiInspectionPhotos = [];
+window.aiInspectionResult = null;
+function openAiInspectionScreen(){
+  if(!requireRoomerRole('consumer','AI 공사 감리는 소비자 계정에서만 신청할 수 있습니다.')) return;
+  window.aiInspectionPhotos = []; window.aiInspectionResult = null;
+  renderAiInspectionBody();
+  go('ai-inspection');
+}
+function renderAiInspectionBody(){
+  var body = document.getElementById('ai-inspection-body'); if(!body) return;
+  var maxPhotos = INSPECT_PLANS.filter(function(x){return x.key==='ai';})[0].maxPhotos;
+  if(window.aiInspectionResult){
+    var r = window.aiInspectionResult;
+    body.innerHTML = '<div style="background:var(--charcoal);border-radius:var(--radius-card);padding:16px;color:#fff;margin-bottom:16px">'
+      + '<div style="font-size:13.5px;color:#C7BFB0;margin-bottom:4px">종합판정</div>'
+      + '<div style="font-size:21px;font-weight:800">'+r.grade+' · '+r.score+'점</div></div>'
+      + '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px;margin-bottom:12px">'
+      + '<div style="font-size:14px;font-weight:700;color:var(--charcoal);margin-bottom:6px">AI 소견</div>'
+      + '<div style="font-size:14.5px;color:var(--charcoal);line-height:1.6;margin-bottom:14px">'+r.opinion+'</div>'
+      + '<div style="background:var(--ivory);border-radius:var(--radius-input);padding:10px 12px">'
+      + '<div style="font-size:13px;font-weight:700;color:var(--terracotta);margin-bottom:3px">소비자 행동 권고</div>'
+      + '<div style="font-size:13.5px;color:var(--charcoal);line-height:1.6">'+r.advice+'</div></div></div>'
+      + '<div style="font-size:12px;color:var(--slate);line-height:1.6;margin-bottom:14px">'+icon('shieldCheck',T.slate,11)+' 이 결과는 등록된 사진 수·하자 접수 여부 등을 기준으로 한 규칙 기반 자동 산출이며, 실제 AI Vision 분석 연동은 준비 중입니다. 정확한 진단은 사진감리·전문가감리(유료)를 이용해주세요.</div>'
+      + '<button class="btn btn-outline" style="width:100%" onclick="closeToReturn()">닫기</button>';
+    return;
+  }
+  var thumbs = window.aiInspectionPhotos.map(function(src, idx){
+    return '<div style="position:relative;display:inline-block;margin:0 8px 8px 0"><img src="'+src+'" style="width:72px;height:72px;object-fit:cover;border-radius:var(--radius-input);border:1px solid var(--stone)"><button type="button" onclick="removeAiInspectionPhoto('+idx+')" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--charcoal);color:#fff;border:none;font-size:12px;cursor:pointer">&times;</button></div>';
+  }).join('');
+  var canAnalyze = window.aiInspectionPhotos.length > 0;
+  body.innerHTML = '<div style="margin-bottom:10px">'+thumbs+'</div>'
+    + (window.aiInspectionPhotos.length < maxPhotos ? '<label class="btn btn-outline" style="display:block;text-align:center;margin-bottom:14px;cursor:pointer">사진 올리기 ('+window.aiInspectionPhotos.length+'/'+maxPhotos+')<input type="file" accept="image/*" multiple style="display:none" onchange="handleAiInspectionPhotoInput(this)"></label>' : '<div class="caption" style="margin-bottom:14px;color:var(--slate)">최대 '+maxPhotos+'장까지 업로드했어요.</div>')
+    + '<button class="btn btn-primary" style="width:100%'+(canAnalyze?'':';opacity:.45;pointer-events:none')+'" onclick="runAiInspectionAnalysis()">AI 분석 시작하기</button>';
+}
+function handleAiInspectionPhotoInput(input){
+  var maxPhotos = INSPECT_PLANS.filter(function(x){return x.key==='ai';})[0].maxPhotos;
+  var files = Array.prototype.slice.call(input.files||[]);
+  var remain = maxPhotos - window.aiInspectionPhotos.length;
+  if(remain <= 0){ alert('최대 '+maxPhotos+'장까지만 올릴 수 있어요.'); input.value=''; return; }
+  files.slice(0, remain).forEach(function(file){
+    var reader = new FileReader();
+    reader.onload = function(e){ window.aiInspectionPhotos.push(e.target.result); renderAiInspectionBody(); };
+    reader.readAsDataURL(file);
+  });
+  input.value = '';
+}
+function removeAiInspectionPhoto(idx){
+  window.aiInspectionPhotos.splice(idx, 1);
+  renderAiInspectionBody();
+}
+async function runAiInspectionAnalysis(){
+  if(window.aiInspectionPhotos.length === 0) return;
+  var activeContractId = window.MVP.live ? getCurrentRoomServerId('contractId') : null;
+  if(window.MVP.live && !activeContractId){ alert('계약이 확인된 대화방에서만 AI 공사 감리를 신청할 수 있습니다.'); return; }
+  if(window.MVP.live){
+    try{
+      var data = await apiFetch('/api/inspections', {method:'POST', body: JSON.stringify({contractId: activeContractId, plan:'ai', photoCount: window.aiInspectionPhotos.length})});
+      window.aiInspectionResult = { grade: data.grade, score: data.score, opinion: data.opinion, advice: data.advice };
+    }catch(e){ reportLiveActionFailure('AI 공사 감리 분석', e); return; }
+  } else {
+    var photos = window.aiInspectionPhotos.length;
+    var v = photos > 0 ? INSPECT_VERDICTS[0] : INSPECT_VERDICTS[1];
+    window.aiInspectionResult = { grade: v.grade, score: v.score, opinion: v.opinion, advice: v.advice };
+  }
+  renderAiInspectionBody();
 }
 var PAY_METHODS=[['카드결제','card'],['카카오페이','kakao'],['토스페이','toss']]; // 수정 여지: 결제수단 배열
 function selectInspMethod(m){ window.inspPayMethod=m; renderInspectionPay(); }
@@ -4688,54 +4836,75 @@ function renderInspectionPay(){
 function payInspection(){
   var d=(window.INSPECTIONS||[]).filter(function(x){return x.id===window.currentInspId;})[0];
   if(!d||d.status!=='unpaid'||!window.inspPayMethod) return;
-  // 신규(사용자요청 — 문제1·2: 크레딧 우선차감 결제): 실제로 크레딧을 차감하고,
+  // 신규(사용자요청 — 크레딧 우선차감 결제): 실제로 크레딧을 차감하고,
   // 부족한 만큼만 카드/카카오페이/토스로 결제되도록 처리
   var balance = window.cashBalance || 0;
   if(window.inspPayMethod === 'credit-full'){
-    // 보유크레딧으로 전액 결제(카드결제 없음)
     window.cashBalance = balance - d.price;
     d.creditUsed = d.price; d.cardCharged = 0; d.method = 'credit';
   } else if(balance > 0 && balance < d.price){
-    // 보유크레딧을 먼저 전부 쓰고, 차액만 선택한 결제수단으로 결제
     window.cashBalance = 0;
     d.creditUsed = balance; d.cardCharged = d.price - balance; d.method = window.inspPayMethod;
   } else {
-    // 보유크레딧 0원 — 기존처럼 전액 결제수단으로
     d.creditUsed = 0; d.cardCharged = d.price; d.method = window.inspPayMethod;
   }
+  // 결함정리(사용자요청 — 2026-09-07 사업모델 전면개편: 사진감리·전문가감리는 AI 자동판정이
+  // 아니라 자체 전문인력이 직접 사진을 확인하고 답변 작성해야 함): 결제완료 후 곧바로
+  // 사진업로드 화면으로 이동. 여기서는 판정을 절대 만들지 않음(전문가 답변 대기 상태로 유지).
   d.status='paid'; d.paidAt=(typeof measNow==='function'?measNow():'');
-  // 신규(사용자요청 — 문제3: 사진없이 즉시 보고서 나오던 허수 AI 개선): 결제 완료 시점에
-  // 실제 시공사진이 1장이라도 있어야 보고서를 생성. 없으면 "사진 대기" 상태로 두고,
-  // 사진이 실제로 올라오면(handlePendingInspectionPhoto) 그때 비로소 보고서 생성
-  var hasPhotoNow = (window.CHAT_LOG||[]).filter(function(m){return m.who==='photo';}).length > 0;
-  if(hasPhotoNow){
-    var v=inspectVerdict(); d.grade=v.grade; d.score=v.score; d.opinion=v.opinion; d.advice=v.advice; d.status='reported';
-  } else {
-    d.status='awaiting_photo';
-  }
+  window.inspUploadedPhotos = [];
   if(window.MVP.live && d.serverId){
-    // 신규(2단계 프론트연동): 실서버 결제+AI판정 결과로 화면을 다시 갱신(서버판정이 로컬시뮬레이션과 다를 수 있음)
-    apiFetch('/api/inspections/'+d.serverId+'/pay', {method:'POST', body: JSON.stringify({method: window.inspPayMethod})})
-      .then(function(data){
-        d.grade=data.grade; d.score=data.score; d.opinion=data.opinion; d.advice=data.advice;
-        renderInspectionPay();
-        if(d.grade==='문제' && typeof notifyAdmin==='function'){ notifyAdmin('AI감리 문제판정', d.planLabel+' · 종합판정 문제 · 점수 '+d.score+' — '+d.opinion, 'danger', 'admin-alerts'); }
-      })
-      .catch(function(e){ console.error('감리결제 실패:', e.message); });
+    apiFetch('/api/payments/dummy-noop', {method:'GET'}).catch(function(){}); // no-op 자리표시(결제기록은 이미 위에서 처리)
   }
   renderInspectionPay();
-  var _dot='<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--steelblue);margin-right:5px;vertical-align:middle"></span>';
-  if(hasPhotoNow){
-    CHAT_LOG.push({who:'system', text:_dot+'AI 공사 감리 결제 완료 ('+d.price.toLocaleString()+'원) · 감리 보고서가 도착했어요'});
-  } else {
-    CHAT_LOG.push({who:'system', text:_dot+'AI 공사 감리 결제 완료 ('+d.price.toLocaleString()+'원) · 시공 사진을 올려주시면 AI 분석이 시작돼요'});
+  openInspectionPhotoUploadScreen(d.id);
+}
+function openInspectionPhotoUploadScreen(inspId){
+  window.currentInspId = inspId; window.inspUploadedPhotos = window.inspUploadedPhotos || [];
+  renderInspectionPhotoUpload();
+  go('inspection-photo-upload');
+}
+function renderInspectionPhotoUpload(){
+  var d=(window.INSPECTIONS||[]).filter(function(x){return x.id===window.currentInspId;})[0];
+  var body=document.getElementById('inspection-photo-upload-body'); if(!body||!d) return;
+  if(d.status==='reported'){
+    var rep = d.report || {};
+    body.innerHTML = '<div style="background:var(--charcoal);border-radius:var(--radius-card);padding:16px;color:#fff;margin-bottom:16px">'
+      + '<div style="font-size:13.5px;color:#C7BFB0;margin-bottom:4px">전문가 답변</div>'
+      + '<div style="font-size:20px;font-weight:800">'+(d.grade||'')+' · '+(d.score||'')+'점</div></div>'
+      + '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px">'
+      + '<div style="display:inline-block;background:var(--bg-accent, #E8F0FE);color:var(--terracotta);font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:var(--radius-pill);margin-bottom:8px">전문가 답변</div>'
+      + '<div style="font-size:14.5px;color:var(--charcoal);line-height:1.6;margin-bottom:12px">'+(d.opinion||'')+'</div>'
+      + '<div style="background:var(--ivory);border-radius:var(--radius-input);padding:10px 12px"><div style="font-size:13px;font-weight:700;color:var(--terracotta);margin-bottom:3px">권고사항</div><div style="font-size:13.5px;color:var(--charcoal);line-height:1.6">'+(d.advice||'')+'</div></div></div>'
+      + '<button class="btn btn-outline" style="width:100%;margin-top:14px" onclick="closeToReturn()">닫기</button>';
+    return;
   }
-  CHAT_LOG.push({who:'card', card:'inspection', inspId:d.id});
-  renderChat();
-  // 민감사안: 감리 결과가 '문제' 등급이면 즉시 운영자 모니터링에 알림(법적 증거로 쓰일 수 있는 사안)
-  if(d.grade==='문제' && typeof notifyAdmin==='function'){
-    notifyAdmin('AI감리 문제판정', d.planLabel+' · 종합판정 문제 · 점수 '+d.score+' — '+d.opinion, 'danger', 'admin-alerts');
+  var thumbs = window.inspUploadedPhotos.map(function(src){
+    return '<img src="'+src+'" style="width:72px;height:72px;object-fit:cover;border-radius:var(--radius-input);border:1px solid var(--stone);margin:0 8px 8px 0;display:inline-block">';
+  }).join('');
+  body.innerHTML = '<div class="caption" style="margin-bottom:12px;line-height:1.6">시공 사진을 올려주시면 저희 전문인력이 직접 확인 후 답변을 드려요. 1장이라도 올라오면 바로 검토가 시작됩니다.</div>'
+    + '<div style="margin-bottom:10px">'+thumbs+'</div>'
+    + '<label class="btn btn-outline" style="display:block;text-align:center;margin-bottom:14px;cursor:pointer">사진 올리기<input type="file" accept="image/*" multiple style="display:none" onchange="handleInspectionPhotoUploadInput(this)"></label>'
+    + '<div class="caption" style="color:var(--slate)">답변이 도착하면 알림으로 안내드려요.</div>';
+}
+async function handleInspectionPhotoUploadInput(input){
+  var d=(window.INSPECTIONS||[]).filter(function(x){return x.id===window.currentInspId;})[0]; if(!d) return;
+  var files = Array.prototype.slice.call(input.files||[]);
+  for(var i=0;i<files.length;i++){
+    var file = files[i];
+    if(window.MVP.live && d.serverId){
+      try{
+        var form = new FormData(); form.append('file', file);
+        await apiFetch('/api/inspections/'+d.serverId+'/photos', {method:'POST', body:form, noRetry:true});
+      }catch(e){ alert('사진 업로드에 실패했어요: '+e.message); continue; }
+    }
+    await new Promise(function(resolve){
+      var reader = new FileReader();
+      reader.onload = function(e){ window.inspUploadedPhotos.push(e.target.result); resolve(); };
+      reader.readAsDataURL(file);
+    });
   }
+  input.value=''; renderInspectionPhotoUpload();
 }
 // 신규(사용자요청 — 문제3): 사진 대기중이던 감리건이 있으면, 사진이 실제로 올라온 시점에
 // 그제서야 보고서를 생성. 사진 업로드 핸들러에서 호출됨(아래 chat-photo-input 리스너 참고)
@@ -5188,6 +5357,7 @@ function go(id){
   }
   if(id === 'admin-points' && typeof switchPointsTab==='function'){ switchPointsTab('consumer'); }
   if(id === 'admin-pending-partners' && typeof renderAdminPendingPartnersList==='function'){ renderAdminPendingPartnersList(); }
+  if(id === 'admin-inspection-queue' && typeof renderAdminInspectionQueue==='function'){ renderAdminInspectionQueue(); }
   // 신규(사용자요청): 모바일 앱배너를 한번 닫았으면 첫화면 재방문시에도 계속 숨김 유지
   if(id === '00' && window.mobileAppBannerClosed){
     var mab = document.getElementById('mobile-app-banner');
