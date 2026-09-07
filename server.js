@@ -254,6 +254,59 @@ app.post('/api/admin/auth/bootstrap', adminBootstrapLimiter, (req, res) => {
   db.prepare('INSERT INTO admins (id, email, password_hash, role) VALUES (?,?,?,?)').run(id, email, hash, 'super');
   res.json({ success: true, data: { id, message: '최초 관리자 계정이 생성됐습니다. 이 API는 이제 영구적으로 비활성화됩니다.' } });
 });
+// 신규(사용자요청 — 개발자도구 없이 화면에서 바로 관리자 계정을 만들 수 있어야 함):
+// 간단한 입력폼 화면을 서버가 직접 제공. 관리자가 이미 존재하면 안내문구만 보여주고
+// 폼 자체를 숨김(중복 시도 방지, API 자체도 어차피 403으로 막지만 UX상 미리 알려줌).
+app.get('/admin-setup', (req, res) => {
+  const existingCount = db.prepare('SELECT COUNT(*) c FROM admins').get().c;
+  const alreadyDone = existingCount > 0;
+  res.type('html').send(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ROOMER 관리자 최초설정</title>
+<style>body{font-family:-apple-system,sans-serif;background:#F5F1E8;margin:0;padding:24px;display:flex;justify-content:center}
+.card{background:#fff;border-radius:16px;padding:28px;max-width:380px;width:100%;box-shadow:0 2px 12px rgba(0,0,0,0.08)}
+h1{font-size:19px;margin:0 0 8px}p{font-size:13.5px;color:#6B6255;line-height:1.6;margin:0 0 20px}
+input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #D8D2C4;border-radius:10px;font-size:15px;margin-bottom:12px;font-family:inherit}
+button{width:100%;padding:13px;background:#2B2621;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+#result{margin-top:14px;font-size:13.5px;line-height:1.6;padding:12px;border-radius:10px;display:none}
+.ok{background:#E8F3EA;color:#1E7B34}.err{background:#FBEAEA;color:#C0392B}</style></head>
+<body><div class="card">
+<h1>ROOMER 관리자 최초설정</h1>
+${alreadyDone
+  ? '<p style="color:#C0392B">이미 관리자 계정이 생성되어 있습니다. 이 화면은 더 이상 사용할 수 없습니다. 기존 관리자 계정으로 로그인해주세요.</p>'
+  : '<p>최초 1번만 사용할 수 있는 화면입니다. 이메일과 비밀번호(10자 이상)를 입력하고 버튼을 누르면 관리자 계정이 만들어집니다.</p>'
+    + '<input type="email" id="email" placeholder="관리자로 쓸 이메일">'
+    + '<input type="password" id="password" placeholder="비밀번호(10자 이상)">'
+    + '<button id="submitBtn" onclick="createAdmin()">관리자 계정 만들기</button>'
+}
+<div id="result"></div>
+</div>
+<script>
+async function createAdmin(){
+  var btn=document.getElementById('submitBtn'), result=document.getElementById('result');
+  var email=document.getElementById('email').value.trim();
+  var password=document.getElementById('password').value;
+  btn.disabled=true; btn.textContent='처리 중...';
+  try{
+    var res=await fetch('/api/admin/auth/bootstrap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,password:password})});
+    var data=await res.json();
+    result.style.display='block';
+    if(data.success){
+      result.className='ok';
+      result.textContent='완료! 관리자 계정이 만들어졌습니다. 이제 이 화면은 다시 못 씁니다. 앱으로 돌아가서 방금 만든 이메일/비밀번호로 로그인해주세요.';
+      document.getElementById('email').disabled=true; document.getElementById('password').disabled=true; btn.style.display='none';
+    } else {
+      result.className='err';
+      result.textContent=(data.error&&data.error.message)||'실패했습니다. 다시 시도해주세요.';
+      btn.disabled=false; btn.textContent='관리자 계정 만들기';
+    }
+  }catch(e){
+    result.style.display='block'; result.className='err'; result.textContent='네트워크 오류: '+e.message;
+    btn.disabled=false; btn.textContent='관리자 계정 만들기';
+  }
+}
+</script></body></html>`);
+});
 
 
 // ===== 1. 인증 (소셜로그인은 데모용으로 간소화 — 실제로는 카카오/네이버 API와 통신해야 함) =====
@@ -686,7 +739,9 @@ app.post('/api/partners/register', partnerRegistrationLimiter, partnerSignupRequ
   if (strengthTags && (!Array.isArray(strengthTags) || strengthTags.length > 5)) return validationError(res, '강점 키워드는 최대 5개까지 선택 가능합니다');
   if (portfolioImages && (!Array.isArray(portfolioImages) || portfolioImages.length > 6)) return validationError(res, '대표 시공사진은 최대 6장까지 등록 가능합니다');
   if (spaceCategories && !Array.isArray(spaceCategories)) return validationError(res, '전문분야 형식이 올바르지 않습니다');
-  if (!verificationConsents || verificationConsents.business !== true || verificationConsents.identity !== true || verificationConsents.review !== true) {
+  // 결함정리(사용자요청 — 본인확인 정책 온오프): identity 동의는 본인확인이 활성화된 경우에만 필수
+  const identityVerificationRequiredForConsent = getAdminPolicy('identity_verification_required', false);
+  if (!verificationConsents || verificationConsents.business !== true || verificationConsents.review !== true || (identityVerificationRequiredForConsent && verificationConsents.identity !== true)) {
     return validationError(res, '파트너 검증을 위한 필수 동의가 필요합니다');
   }
   const normalizedRegions = normalizePartnerServiceRegions(serviceRegions, region);
@@ -711,19 +766,26 @@ app.post('/api/partners/register', partnerRegistrationLimiter, partnerSignupRequ
   if (verifiedBusiness.role !== 'partner_business_verification' || verifiedBusiness.bizNo !== normalizedBizNo || verifiedBusiness.ceoName !== String(ceoName || '').trim()) {
     return res.status(403).json({ success:false, error:{ code:'BUSINESS_VERIFICATION_MISMATCH', message:'검증받은 사업자 정보와 가입정보가 일치하지 않습니다' } });
   }
-  let identityClaim;
-  try { identityClaim = jwt.verify(String(identityVerificationToken || ''), JWT_SECRET); }
-  catch (error) { return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_REQUIRED', message:'휴대폰 본인확인을 다시 완료해주세요' } }); }
-  if (identityClaim.role !== 'partner_identity_verification' || identityClaim.loginId !== req.partnerSignup.loginId) {
-    return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_MISMATCH', message:'본인확인 계정과 가입 이메일이 일치하지 않습니다' } });
-  }
-  const identityRow = db.prepare(`SELECT * FROM partner_identity_verifications
-    WHERE id=? AND login_id=? AND status='verified' AND consumed_at IS NULL`).get(identityClaim.verificationId, req.partnerSignup.loginId);
-  if (!identityRow) return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_USED', message:'본인확인을 다시 완료해주세요' } });
+  // 결함정리(사용자요청 — 본인확인은 코드 삭제 대신 관리자가 언제든 온/오프할 수 있는
+  // 정책으로 전환): 기본값은 false(비활성화) — 지금은 본인확인 없이도 가입 다음단계 진행 가능.
+  // 관리자가 정책설정 화면에서 identity_verification_required 를 true로 바꾸면 다시 필수화됨.
+  const identityVerificationRequired = getAdminPolicy('identity_verification_required', false);
   const normalizedApplicantRole = applicantRole === 'manager' ? 'manager' : 'representative';
-  const normalizePersonName = value => String(value || '').replace(/\s+/g, '');
-  if (normalizedApplicantRole === 'representative' && normalizePersonName(identityRow.applicant_name) !== normalizePersonName(ceoName)) {
-    return res.status(403).json({ success:false, error:{ code:'REPRESENTATIVE_NAME_MISMATCH', message:'휴대폰 본인확인 이름과 사업자 대표자명이 일치하지 않습니다' } });
+  let identityRow = null;
+  if (identityVerificationRequired) {
+    let identityClaim;
+    try { identityClaim = jwt.verify(String(identityVerificationToken || ''), JWT_SECRET); }
+    catch (error) { return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_REQUIRED', message:'휴대폰 본인확인을 다시 완료해주세요' } }); }
+    if (identityClaim.role !== 'partner_identity_verification' || identityClaim.loginId !== req.partnerSignup.loginId) {
+      return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_MISMATCH', message:'본인확인 계정과 가입 이메일이 일치하지 않습니다' } });
+    }
+    identityRow = db.prepare(`SELECT * FROM partner_identity_verifications
+      WHERE id=? AND login_id=? AND status='verified' AND consumed_at IS NULL`).get(identityClaim.verificationId, req.partnerSignup.loginId);
+    if (!identityRow) return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_USED', message:'본인확인을 다시 완료해주세요' } });
+    const normalizePersonName = value => String(value || '').replace(/\s+/g, '');
+    if (normalizedApplicantRole === 'representative' && normalizePersonName(identityRow.applicant_name) !== normalizePersonName(ceoName)) {
+      return res.status(403).json({ success:false, error:{ code:'REPRESENTATIVE_NAME_MISMATCH', message:'휴대폰 본인확인 이름과 사업자 대표자명이 일치하지 않습니다' } });
+    }
   }
   const authorizationDocument = normalizedApplicantRole === 'manager'
     ? requireSignupFile(authorizationDocUrl, req.partnerSignup.loginId, 'authorization') : null;
@@ -751,7 +813,7 @@ app.post('/api/partners/register', partnerRegistrationLimiter, partnerSignupRequ
       insertRegion.run(randomUUID(), id, regionCode, parts[0], parts.slice(1).join(' '), index === 0 ? 1 : 0);
     });
     db.prepare(`UPDATE partners SET phone=?, applicant_name=?, applicant_role=?, identity_verified_at=?, ci_hash=?, authorization_doc_url=? WHERE id=?`)
-      .run(identityRow.phone, identityRow.applicant_name, normalizedApplicantRole, identityRow.verified_at, identityRow.ci_hash, authorizationDocument ? authorizationDocument.id : null, id);
+      .run(identityRow ? identityRow.phone : null, identityRow ? identityRow.applicant_name : (normalizedApplicantRole==='representative' ? ceoName : null), normalizedApplicantRole, identityRow ? identityRow.verified_at : null, identityRow ? identityRow.ci_hash : null, authorizationDocument ? authorizationDocument.id : null, id);
     db.prepare("UPDATE stored_files SET owner_type='partner', owner_id=? WHERE owner_type='partner_signup' AND owner_id=?")
       .run(id, verifiedLoginId);
     db.prepare(`UPDATE partners SET business_verified_at=?, business_status=?, business_tax_type=? WHERE id=?`)
@@ -760,7 +822,7 @@ app.post('/api/partners/register', partnerRegistrationLimiter, partnerSignupRequ
       (id, partner_id, consent_type, policy_version, agreed_at) VALUES (?,?,?,?,?)`);
     const policyVersion = String(verificationConsents.policyVersion || '2026-09-05').slice(0,30);
     ['business','identity','review'].forEach(type => consentInsert.run(randomUUID(), id, type, policyVersion, new Date().toISOString()));
-    db.prepare("UPDATE partner_identity_verifications SET consumed_at=datetime('now') WHERE id=?").run(identityRow.id);
+    if (identityRow) db.prepare("UPDATE partner_identity_verifications SET consumed_at=datetime('now') WHERE id=?").run(identityRow.id);
   });
   insertPartner();
   const token = jwt.sign({ sub: id, role: 'partner' }, JWT_SECRET, { expiresIn: '1h' });
@@ -901,12 +963,16 @@ app.get('/api/admin/files/:fileId', adminAuthRequired(), async (req, res, next) 
 app.put('/api/admin/partners/:id/approve', adminAuthRequired(), (req, res) => {
   const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
   if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
-  if (!partner.business_verified_at || !partner.identity_verified_at) {
-    return res.status(409).json({ success:false, error:{ code:'VERIFICATION_INCOMPLETE', message:'국세청 사업자 검증과 휴대폰 본인확인이 모두 완료된 업체만 승인할 수 있습니다' } });
+  // 결함정리(사용자요청 — 본인확인 정책 온오프 반영): identity_verification_required가 꺼져있으면
+  // 승인 조건에서도 본인확인 완료 여부를 요구하지 않음(사업자검증은 계속 필수)
+  const identityVerificationRequired = getAdminPolicy('identity_verification_required', false);
+  if (!partner.business_verified_at || (identityVerificationRequired && !partner.identity_verified_at)) {
+    return res.status(409).json({ success:false, error:{ code:'VERIFICATION_INCOMPLETE', message: identityVerificationRequired ? '국세청 사업자 검증과 휴대폰 본인확인이 모두 완료된 업체만 승인할 수 있습니다' : '국세청 사업자 검증이 완료된 업체만 승인할 수 있습니다' } });
   }
+  const requiredConsentTypes = identityVerificationRequired ? ['business','identity','review'] : ['business','review'];
   const consentCount = db.prepare(`SELECT COUNT(DISTINCT consent_type) AS count FROM partner_verification_consents
-    WHERE partner_id=? AND consent_type IN ('business','identity','review')`).get(req.params.id).count;
-  if (consentCount !== 3) {
+    WHERE partner_id=? AND consent_type IN (${requiredConsentTypes.map(()=>'?').join(',')})`).get(req.params.id, ...requiredConsentTypes).count;
+  if (consentCount !== requiredConsentTypes.length) {
     return res.status(409).json({ success:false, error:{ code:'CONSENT_INCOMPLETE', message:'필수 검증 동의 이력이 완전하지 않아 승인할 수 없습니다' } });
   }
   db.prepare(`UPDATE partners SET verify_status='approved', approved_at=datetime('now'), reject_reason=NULL,
@@ -2558,6 +2624,23 @@ app.put('/api/admin/policy', adminAuthRequired('admin_super'), (req, res) => {
   db.prepare('CREATE TABLE IF NOT EXISTS admin_policies (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime(\'now\')))').run();
   db.prepare('INSERT INTO admin_policies (key, value, updated_at) VALUES (?,?,datetime(\'now\')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime(\'now\')').run(key, JSON.stringify(value));
   res.json({ success:true, data:{ key, value } });
+});
+// 신규(사용자요청 — 관리자가 언제든 온/오프 전환 가능한 정책): 정책값 조회 API + 서버 내부에서
+// 쓸 헬퍼함수. 파트너 본인확인(PASS) 필수여부를 관리자가 코드수정 없이 토글할 수 있게 함.
+db.prepare('CREATE TABLE IF NOT EXISTS admin_policies (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime(\'now\')))').run();
+function getAdminPolicy(key, defaultValue) {
+  const row = db.prepare('SELECT value FROM admin_policies WHERE key=?').get(key);
+  if (!row) return defaultValue;
+  try { return JSON.parse(row.value); } catch (e) { return defaultValue; }
+}
+app.get('/api/admin/policy/:key', adminAuthRequired(), (req, res) => {
+  const row = db.prepare('SELECT value, updated_at FROM admin_policies WHERE key=?').get(req.params.key);
+  res.json({ success:true, data: row ? { key: req.params.key, value: JSON.parse(row.value), updatedAt: row.updated_at } : { key: req.params.key, value: null, updatedAt: null } });
+});
+// 신규(사용자요청 — 파트너가입 화면이 본인확인 온오프 여부를 알아야 "다음"단계 진행여부를
+// 결정할 수 있음): 로그인 없이도 조회 가능한 공개 정책 API. 민감정보 없는 on/off 값만 노출하므로 안전함.
+app.get('/api/public/policy/identity-verification-required', (req, res) => {
+  res.json({ success:true, data: { required: getAdminPolicy('identity_verification_required', false) } });
 });
 
 // ===== 15. QR코드 생성 =====
