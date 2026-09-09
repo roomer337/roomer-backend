@@ -98,11 +98,16 @@ CREATE TABLE IF NOT EXISTS partner_verification_consents (
   UNIQUE(partner_id, consent_type, policy_version)
 );
 
+-- 신규(2026-09, 완공사례 피드 운영검수 게이트): 등록 즉시 소비자 피드에 노출되던 것을,
+-- 운영자가 승인해야만 노출되도록 변경(관리자 콘솔 "완공검수 승인" 화면이 이 큐를 본다).
 CREATE TABLE IF NOT EXISTS portfolio_projects (
   id TEXT PRIMARY KEY,
   partner_id TEXT REFERENCES partners(id),
   title TEXT NOT NULL,
   description TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  reject_reason TEXT,
+  reviewed_at TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -432,6 +437,48 @@ CREATE TABLE IF NOT EXISTS otp_codes (
   consumed_at TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+-- 신규(2026-09, 관리자 콘솔 실연동 — 허수업체 전수조사 후속): 등급 승급 심사 큐.
+-- from_tier는 스냅샷 고정 원칙(다른 테이블과 동일)에 따라 신청 시점의 등급을 값으로 복사해 저장한다.
+CREATE TABLE IF NOT EXISTS tier_upgrades (
+  id TEXT PRIMARY KEY,
+  partner_id TEXT NOT NULL REFERENCES partners(id),
+  from_tier TEXT NOT NULL,
+  to_tier TEXT NOT NULL,
+  license_number TEXT,
+  issuer TEXT,
+  doc_name TEXT,
+  status TEXT NOT NULL DEFAULT 'admin_review',
+  admin_note TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  decided_at TEXT
+);
+
+-- 신규(2026-09, 관리자 콘솔 실연동): 어뷰징(반복 노쇼) 조치 이력.
+-- meas_jobs.noshow_log 자체는 별도 큐 테이블이 아니라 실측 진행상황에 묻어있는 로그라서,
+-- "이 방은 이미 조치했다"를 기억하기 위한 이력 테이블을 둔다(노쇼가 그 뒤로 더 쌓이면 다시 대기열에 뜬다).
+CREATE TABLE IF NOT EXISTS abuse_actions (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES chat_rooms(id),
+  partner_id TEXT REFERENCES partners(id),
+  action TEXT NOT NULL,
+  note TEXT,
+  noshow_count_at_action INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- 신규(2026-09, 광고 크레딧 실충전 연동): 계약대금 결제(payments 테이블)와 동일한 토스페이먼츠
+-- 승인구조를 그대로 재사용하되, payments는 contract_id가 필수라 크레딧충전에는 맞지 않아 별도 테이블로 둔다.
+CREATE TABLE IF NOT EXISTS credit_topups (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL UNIQUE,
+  partner_id TEXT NOT NULL REFERENCES partners(id),
+  amount INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ready',
+  payment_key TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  paid_at TEXT
+);
 `);
 
 // 루머27 무중단 마이그레이션: CREATE TABLE IF NOT EXISTS만으로는 기존 SQLite에 새 열이 생기지 않는다.
@@ -511,5 +558,16 @@ ensureColumn('inspections', 'trip_key', 'TEXT');
 ensureColumn('inspections', 'expert_answer', 'TEXT');
 ensureColumn('inspections', 'answered_at', 'TEXT');
 ensureColumn('inspections', 'answered_by', 'TEXT');
+// 신규(2026-09, 완공사례 피드 운영검수 게이트): 이미 배포된 DB에도 안전하게 컬럼 추가
+// (기존 행은 전부 status='pending'이 되어 재검수 필요 — 지금은 실제 등록건이 0개라 영향 없음)
+ensureColumn('portfolio_projects', 'status', "TEXT NOT NULL DEFAULT 'pending'");
+ensureColumn('portfolio_projects', 'reject_reason', 'TEXT');
+ensureColumn('portfolio_projects', 'reviewed_at', 'TEXT');
+db.exec("CREATE INDEX IF NOT EXISTS idx_portfolio_projects_status ON portfolio_projects(status, created_at)");
+
+db.exec('CREATE INDEX IF NOT EXISTS idx_tier_upgrades_partner ON tier_upgrades(partner_id, created_at DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_tier_upgrades_status ON tier_upgrades(status, created_at)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_abuse_actions_room ON abuse_actions(room_id, created_at DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_credit_topups_partner ON credit_topups(partner_id, created_at DESC)');
 
 module.exports = db;
