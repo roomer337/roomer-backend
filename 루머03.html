@@ -1139,7 +1139,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   <div class="mobile-app-banner" id="mobile-app-banner">
     <span>앱다운로드시 <b>29,000크레딧</b>을 드려요</span>
     <div style="display:flex;align-items:center;gap:8px">
-      <button onclick="go('app-download')" style="background:#fff;color:var(--charcoal);border:none;border-radius:6px;padding:6px 12px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">앱다운로드</button>
+      <button onclick="setReturnTo(currentScreenId()); go('app-download')" style="background:#fff;color:var(--charcoal);border:none;border-radius:6px;padding:6px 12px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">앱다운로드</button>
       <button class="mab-close" onclick="closeMobileAppBanner()" aria-label="닫기">&times;</button>
     </div>
   </div>
@@ -1336,7 +1336,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
       <div id="ad-detail-region" style="font-size:13.5px;color:var(--slate);margin-top:4px"></div>
     </div>
     <button class="btn btn-primary" onclick="goAdProfile()">업체 프로필 보기</button>
-    <button class="btn btn-outline" style="margin-top:8px" onclick="renderVerifiedFeed(); go('verified-feed')">검수 인증 사례 둘러보기</button>
+    <button class="btn btn-outline" style="margin-top:8px" onclick="setReturnTo(currentScreenId()); renderVerifiedFeed(); go('verified-feed')">검수 인증 사례 둘러보기</button>
   </div>
 </div>
 
@@ -1383,13 +1383,13 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div class="section-label" id="lb-category" style="margin-top:24px"></div>
     <div id="realcase-note" style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--steelblue);background:#4A7BA60d;border-radius:var(--radius-input);padding:8px 12px;margin:-4px 0 12px;line-height:1.5"></div>
     <div id="hscroll-realcase" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px"></div>
-    <div style="text-align:right;margin:6px 0 12px"><button type="button" onclick="renderVerifiedFeed(); go('verified-feed')" style="background:none;border:none;color:var(--steelblue);font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:2px">검수 인증 사례 전체보기 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button></div>
+    <div style="text-align:right;margin:6px 0 12px"><button type="button" onclick="setReturnTo(currentScreenId()); renderVerifiedFeed(); go('verified-feed')" style="background:none;border:none;color:var(--steelblue);font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:2px">검수 인증 사례 전체보기 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button></div>
   </div>
 
   <div class="fixed-cta">
     <!-- 재설계(사용자요청): "앱 다운받기"=실제 다운로드 안내화면 오픈 / "내지역 업체 견적받기"=안내창 없이
          바로 지역검색+공간검색(카테고리) 화면으로 진입(같은 화면 안이라 스크롤 이동) -->
-    <button class="btn btn-outline" id="btn-appdl-bottom" onclick="go('app-download')"></button>
+    <button class="btn btn-outline" id="btn-appdl-bottom" onclick="setReturnTo(currentScreenId()); go('app-download')"></button>
     <button class="btn btn-primary" id="btn-tolocal" onclick="setReturnTo('00'); go('local-search')"></button>
   </div>
 </div>
@@ -1413,7 +1413,9 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div style="width:150px;height:150px;background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-card);margin:0 auto 24px;display:flex;align-items:center;justify-content:center" id="appdl-qr"></div>
     <button class="btn btn-outline" style="margin-bottom:10px" onclick="window.open('https://apps.apple.com','_blank')">App Store에서 다운로드</button>
     <button class="btn btn-outline" style="margin-bottom:20px" onclick="window.open('https://play.google.com','_blank')">Google Play에서 다운로드</button>
-    <button class="btn btn-primary" onclick="go('00')">지금은 웹으로 계속 둘러보기</button>
+    <!-- 결함수정(전수조사 발견 — go('00') 하드코딩이라 칼럼상세·인증사례 등 6곳에서 들어와도
+         항상 첫화면으로 튕겨 읽던 화면을 잃던 문제): closeToReturn()으로 전환, 진입 6곳에 setReturnTo 보강 -->
+    <button class="btn btn-primary" onclick="closeToReturn()">지금은 웹으로 계속 둘러보기</button>
   </div>
 </div>
 
@@ -1884,7 +1886,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div style="display:flex;gap:6px;overflow-x:auto;padding:10px 16px;scrollbar-width:none">
       <button type="button" onclick="go('00')" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">홈</button>
       <button type="button" onclick="setReturnTo('welcome-portfolio'); go('local-search')" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">지역별 둘러보기</button>
-      <button type="button" onclick="renderVerifiedFeed(); go('verified-feed')" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">검수 인증 사례</button>
+      <button type="button" onclick="setReturnTo(currentScreenId()); renderVerifiedFeed(); go('verified-feed')" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">검수 인증 사례</button>
       <button type="button" onclick="if(!window.currentUserLoggedIn){needSignup('07');}else{renderMemberFeed();go('07');}" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">맞춤피드</button>
       <button type="button" onclick="setReturnTo('welcome-portfolio'); go('calc')" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">AI 간편 견적</button>
       <button type="button" onclick="if(!window.currentUserLoggedIn){needSignup('chatlist');}else{setReturnTo('welcome-portfolio');renderChatlist();go('chatlist');}" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">메신저</button>
@@ -2933,7 +2935,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     </div>
     <div style="font-size:19px;font-weight:800;color:var(--charcoal);line-height:1.4;margin-bottom:8px">앱에서는 더 빠르게!<br>간편하게 이용하기</div>
     <div style="font-size:13.5px;color:var(--slate);margin-bottom:22px">★★★★★ 검증된 인테리어 업체만 만나보세요</div>
-    <button type="button" onclick="closeAppBottomsheet(); go('app-download')" style="width:100%;background:var(--charcoal);color:#fff;border:none;border-radius:var(--radius-button);padding:15px;font-size:15.5px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:14px">편리한 앱으로 보기</button>
+    <button type="button" onclick="setReturnTo(currentScreenId()); closeAppBottomsheet(); go('app-download')" style="width:100%;background:var(--charcoal);color:#fff;border:none;border-radius:var(--radius-button);padding:15px;font-size:15.5px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:14px">편리한 앱으로 보기</button>
     <button type="button" onclick="closeAppBottomsheet()" style="background:none;border:none;color:var(--slate);font-size:13.5px;cursor:pointer;font-family:inherit">모바일 웹으로 볼래요</button>
   </div>
 </div>
@@ -2945,7 +2947,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <!-- 결함정리(사용자요청 — 상병마크 복구시 내용 정리): "지역별 업체검색"은 헤더 지역선택과,
          "공간 맞춤검색"은 첫화면 8개 공간카테고리와 중복되어 삭제. "루머 칼럼"은 신규 추가 -->
     <div style="border-bottom:1px solid var(--stone);padding-bottom:14px;margin-bottom:16px">
-      <div onclick="closeSideMenu(); renderVerifiedFeed(); go('verified-feed')" style="padding:11px 4px;font-size:15px;font-weight:700;color:var(--charcoal);cursor:pointer;display:flex;align-items:center;gap:10px">검수 인증사례</div>
+      <div onclick="setReturnTo(currentScreenId()); closeSideMenu(); renderVerifiedFeed(); go('verified-feed')" style="padding:11px 4px;font-size:15px;font-weight:700;color:var(--charcoal);cursor:pointer;display:flex;align-items:center;gap:10px">검수 인증사례</div>
       <div onclick="closeSideMenu(); setReturnTo('00'); go('calc')" style="padding:11px 4px;font-size:15px;font-weight:700;color:var(--charcoal);cursor:pointer;display:flex;align-items:center;gap:10px">AI 간편 견적</div>
       <!-- 신규(사용자요청 — 상병마크 메뉴 신설): AI간편견적 바로 아래에 "AI 견적 감사" 직접 진입로 추가.
            s-calc 안의 텍스트링크(눈에 잘 안 띔)는 그대로 두고, 이미 다른 곳 견적서를 들고 있는
@@ -3024,26 +3026,10 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   </div>
 </div>
 
-<div class="scr" id="s-partner-info">
-  <header class="header" style="justify-content:center"><div class="logo" onclick="confirmGoHome()" style="cursor:pointer;position:static;transform:none;display:inline-flex;align-items:baseline;gap:6px"><span style="font-size:22px;font-weight:800;color:var(--charcoal);letter-spacing:-0.5px">루머</span><span style="font-size:20px;font-weight:800;color:var(--terracotta);letter-spacing:0.5px">ROOMER</span></div></header>
-  <div class="content" style="">
-    <div class="h1" style="margin:20px 0 4px">사업자 정보</div>
-    <div class="caption" style="margin-bottom:20px">등록된 사업자 정보예요</div>
-    <div id="partner-info-items"></div>
-    <div style="margin-top:20px"><button class="btn btn-outline" onclick="go('partner-home')">마이페이지로 돌아가기</button></div>
-  </div>
-</div>
-
-<div class="scr" id="s-partner-tier-info">
-  <header class="header" style="justify-content:center"><div class="logo" onclick="confirmGoHome()" style="cursor:pointer;position:static;transform:none;display:inline-flex;align-items:baseline;gap:6px"><span style="font-size:22px;font-weight:800;color:var(--charcoal);letter-spacing:-0.5px">루머</span><span style="font-size:20px;font-weight:800;color:var(--terracotta);letter-spacing:0.5px">ROOMER</span></div></header>
-  <div class="content" style="">
-    <div class="h1" style="margin:20px 0 4px">등급·수수료 정보</div>
-    <div class="caption" style="margin-bottom:20px">현재 등급과 적용 수수료율이에요</div>
-    <div id="partner-tier-info-items"></div>
-    <button class="btn btn-outline" style="margin-top:12px" onclick="setReturnTo('partner-tier-info'); openTierUpgrade()">승급 신청하기 &rsaquo;</button>
-    <div style="margin-top:20px"><button class="btn btn-outline" onclick="go('partner-home')">마이페이지로 돌아가기</button></div>
-  </div>
-</div>
+<!-- 결함수정(전수조사 발견 — s-partner-info·s-partner-tier-info 삭제): 사업자정보·등급수수료정보는
+     "업체 마이페이지 통합 2단계" 재설계 때 대시보드 인사말카드(renderPartnerGreeting)로 이미 통합되었고,
+     승급신청도 대시보드에서 바로 접근 가능해져(openTierUpgrade) 이 두 화면은 완전히 중복이었다.
+     화면·render함수·CSS 로고위치 예외 전부 함께 제거. tier-upgrade 화면 자체는 그대로 유지(정상 사용중). -->
 
 <div class="scr" id="s-partner-alerts">
   <header class="header" style="justify-content:center"><div class="logo" onclick="confirmGoHome()" style="cursor:pointer;position:static;transform:none;display:inline-flex;align-items:baseline;gap:6px"><span style="font-size:22px;font-weight:800;color:var(--charcoal);letter-spacing:-0.5px">루머</span><span style="font-size:20px;font-weight:800;color:var(--terracotta);letter-spacing:0.5px">ROOMER</span></div></header>
@@ -3051,7 +3037,10 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div class="h1" style="margin:20px 0 4px">알림 설정</div>
     <div class="caption" style="margin-bottom:20px">받고 싶은 알림 방식을 선택하세요</div>
     <div id="partner-alerts-body"></div>
-    <div style="margin-top:20px"><button class="btn btn-outline" onclick="go('partner-home')">닫기</button></div>
+    <!-- 결함수정(전수조사 발견): partner-mydata에서도 이 화면으로 들어오게 되면서 진입경로가 2곳이
+         됐는데 닫기가 go('partner-home')으로 고정되어 있으면 partner-mydata에서 들어온 경우 되돌아갈
+         곳이 틀어진다 → closeToReturn()으로 전환(진입부는 이미 둘 다 setReturnTo를 호출함) -->
+    <div style="margin-top:20px"><button class="btn btn-outline" onclick="closeToReturn()">닫기</button></div>
   </div>
 </div>
 
@@ -3063,8 +3052,11 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div class="caption" style="margin-bottom:20px">우리가 보관하는 사업자 정보를 직접 확인하고, 내려받거나 삭제할 수 있어요</div>
     <div style="display:flex;flex-direction:column;gap:10px">
       <button class="btn btn-outline" onclick="partnerMydataDownload()">내 데이터 내려받기</button>
-      <button class="btn btn-outline" onclick="go('partner-home')">알림 설정 변경하러 가기</button>
-      <button class="btn btn-outline" onclick="partnerMydataDelete()" style="color:var(--danger);border-color:var(--danger)">사업자 탈퇴 · 전체 삭제</button>
+      <!-- 결함수정(전수조사 발견): "알림 설정 변경하러 가기"가 알림설정 화면이 아니라 partner-home으로
+           잘못 연결되어 있었음 → partner-alerts로 정확히 연결. "사업자 탈퇴" 중복버튼은 이미 독립화면으로
+           승격된 s-partner-withdraw로 안내하도록 교체(같은 기능을 두 곳에서 각자 다르게 구현하던 문제 정리) -->
+      <button class="btn btn-outline" onclick="setReturnTo('partner-mydata'); renderPartnerAlerts(); go('partner-alerts')">알림 설정 변경하러 가기</button>
+      <button class="btn btn-outline" onclick="setReturnTo('partner-mydata'); go('partner-withdraw')" style="color:var(--danger);border-color:var(--danger)">사업자 탈퇴하기</button>
     </div>
     <div style="margin-top:20px"><button class="btn btn-primary" onclick="go('partner-home')">마이페이지로 돌아가기</button></div>
   </div>
@@ -3085,7 +3077,9 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 <div class="scr" id="s-verified-feed">
   <header class="header">
     <div class="logo" onclick="confirmGoHome()" style="cursor:pointer"><span style="display:inline-flex;align-items:baseline;gap:6px"><span style="font-size:22px;font-weight:800;color:var(--charcoal);letter-spacing:-0.5px">루머</span><span style="font-size:20px;font-weight:800;color:var(--terracotta);letter-spacing:0.5px">ROOMER</span></span></div>
-    <button onclick="go('00')" style="background:none;border:none;cursor:pointer;font-size:23px;color:var(--charcoal)">&lsaquo;</button>
+    <!-- 결함수정(전수조사 발견 — go('00') 하드코딩이라 local-search·welcome-portfolio·ad-detail 등에서
+         들어와도 항상 첫화면으로 튕기던 문제): closeToReturn()으로 전환, 진입 5곳에 setReturnTo 보강 -->
+    <button onclick="closeToReturn()" style="background:none;border:none;cursor:pointer;font-size:23px;color:var(--charcoal)">&lsaquo;</button>
   </header>
   <div class="content" style="">
     <div class="h1" style="margin:8px 0 4px;display:flex;align-items:center;gap:6px">검수 인증 사례<span class="live-dot" style="width:7px;height:7px;border-radius:50%;background:var(--success);display:inline-block"></span></div>
@@ -3098,7 +3092,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 
   <!-- 신규(사용자요청): 하단 앱다운로드+회원가입 유도 -->
   <div class="fixed-cta">
-    <button class="btn btn-outline" onclick="go('app-download')">앱 다운받기</button>
+    <button class="btn btn-outline" onclick="setReturnTo(currentScreenId()); go('app-download')">앱 다운받기</button>
     <button class="btn btn-primary" onclick="needSignup('verified-feed')">회원가입하고 더 보기</button>
   </div>
 </div>
@@ -3120,7 +3114,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   </div>
   <!-- 신규(사용자요청): 하단 앱다운로드+회원가입 유도(다른 독립화면과 통일) -->
   <div class="fixed-cta">
-    <button class="btn btn-outline" onclick="go('app-download')">앱 다운받기</button>
+    <button class="btn btn-outline" onclick="setReturnTo(currentScreenId()); go('app-download')">앱 다운받기</button>
     <button class="btn btn-primary" onclick="setReturnTo('00'); go('local-search')">내 지역 업체 견적 받기</button>
   </div>
 </div>
@@ -3138,7 +3132,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   </div>
   <!-- 신규(사용자요청): 하단 앱다운로드+회원가입 유도(다른 독립화면과 통일) -->
   <div class="fixed-cta">
-    <button class="btn btn-outline" onclick="go('app-download')">앱 다운받기</button>
+    <button class="btn btn-outline" onclick="setReturnTo(currentScreenId()); go('app-download')">앱 다운받기</button>
     <button class="btn btn-primary" onclick="setReturnTo('00'); go('local-search')">내 지역 업체 견적 받기</button>
   </div>
 </div>
@@ -6167,8 +6161,15 @@ const LANDING_SLIDES = ['#2C4A63','#4A7BA6','#D9A15C','#8FA890','#E08A5B'];
     // 빠졌음. renderHeroAdBadge()가 실제 /api/ads/active 데이터를 window._heroAdBySlide에 채워두면
     // 여기서는 "지금 보고 있는 슬라이드"에 매칭된 실제 광고(진짜 partnerId 포함)만 사용한다.
     var ad = (window._heroAdBySlide || {})[window.currentHeroSlideIdx || 0];
+    // 결함수정(전수조사 발견 — 로그인 상태(s-07)에서 히어로 클릭 후 뒤로가기를 누르면 항상
+    // 비회원 첫화면(00)으로 튕기던 문제): setReturnTo('00') 하드코딩 대신, 클릭 시점에 실제로
+    // 보고 있던 화면(00 또는 07)을 기억해뒀다가 그 화면으로 정확히 돌아가게 한다.
+    var heroFromScreen = currentScreenId();
+    // 결함수정(전수조사 발견 — 이 함수가 결국 어느 갈래로 빠지든 뒤로가기 목적지는 동일(heroFromScreen)
+    // 이므로, 갈래마다 따로 push하면 재조회 실패시 goToHeroFallbackRecommendedPartner()가 한 번 더
+    // push해서 스택에 같은 값이 중복으로 쌓이는 문제가 있었다 — 여기서 딱 한 번만 push한다.
+    setReturnTo(heroFromScreen);
     if(ad && window.MVP.live && ad.partnerId){
-      setReturnTo('00');
       apiFetch('/api/partners/'+ad.partnerId).then(function(p){
         window.selectedPartnerCard = mapPartnerRowToCard(p);
         if(typeof renderCprofile==='function') renderCprofile();
@@ -6176,13 +6177,12 @@ const LANDING_SLIDES = ['#2C4A63','#4A7BA6','#D9A15C','#8FA890','#E08A5B'];
       }).catch(function(e){
         // 광고주가 그새 승인취소됐거나 조회 실패 — 가짜 카드로 채우지 않고, 대신 실제 추천 업체로 안내
         console.error('광고주 상세 조회 실패:', e.message);
-        goToHeroFallbackRecommendedPartner();
+        goToHeroFallbackRecommendedPartner(false);
       });
       return;
     }
     if(ad){
       // 프로토타입(데모) 모드 — 실제 백엔드 없이 로컬 AD_SLOTS만으로 동작할 때의 기존 폴백 유지
-      setReturnTo('00');
       window.selectedPartnerCard = { id: ad.partnerId||null, name: ad.partner, area: ad.region, tier: '광고 파트너', rating: '4.9', reviews: 0, gu: ad.region, category: '' };
       if(typeof renderCprofile==='function') renderCprofile();
       go('cprofile');
@@ -6192,10 +6192,10 @@ const LANDING_SLIDES = ['#2C4A63','#4A7BA6','#D9A15C','#8FA890','#E08A5B'];
     // 아직 하나도 없는 지금 같은 초기 상태에서도, 히어로 상단 문구("우리동네 추천 디자인 업체")와
     // 실제로 맞게끔 검색화면 대신 진짜 승인된 업체(평점 1위)의 상세페이지로 연결한다.
     if(window.MVP.live){
-      goToHeroFallbackRecommendedPartner();
+      goToHeroFallbackRecommendedPartner(false);
       return;
     }
-    setReturnTo('00'); go('search'); if(typeof resetSearch==='function') resetSearch();
+    go('search'); if(typeof resetSearch==='function') resetSearch();
   };
   // 신규(사용자요청): "광고하기" — 업체 계정이면 광고신청 화면, 아니면 업체가입 안내로
   window.heroGoToAdApply = function(){
@@ -6266,8 +6266,12 @@ function fetchTopRecommendedPartnerCard(){
     return mapped[0];
   });
 }
-function goToHeroFallbackRecommendedPartner(){
-  setReturnTo('00');
+function goToHeroFallbackRecommendedPartner(pushReturn){
+  // 결함수정(전수조사 발견 — 항상 '00'으로 고정되어 로그인 홈(07)에서도 첫화면으로 튕기던 문제):
+  // heroGoToDetail()은 이미 자기 시작화면을 push해뒀으므로 여기서 또 push하면 스택에 같은 값이
+  // 중복으로 쌓인다. pushReturn===false면 건너뛰고, 이 함수가 독립적으로 호출되는 경우(인자 생략)엔
+  // 지금 화면 기준으로 직접 push한다.
+  if(pushReturn !== false) setReturnTo(currentScreenId());
   fetchTopRecommendedPartnerCard().then(function(card){
     if(card){
       window.selectedPartnerCard = card;
@@ -6531,7 +6535,11 @@ function openInspectModal(c){
     return;
   }
   // 회원: 실제 업체 데이터가 있으면 바로 업체 상세페이지로, 없으면(데모 이미지) 사진만 확대
+  // 결함수정(전수조사 발견 — 검색결과·인증사례 등에서 시공사례 카드를 눌러 업체상세로 가면
+  // setReturnTo()가 한 번도 호출되지 않아, 뒤로가기를 눌러도 원래 보던 화면으로 안 돌아가던 문제):
+  // 클릭 시점의 화면을 기억해둔다.
   if(c.partner){
+    setReturnTo(currentScreenId());
     window.selectedPartnerCard = c;
     renderCprofile();
     go('cprofile');
@@ -6875,6 +6883,13 @@ function goToQuoteRequest(){
 window.returnStack = window.returnStack || [];
 function setReturnTo(where){ window.returnStack.push(where); }
 function closeToReturn(){ var target = window.returnStack.pop(); go(target || '00'); }
+// 결함수정(전수조사 발견 — 뒤로가기가 항상 '00'으로 고정되던 여러 지점 공통수정용): 클릭 시점에
+// 실제로 보고 있는 화면 id를 반환한다. '00'을 하드코딩하는 대신 이 함수로 setReturnTo(currentScreenId())를
+// 쓰면, 로그인 홈(07)이든 다른 화면이든 실제로 있던 곳으로 정확히 돌아간다.
+function currentScreenId(){
+  var el = document.querySelector('.scr.on');
+  return el ? el.id.replace('s-','') : '00';
+}
 // 신규(사용자요청): 칼럼 상세화면 전용 뒤로가기 — 첫화면(00)에서 진입했다면
 // go()가 스크롤을 최상단으로 리셋해버려서 다시 "루머 칼럼"까지 내려야 했던 문제 →
 // 첫화면으로 돌아갈 때만 "루머 칼럼" 섹션 위치로 자동 스크롤
@@ -9225,7 +9240,8 @@ function loadRealPopularSearchOnce(){
 }
 function initSearchHome(){
   var hint=document.getElementById('search-ai-hint');
-  if(hint) hint.innerHTML = icon('sparkle','var(--charcoal)',15)+'<span>문장으로도 검색돼요 · 예: <b>"욕실 리모델링"</b></span>';
+  // 결함수정(사용자요청 — 지역명+공간명 조합 검색 예시로 변경, 실제로 지역필터도 함께 걸리도록 parseQuery 축약형 매칭 보강함): "송파"만 써도 "서울 송파구"로 인식됨
+  if(hint) hint.innerHTML = icon('sparkle','var(--charcoal)',15)+'<span>문장으로도 검색돼요 · 예: <b>"송파 욕실 리모델링"</b></span>';
   renderPopularSearchRank();
   loadRealPopularSearchOnce();
   var sg=document.getElementById('search-space-grid'); sg.innerHTML='';
@@ -9308,12 +9324,42 @@ function renderSuggest(v){
   ai.onclick=function(){ runSearch(raw); };
   sug.appendChild(ai);
 }
+// 결함수정(사용자요청 — 검색 힌트문구에 "송파 욕실 리모델링"처럼 구/동 접미사 없는 짧은 지역명을 예시로
+// 쓰려면 실제로도 지역필터가 걸려야 함): "송파구"→"송파", "잠실동"→"잠실"처럼 접미사를 뗀 축약형도
+// 지역으로 인식한다. 단, 접미사를 떼고 남는 글자가 1글자뿐이면("중구"→"중","서구"→"서" 등) 흔한 음절이라
+// 엉뚱한 단어에 걸릴 위험이 커서 축약형 매칭에서 제외하고 기존처럼 전체 이름("중구")만 인정한다.
+function regionSuffixStem(name, suffixes){
+  for(var i=0;i<suffixes.length;i++){
+    var suf=suffixes[i];
+    if(name.length>suf.length && name.slice(-suf.length)===suf){
+      var stem=name.slice(0,-suf.length);
+      if(stem.length>=2) return stem;
+    }
+  }
+  return null;
+}
 function parseQuery(q){
   var raw=q.trim(), s=srchSyn(raw), n=srchNorm(s);
   var out={raw:raw, region:null, space:null, budget:null, style:null, pyeong:null};
   CATEGORIES.forEach(function(x){ if(x!=='전체' && n.indexOf(srchNorm(x))>=0) out.space=x; });
-  Object.keys(REGION_DATA).forEach(function(sido){ if(n.indexOf(srchNorm(sido))>=0) out.region=out.region||sido; REGION_DATA[sido].forEach(function(gu){ if(n.indexOf(srchNorm(gu))>=0) out.region=sido+' '+gu; }); });
-  Object.keys(DONG_DATA).forEach(function(key){ DONG_DATA[key].forEach(function(d){ if(n.indexOf(srchNorm(d))>=0) out.region=key+' '+d; }); });
+  Object.keys(REGION_DATA).forEach(function(sido){
+    if(n.indexOf(srchNorm(sido))>=0) out.region=out.region||sido;
+    REGION_DATA[sido].forEach(function(gu){
+      var stem=regionSuffixStem(gu, ['구','시','군']);
+      if(n.indexOf(srchNorm(gu))>=0 || (stem && n.indexOf(srchNorm(stem))>=0)) out.region=sido+' '+gu;
+    });
+  });
+  Object.keys(DONG_DATA).forEach(function(key){
+    // "서울 송파구"의 동네 중 "송파동"처럼 구 이름을 그대로 물려받은 동은, 축약형("송파")만으로는
+    // 그 구 전체를 뜻하는 건지 그 특정 동을 뜻하는 건지 구분할 수 없다. 이런 경우는 축약형 매칭에서
+    // 제외하고("송파"→구 전체로 남김) 동 이름을 다 쓴 경우("송파동")만 그 동으로 특정한다.
+    var guStemOfKey = regionSuffixStem(key.split(' ').pop(), ['구','시','군']);
+    DONG_DATA[key].forEach(function(d){
+      var stem=regionSuffixStem(d, ['동','읍','면','리']);
+      var stemAmbiguous = stem && guStemOfKey && stem===guStemOfKey;
+      if(n.indexOf(srchNorm(d))>=0 || (stem && !stemAmbiguous && n.indexOf(srchNorm(stem))>=0)) out.region=key+' '+d;
+    });
+  });
   SRCH.styles.forEach(function(st){ if(n.indexOf(srchNorm(st))>=0) out.style=st; });
   var m=s.replace(/,/g,'').match(/(\d{2,5})\s*만/); if(m) out.budget=parseInt(m[1],10);
   var mp=s.match(/(\d{1,3})\s*평/); if(mp) out.pyeong=parseInt(mp[1],10);
@@ -12363,11 +12409,32 @@ function partnerMydataDownload(){
   var p = window.PARTNER_PROFILE || {};
   alert('내 데이터 내려받기\n\n· 상호명: '+(p.name||'-')+'\n· 등급: '+(p.tier||'-')+'\n· 계약: '+(p.contracts||0)+'건\n· 리뷰: '+(p.reviews||0)+'건\n\n(프로토타입: 실제 서비스에서는 JSON 파일로 제공됩니다)');
 }
-function partnerMydataDelete(){
+// 결함수정(전수조사 발견 — s-partner-withdraw 화면의 "탈퇴하기" 버튼이 partnerWithdrawConfirm()을
+// 호출하는데 그 함수 자체가 어디에도 정의되어 있지 않아 클릭해도 아무 반응이 없던 결함): 화면을
+// 분리할 때(위 s-partner-withdraw 주석 참고) 실제 구현이 빠진 채로 남아있었다. 소비자쪽 mydataDelete()와
+// 동일하게 브라우저 confirm()/alert() 대신 앱 내 바텀시트(openMeasSheet)로 구현.
+// 이전에 partner-mydata 화면 안에 중복으로 있던 사업자탈퇴 버튼(partnerMydataDelete)은
+// 이 화면(s-partner-withdraw) 하나로 통합하고 제거했다.
+function partnerWithdrawConfirm(){
   if(!requireRoomerRole('partner','사업자 탈퇴는 업체 계정에서만 할 수 있습니다.')) return;
-  if(!confirm('사업자 탈퇴 및 모든 데이터를 삭제할까요?\n이 작업은 되돌릴 수 없습니다.')) return;
-  alert('탈퇴 처리가 완료됐어요.');
-  exitToRoleGate();
+  openMeasSheet(
+    '<div style="font-size:17.5px;font-weight:800;margin-bottom:8px;text-align:center;color:var(--danger)">사업자 탈퇴하시겠어요?</div>'+
+    '<div class="caption" style="text-align:center;margin-bottom:18px;line-height:1.6">계정과 모든 데이터가 삭제되며, 이 작업은 되돌릴 수 없습니다.</div>'+
+    '<button class="btn btn-primary" style="background:var(--danger)" onclick="closeMeasSheet(); confirmPartnerWithdraw();">탈퇴하기</button>'+
+    '<button class="btn btn-outline" style="margin-top:8px" onclick="closeMeasSheet()">취소</button>'
+  );
+}
+function confirmPartnerWithdraw(){
+  if(!requireRoomerRole('partner','사업자 탈퇴는 업체 계정에서만 할 수 있습니다.')) return;
+  // TODO(실서비스): 서버에 실제 탈퇴 처리 API 호출 필요(계약·정산 등 법적 보관의무 데이터는 즉시삭제 대상에서 제외)
+  if(typeof resetChatRuntimeForAccountChange==='function') resetChatRuntimeForAccountChange();
+  window.currentUserLoggedIn = false; window.currentAccountMode = 'consumer';
+  if(typeof clearAuthToken==='function') clearAuthToken();
+  openMeasSheet(
+    '<div style="font-size:17.5px;font-weight:800;margin-bottom:8px;text-align:center">탈퇴가 완료됐어요</div>'+
+    '<div class="caption" style="text-align:center;margin-bottom:18px;line-height:1.6">모든 데이터가 삭제되고 로그아웃되었습니다.</div>'+
+    '<button class="btn btn-primary" onclick="closeMeasSheet(); exitToRoleGate();">확인</button>'
+  );
 }
 
 // 재설계(사용자요청): confirm()/alert()가 미리보기 환경에서 차단될 위험이 있어, 다른 곳과 동일한 앱 내 바텀시트 패턴으로 교체
@@ -12397,7 +12464,10 @@ function confirmMydataDelete(){
 /* ===== 신규: 내 정보 (회원 전용) — userProfile 기반 동적 렌더링 ===== */
 // 결함수정(사용자 지적 — PC(900px 이상)에서는 하단탭바 자체가 안 보이는 설계라, 안읽은 메시지가
 // 없을 때는 소비자가 메신저로 갈 방법이 전혀 없던 문제): 마이페이지 메뉴 최상단에 "메신저" 추가
-const MYPAGE_MENU = ['메신저', '견적서 열람하기', '계약서내용 열람하기', 'AI 공사 감리', '하자보수 접수', '알림 설정', '회원 탈퇴하기', '고객센터'];
+// 결함수정(전수조사 발견 — 마이페이지 메뉴를 8개로 재정리하면서 "결제수단관리"·"내 데이터 관리"
+// 항목이 배열에서 빠져, 화면(s-my-payment/s-mydata)은 멀쩡히 남아있는데 들어갈 방법이 아예 없어진
+// "고아 화면"이 되어있었다. 특히 "내 데이터 관리"는 개인정보 열람·다운로드·삭제 기능이라 되살림.
+const MYPAGE_MENU = ['메신저', '견적서 열람하기', '계약서내용 열람하기', 'AI 공사 감리', '하자보수 접수', '결제수단관리', '알림 설정', '내 데이터 관리', '회원 탈퇴하기', '고객센터'];
 function renderMypage(){
   // 결함 보완(사용자 요청: 회원가입 후 내정보 채우는 방법): 고정된 "소비자 회원님" 텍스트 대신
   // 실제 가입 시 선택한 경로(socialProvider)와 질문5단계 답변을 그대로 읽어와 채움
@@ -12474,8 +12544,12 @@ function renderMypage(){
       row.onclick = function(){ setReturnTo('consumer-home'); openInspectPlan(); };
     } else if(m === '하자보수 접수'){
       row.onclick = function(){ setReturnTo('consumer-home'); renderDefectForm(); renderDefectList(); go('defect'); };
+    } else if(m === '결제수단관리'){
+      row.onclick = function(){ setReturnTo('consumer-home'); renderMyPayment(); go('my-payment'); };
     } else if(m === '알림 설정'){
       row.onclick = function(){ setReturnTo('consumer-home'); renderMyAlerts(); go('my-alerts'); };
+    } else if(m === '내 데이터 관리'){
+      row.onclick = function(){ setReturnTo('consumer-home'); renderMydata(); go('mydata'); };
     } else if(m === '회원 탈퇴하기'){
       row.onclick = function(){ setReturnTo('consumer-home'); go('consumer-withdraw'); };
     } else if(m === '고객센터'){
@@ -13556,7 +13630,9 @@ buildTabbar('tabbar-my-support', true, 'mypage');
 // 재설계(사용자요청 — 업체 마이페이지 통합 2단계): 8개 메뉴 → 3개로 축소
 // (포트폴리오관리는 상단으로 승격, 사업자정보·등급수수료정보는 인사말카드에 통합,
 //  내정산내역은 주간통계 섹션에 통합, Q&A·내데이터관리는 삭제, 탈퇴는 독립화면으로 승격)
-const PARTNER_MYPAGE_MENU = ['알림 설정', '파트너 회원 탈퇴하기', '고객센터'];
+// 결함수정(전수조사 발견 — "내 데이터 관리"(partner-mydata)가 배열에서 빠져 있어 "데이터 내려받기"
+// 기능(다른 곳에 없는 유일한 기능)에 들어갈 방법이 아예 없던 "고아 화면"이었음): 메뉴에 재연결
+const PARTNER_MYPAGE_MENU = ['알림 설정', '내 데이터 관리', '파트너 회원 탈퇴하기', '고객센터'];
 function renderPartnerMypage(){
   const menuEl = document.getElementById('partner-mypage-menu'); if(!menuEl) return;
   menuEl.innerHTML = '';
@@ -13566,6 +13642,7 @@ function renderPartnerMypage(){
     row.style.cssText = 'width:100%;display:flex;align-items:center;justify-content:space-between;background:none;border:none;border-bottom:1px solid var(--ivory);padding:16px 0;cursor:pointer;font-family:inherit;text-align:left';
     row.innerHTML = '<span style="font-size:16.5px;color:var(--charcoal)">'+m+'</span>'+icon('chevronRight',T.slate,16);
     if(m === '알림 설정'){ row.onclick = function(){ setReturnTo('partner-home'); renderPartnerAlerts(); go('partner-alerts'); }; }
+    else if(m === '내 데이터 관리'){ row.onclick = function(){ setReturnTo('partner-home'); go('partner-mydata'); }; }
     else if(m === '파트너 회원 탈퇴하기'){ row.onclick = function(){ setReturnTo('partner-home'); go('partner-withdraw'); }; }
     else if(m === '고객센터'){ row.onclick = function(){ setReturnTo('partner-home'); renderPartnerSupport(); go('partner-support'); }; }
     menuEl.appendChild(row);
@@ -13589,23 +13666,8 @@ function removePortfolioProject(idx){
   renderPartnerPortfolio();
   if(typeof renderRealcases === 'function') renderRealcases();
 }
-function renderPartnerInfo(){
-  const el = document.getElementById('partner-info-items'); if(!el) return;
-  const pf = window.PARTNER_PROFILE || {};
-  const rows = [['상호명', pf.name], ['대표자', pf.ceoName||'-'], ['등급', pf.tier], ['경력', pf.years?(pf.years+'년'):'신규'], ['평점', pf.rating||'-'], ['응답률', pf.responseRate?(pf.responseRate+'%'):'-'], ['누적 계약', (pf.contracts||0)+'건']];
-  el.innerHTML = '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px">'
-    + rows.map(function(r){ return '<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--ivory);font-size:15px"><span style="color:var(--slate)">'+r[0]+'</span><span style="font-weight:600;color:var(--charcoal)">'+r[1]+'</span></div>'; }).join('')
-    + '</div><div style="font-size:12.5px;color:var(--slate);margin-top:10px">'+' 사업자등록증 등 서류 수정은 고객센터로 문의해주세요.</div>';
-}
-function renderPartnerTierInfo(){
-  const el = document.getElementById('partner-tier-info-items'); if(!el) return;
-  const pf = window.PARTNER_PROFILE || {};
-  el.innerHTML = '<div style="background:var(--charcoal);border-radius:var(--radius-card);padding:20px;color:#fff;text-align:center">'
-    + '<div style="font-size:12.5px;color:var(--brass);letter-spacing:1px;margin-bottom:6px">현재 등급</div>'
-    + '<div style="font-size:25px;font-weight:800">'+(pf.tier||'-')+'</div>'
-    + '<div style="font-size:15px;color:#C7BFB0;margin-top:8px">적용 수수료율 '+(pf.feePct||'-')+'</div>'
-    + '</div>';
-}
+// 결함수정(전수조사 발견): renderPartnerInfo/renderPartnerTierInfo는 s-partner-info/s-partner-tier-info
+// 화면 삭제(위 참고)와 함께 제거 — 같은 정보가 renderPartnerGreeting()에 이미 통합되어 있음
 window.PARTNER_ALERT_SETTINGS = window.PARTNER_ALERT_SETTINGS || { phone:'', email:'', sms:true, mail:true, inapp:true };
 function renderPartnerAlerts(){
   const el = document.getElementById('partner-alerts-body'); if(!el) return;
