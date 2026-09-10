@@ -102,6 +102,11 @@ const chatAttachmentUploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false,
   message: { success: false, error: { code: 'TOO_MANY_UPLOADS', message: '사진 업로드가 너무 많습니다. 잠시 후 다시 시도해주세요' } }
 });
+// 신규(사용자요청 — "추천 검색어"를 진짜 검색 로그 기반으로): 검색 1회당 로그 1건이라 남용 방지용으로 넉넉하게 제한
+const searchLogLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '요청이 너무 많습니다. 잠시 후 다시 시도해주세요' } }
+});
 
 // ===== 1-2(팀장 지시): 요청 로깅 미들웨어 =====
 // 모든 요청의 method·path·상태코드·소요시간·요청자(있으면)를 기록(콘솔 + DB 양쪽)
@@ -909,6 +914,30 @@ app.get('/api/partners/search', (req, res) => {
   }
   const partners = db.prepare(query).all(...params).map(withPartnerServiceRegions).map(partner => omitPartnerSecrets(partner, false));
   res.json({ success: true, data: partners });
+});
+
+// 결함수정(사용자요청 — "추천 검색어"가 실제 통계 없이 하드코딩값이었던 문제 발견 후 수정): 지금까지
+// 검색은 브라우저 안에서만 처리돼서 서버에 아무 기록도 안 남았다 — "가장 많이 검색된 단어"라는 게
+// 애초에 존재하지 않는 데이터였음. 프론트가 실제 검색을 실행할 때마다 이 API로 검색어를 남기고,
+// 아래 /api/search/popular가 그 실제 로그를 집계해서 진짜 인기 검색어를 돌려준다.
+app.post('/api/search/log', searchLogLimiter, (req, res) => {
+  const raw = req.body && req.body.query;
+  if (!isNonEmptyString(raw, 100)) return validationError(res, '검색어가 필요합니다(100자 이내)');
+  const normalized = raw.trim().replace(/\s+/g, ' ');
+  if (!normalized) return validationError(res, '검색어가 필요합니다');
+  db.prepare('INSERT INTO search_queries (query) VALUES (?)').run(normalized);
+  res.json({ success: true, data: { logged: true } });
+});
+// 최근 30일 검색 로그를 검색어별로 집계해 상위 5개를 반환. 로그가 너무 적을 때(예: 서비스 초기)는
+// 우연히 1~2번 검색된 단어가 "인기 검색어"인 것처럼 보이는 걸 막기 위해 최소 3회 이상 검색된
+// 단어만 포함한다 — 이 조건을 만족하는 단어가 하나도 없으면 빈 배열을 반환하고, 프론트는 그 경우
+// 안내용 기본 문구를 그대로 보여준다(가짜로 순위를 채우지 않음).
+app.get('/api/search/popular', (req, res) => {
+  const rows = db.prepare(`SELECT query AS kw, COUNT(*) AS cnt FROM search_queries
+    WHERE created_at >= datetime('now','-30 days')
+    GROUP BY query HAVING COUNT(*) >= 3
+    ORDER BY cnt DESC, query ASC LIMIT 5`).all();
+  res.json({ success: true, data: rows });
 });
 
 // 신규(사용자요청 — ChatGPT 협업 병합): 로그인한 파트너 본인의 프로필 조회.
