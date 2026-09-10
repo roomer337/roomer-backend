@@ -2920,8 +2920,14 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 
 <!-- 신규(사용자요청): 좌측 슬라이드 메뉴(오늘의집 스타일) -->
 <!-- 신규(사용자요청): 첫화면 하단 앱유도 바텀시트(네이버 스타일 참고) — 세션 내 1회만 노출 -->
-<div id="app-bottomsheet-overlay" onclick="closeAppBottomsheet()" style="display:none;position:fixed;inset:0;background:rgba(44,74,99,.45);z-index:75;align-items:flex-end;justify-content:center">
-  <div onclick="event.stopPropagation()" style="width:100%;max-width:480px;background:#fff;border-radius:20px 20px 0 0;padding:28px 24px 24px;text-align:center;box-shadow:0 -8px 24px rgba(0,0,0,.12)">
+<!-- 결함수정(사용자요청 — 히어로 클릭이 먹통이라는 실사용 리포트 재현·확인): 이 배경(inset:0 전체화면)에
+     달려있던 onclick="closeAppBottomsheet()" 때문에, 진입 0.6초 후 자동으로 뜨는 이 바텀시트가 화면
+     최상단의 히어로 배너까지 통째로 뒤덮고 있어서 — 실제 사용자가 히어로를 눌러도 그 클릭이 배경의
+     "닫기"로만 소비되고 heroGoToDetail()까지 전달되지 않았다(사용자가 두 번째로 다시 눌러야만 정상
+     동작). 안에 명시적인 닫기 버튼이 이미 2개("편리한 앱으로 보기"/"모바일 웹으로 볼래요") 있으므로,
+     배경 자체의 탭-닫기는 제거해 첫 클릭이 절대 소비되지 않게 한다. -->
+<div id="app-bottomsheet-overlay" style="display:none;position:fixed;inset:0;background:rgba(44,74,99,.45);z-index:75;align-items:flex-end;justify-content:center;pointer-events:none">
+  <div style="width:100%;max-width:480px;background:#fff;border-radius:20px 20px 0 0;padding:28px 24px 24px;text-align:center;box-shadow:0 -8px 24px rgba(0,0,0,.12);pointer-events:auto">
     <div style="width:56px;height:56px;border-radius:16px;background:var(--charcoal);display:flex;align-items:center;justify-content:center;margin:0 auto 16px">
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M12 2 L14.6 8.8 L21.8 9.2 L16.2 13.9 L18 21 L12 17 L6 21 L7.8 13.9 L2.2 9.2 L9.4 8.8 Z"/></svg>
     </div>
