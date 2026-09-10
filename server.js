@@ -53,6 +53,12 @@ app.use(cors({ origin(origin, callback) { callback(null, !origin || ALLOWED_ORIG
 // 심사용 사진·PDF data URL이 함께 전송되는 현재 단일-HTML 구조용 제한이다.
 app.use(express.json({ limit: '8mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
+// 결함수정(사용자 지적 — 객체 저장소 미설정 환경의 파일첨부 오류 개선): OBJECT_STORAGE_BUCKET이 없을 때
+// storage.js가 공개 파일(포트폴리오 사진 등)을 로컬 디스크(uploads/private-store/public)에 저장하는데,
+// 그 파일을 브라우저가 <img src="...">로 바로 열 수 있어야 하므로 public/ 하위만 정적 서빙한다.
+// private/ 하위(사업자등록증 등 비공개 증빙)는 여기서 절대 공개하지 않고, 지금까지처럼 인증이 필요한
+// /api/files/:fileId, /api/admin/files/:fileId 라우트를 통해서만 접근 가능하다.
+app.use('/storage-local/public', express.static(path.join(__dirname, 'uploads', 'private-store', 'public'), { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
 
 // 결함수정: 관리자 로그인에 무차별대입(brute-force) 방지가 전혀 없었음 → IP당 15분에 10회로 제한
 const adminLoginLimiter = rateLimit({
@@ -2218,9 +2224,14 @@ app.post('/api/ads', authRequired, (req, res) => {
   } });
 });
 
+// 결함수정(사용자요청 — 히어로 배너 클릭시 실제 광고주 상세로 연결): 이 엔드포인트는 이미 있었지만
+// 프론트 어디서도 호출하지 않아 실제로 구매된 광고가 화면에 전혀 반영되지 않고 있었음(히어로 클릭이
+// 항상 검색화면으로 빠지던 근본 원인). business_name을 함께 내려줘야 프론트가 "가짜 업체명"을
+// 지어내지 않고 실제 광고주 이름으로 AD 배지를 표시할 수 있다(/api/admin/ads와 동일한 조인 패턴).
 app.get('/api/ads/active', (req, res) => {
   const { slotType } = req.query;
-  const list = db.prepare("SELECT * FROM ad_slots WHERE status='active' AND slot_type=?").all(slotType);
+  const list = db.prepare(`SELECT a.*, p.business_name AS partner_name FROM ad_slots a
+    LEFT JOIN partners p ON p.id=a.partner_id WHERE a.status='active' AND a.slot_type=?`).all(slotType);
   res.json({ success: true, data: list });
 });
 
