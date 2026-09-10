@@ -479,7 +479,18 @@ CREATE TABLE IF NOT EXISTS credit_topups (
   created_at TEXT DEFAULT (datetime('now')),
   paid_at TEXT
 );
+
+-- 신규(사용자요청 — "추천 검색어"가 실제 통계 없이 하드코딩값이었던 문제 발견 후 수정): 검색은
+-- 지금까지 브라우저 안에서만 처리되고 서버에 남는 기록이 전혀 없어, "가장 많이 검색된 단어"라는
+-- 게 애초에 존재하지 않았다. 실제 검색어를 쌓아서 진짜 인기 검색어를 계산할 수 있게 로그 테이블 추가.
+CREATE TABLE IF NOT EXISTS search_queries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  query TEXT NOT NULL,
+  user_id TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
 `);
+db.exec('CREATE INDEX IF NOT EXISTS idx_search_queries_query_created ON search_queries(query, created_at)');
 
 // 루머27 무중단 마이그레이션: CREATE TABLE IF NOT EXISTS만으로는 기존 SQLite에 새 열이 생기지 않는다.
 function ensureColumn(table, column, definition) {
