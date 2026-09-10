@@ -6165,9 +6165,9 @@ const LANDING_SLIDES = ['#2C4A63','#4A7BA6','#D9A15C','#8FA890','#E08A5B'];
         if(typeof renderCprofile==='function') renderCprofile();
         go('cprofile');
       }).catch(function(e){
-        // 광고주가 그새 승인취소됐거나 조회 실패 — 없는 척 가짜 카드로 채우지 않고 정직하게 검색으로 안내
+        // 광고주가 그새 승인취소됐거나 조회 실패 — 가짜 카드로 채우지 않고, 대신 실제 추천 업체로 안내
         console.error('광고주 상세 조회 실패:', e.message);
-        go('search'); if(typeof resetSearch==='function') resetSearch();
+        goToHeroFallbackRecommendedPartner();
       });
       return;
     }
@@ -6177,9 +6177,16 @@ const LANDING_SLIDES = ['#2C4A63','#4A7BA6','#D9A15C','#8FA890','#E08A5B'];
       window.selectedPartnerCard = { id: ad.partnerId||null, name: ad.partner, area: ad.region, tier: '광고 파트너', rating: '4.9', reviews: 0, gu: ad.region, category: '' };
       if(typeof renderCprofile==='function') renderCprofile();
       go('cprofile');
-    } else {
-      setReturnTo('00'); go('search'); if(typeof resetSearch==='function') resetSearch();
+      return;
     }
+    // 결함수정(사용자요청 — "클릭해도 여전히 검색화면만 나온다"): 크레딧 내고 산 히어로 광고가
+    // 아직 하나도 없는 지금 같은 초기 상태에서도, 히어로 상단 문구("우리동네 추천 디자인 업체")와
+    // 실제로 맞게끔 검색화면 대신 진짜 승인된 업체(평점 1위)의 상세페이지로 연결한다.
+    if(window.MVP.live){
+      goToHeroFallbackRecommendedPartner();
+      return;
+    }
+    setReturnTo('00'); go('search'); if(typeof resetSearch==='function') resetSearch();
   };
   // 신규(사용자요청): "광고하기" — 업체 계정이면 광고신청 화면, 아니면 업체가입 안내로
   window.heroGoToAdApply = function(){
@@ -6231,6 +6238,40 @@ function mapPartnerRowToCard(p){
     years: p.years_experience || 0, contracts: p.contracts_count || 0,
     intro: p.intro || '', strengthTags: safeParse(p.strength_tags), portfolioImages: safeParse(p.portfolio_images),
     availableHours: p.available_hours || '', spaceCategories: safeParse(p.space_categories), address: p.address || '' };
+}
+// 결함수정(사용자요청 — 히어로 클릭시 "여전히 검색화면만 나온다"는 지적 재확인 후 보완): 히어로 상단
+// 문구 자체가 "우리동네 추천 디자인 업체"(=추천, 광고라고 표시된 적 없음)인데, 정작 아무도 히어로
+// 광고를 신청하지 않은 지금 같은 초기 상태에서는 클릭해도 검색화면으로만 빠져 "업체 상세로 안 간다"는
+// 문제가 그대로 남아있었다. 크레딧 내고 산 실제 광고(above)가 있으면 그게 최우선이고, 없을 때는
+// 가짜 업체를 지어내는 대신 실제 승인된 업체 중 평점·계약건수가 가장 높은 곳(진짜 데이터)을
+// "추천 업체"로 연결한다 — 문구("추천 업체")와 실제로 일치하는, 정직한 폴백이다.
+function fetchTopRecommendedPartnerCard(){
+  if(typeof SRCH !== 'undefined' && window._realPartnersLoaded && SRCH.partners && SRCH.partners.length){
+    var cached = SRCH.partners.slice().sort(function(a,b){ return (b.rating||0)-(a.rating||0) || (b.contracts||0)-(a.contracts||0); })[0];
+    return Promise.resolve(cached || null);
+  }
+  return apiFetch('/api/partners/search').then(function(list){
+    if(!list || !list.length) return null;
+    var mapped = list.map(mapPartnerRowToCard);
+    mapped.sort(function(a,b){ return (b.rating||0)-(a.rating||0) || (b.contracts||0)-(a.contracts||0); });
+    return mapped[0];
+  });
+}
+function goToHeroFallbackRecommendedPartner(){
+  setReturnTo('00');
+  fetchTopRecommendedPartnerCard().then(function(card){
+    if(card){
+      window.selectedPartnerCard = card;
+      if(typeof renderCprofile==='function') renderCprofile();
+      go('cprofile');
+    } else {
+      // 승인된 업체가 실제로 하나도 없는 완전 초기 배포 상태 — 보여줄 실제 업체가 없으니 검색으로 정직하게 안내
+      go('search'); if(typeof resetSearch==='function') resetSearch();
+    }
+  }).catch(function(e){
+    console.error('추천 업체 조회 실패:', e.message);
+    go('search'); if(typeof resetSearch==='function') resetSearch();
+  });
 }
 // 결함수정(사용자요청 — 히어로 클릭시 실제 광고주 상세로 연결): 히어로 캐러셀은 5개의 고정 브랜드
 // 영상이라 슬라이드 자체엔 광고주별 차이가 없다 — 그래서 "지금 보고 있는 슬라이드가 실제로 어느
