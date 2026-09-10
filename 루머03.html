@@ -5480,6 +5480,9 @@ const ICONS = {
   // 신규(AI 견적 감사 — 결과 공유·인쇄 CTA용)
   share: '<circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/><path d="M8.3 10.7l7.4-4.4M8.3 13.3l7.4 4.4"/>',
   printer: '<path d="M6 9V4h12v5"/><rect x="4" y="9" width="16" height="8" rx="1.5"/><path d="M6 14h12v7H6z"/>',
+  // 신규(사용자요청 — "공간별 바로가기" 원형 아이콘 통일): 드레스룸(옷걸이)·그외공간(더보기 점점점)
+  hanger: '<path d="M12 4a1.6 1.6 0 1 1-1.6 1.6"/><path d="M12 5.6v2"/><path d="M12 7.6 3.5 13a1.8 1.8 0 0 0 1 3.3h15a1.8 1.8 0 0 0 1-3.3z"/><path d="M5 16.3h14"/>',
+  more: '<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
 };
 function icon(name,color,size){
   size=size||18; color=color||'currentColor';
@@ -9178,12 +9181,26 @@ var SRCH = {
 function srchNorm(s){ return (s||'').replace(/\s+/g,'').toLowerCase(); }
 function srchSyn(s){ var out=s||''; Object.keys(SRCH.syn).forEach(function(k){ out=out.split(k).join(SRCH.syn[k]); }); return out; }
 function srchHl(text, kw){ kw=(kw||'').trim(); if(!kw) return text; var lt=text.toLowerCase(), lk=kw.toLowerCase(), i=lt.indexOf(lk); if(i<0) return text; return text.slice(0,i)+'<b style="color:var(--terracotta)">'+text.slice(i,i+kw.length)+'</b>'+text.slice(i+kw.length); }
-var SPACE_PAL={'거실':'#4A7BA6','주방':'#D9A15C','침실':'#8FA890','욕실':'#2C4A63','현관':'#6B7FA0','드레스룸':'#E08A5B','서재':'#8FA890','상업':'#4A7BA6','그외공간':'var(--slate)'};
+// 재설계(사용자요청 — 첫화면 상단 원형 아이콘 카테고리와 시각적으로 통일): 진한 그라데이션 사각
+// 타일 대신, 첫화면(catIcons)과 같은 파스텔 원형 배경 + 아이콘 방식으로 교체. 거실/주방/욕실/침실/
+// 서재/현관 6개는 첫화면과 완전히 동일한 아이콘·색을 재사용해 두 화면 간 일관성을 맞췄고,
+// 드레스룸/상업/그외공간 3개는 새로 아이콘(hanger/building/more)과 어울리는 파스텔톤을 추가했다.
+var SPACE_ICON_META={
+  '거실':{icon:'sofa', bg:'#F4E7DF', color:'#B5602F'},
+  '주방':{icon:'kitchen', bg:'#E9EEF3', color:'#2E5D82'},
+  '침실':{icon:'bed', bg:'#EFE7EC', color:'#7A4A63'},
+  '욕실':{icon:'bath', bg:'#EAF0EC', color:'#3D6E4E'},
+  '현관':{icon:'door', bg:'#E8EAEE', color:'#464F5C'},
+  '드레스룸':{icon:'hanger', bg:'#F3E8EE', color:'#8C4F6E'},
+  '서재':{icon:'book', bg:'#F1EADD', color:'#8A6A2E'},
+  '상업':{icon:'building', bg:'#E7ECF2', color:'#3B5570'},
+  '그외공간':{icon:'more', bg:'#EAEAE5', color:'#5C5850'}
+};
 
-function initSearchHome(){
-  var hint=document.getElementById('search-ai-hint');
-  if(hint) hint.innerHTML = icon('sparkle','var(--charcoal)',15)+'<span>문장으로도 검색돼요 · 예: <b>"30평 아파트 욕실 리모델링 500만원대"</b></span>';
-  var pr=document.getElementById('search-popular-rank'); pr.innerHTML='';
+// 결함정리(사용자요청 — "추천 검색어"를 진짜 검색 로그 기반으로): 렌더링 로직을 별도 함수로 분리해서
+// 최초 진입시(하드코딩 기본값)와 실제 로그 조회 완료 후(진짜 데이터) 양쪽에서 재사용한다.
+function renderPopularSearchRank(){
+  var pr=document.getElementById('search-popular-rank'); if(!pr) return; pr.innerHTML='';
   SRCH.popular.forEach(function(p,i){
     var row=document.createElement('button'); row.type='button';
     row.style.cssText='display:flex;align-items:center;gap:10px;width:100%;border:none;background:none;padding:9px 2px;cursor:pointer;font-family:inherit;text-align:left;border-bottom:1px solid var(--stone)';
@@ -9192,10 +9209,32 @@ function initSearchHome(){
     row.onclick=function(){ runSearch(p.kw); };
     pr.appendChild(row);
   });
+}
+// 실서버 모드에서 딱 한 번, 실제 검색 로그를 집계한 인기 검색어(/api/search/popular)를 가져와
+// 교체를 시도한다. 최소 3회 이상 검색된 단어가 하나도 없어 서버가 빈 배열을 돌려주면(예: 서비스
+// 초기라 로그가 거의 없을 때), 지어낸 순위로 채우지 않고 지금까지의 기본 문구 5개를 그대로 둔다.
+function loadRealPopularSearchOnce(){
+  if(!window.MVP.live || window._popularSearchLoaded) return;
+  window._popularSearchLoaded = true;
+  apiFetch('/api/search/popular').then(function(list){
+    if(list && list.length){
+      SRCH.popular = list.map(function(row){ return {kw: row.kw, t:''}; });
+      renderPopularSearchRank();
+    }
+  }).catch(function(e){ console.error('인기 검색어 조회 실패:', e.message); });
+}
+function initSearchHome(){
+  var hint=document.getElementById('search-ai-hint');
+  if(hint) hint.innerHTML = icon('sparkle','var(--charcoal)',15)+'<span>문장으로도 검색돼요 · 예: <b>"욕실 리모델링"</b></span>';
+  renderPopularSearchRank();
+  loadRealPopularSearchOnce();
   var sg=document.getElementById('search-space-grid'); sg.innerHTML='';
   CATEGORIES.filter(function(x){return x!=='전체';}).forEach(function(cat){
-    var t=document.createElement('button'); t.type='button'; t.style.cssText='border:none;cursor:pointer;font-family:inherit;padding:0';
-    t.innerHTML='<div style="aspect-ratio:1/1;border-radius:var(--radius-input);background:linear-gradient(135deg,'+(SPACE_PAL[cat]||'#2C4A63')+',#2C4A6388);display:flex;align-items:flex-end;padding:6px"><span style="font-size:12px;color:#fff;font-weight:700">'+cat+'</span></div>';
+    var meta = SPACE_ICON_META[cat] || {icon:'home', bg:'#EFE9DE', color:'#5A4A32'};
+    var t=document.createElement('button'); t.type='button';
+    t.style.cssText='border:none;background:none;cursor:pointer;font-family:inherit;padding:0;display:flex;flex-direction:column;align-items:center;gap:6px';
+    t.innerHTML='<div style="width:56px;height:56px;border-radius:50%;background:'+meta.bg+';display:flex;align-items:center;justify-content:center">'+icon(meta.icon, meta.color, 23)+'</div>'
+      + '<span style="font-size:12px;font-weight:600;color:var(--charcoal);text-align:center;line-height:1.3">'+cat+'</span>';
     t.onclick=function(){ runSearch(cat); };
     sg.appendChild(t);
   });
@@ -9299,6 +9338,9 @@ function runSearch(q){
     }).catch(function(e){ console.error('업체목록 조회 실패:', e.message); });
   }
   var raw=q.trim();
+  // 결함수정(사용자요청 — "추천 검색어"를 진짜 검색 로그 기반으로): 검색을 실제로 실행할 때마다
+  // 서버에 검색어를 남긴다(실패해도 검색 자체엔 영향 없도록 조용히 무시).
+  if(window.MVP.live){ apiFetch('/api/search/log', {method:'POST', body: JSON.stringify({query: raw})}).catch(function(){}); }
   var ip=document.getElementById('search-input'); if(ip){ ip.value=raw; ip.blur(); }
   SRCH.recent=SRCH.recent.filter(function(x){return x!==raw;}); SRCH.recent.unshift(raw); SRCH.recent=SRCH.recent.slice(0,8);
   SRCH.parsed=parseQuery(raw); SRCH.tab='전체'; SRCH.sort='최신순';
