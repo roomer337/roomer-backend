@@ -320,6 +320,29 @@ async function createAdmin(){
 </script></body></html>`);
 });
 
+// 신규(사용자요청 — 런칭 전 테스트 단계 전용 관리자 자동시딩): Persistent Disk 없이 배포하면
+// 재배포마다 SQLite 파일이 초기화되어(위 DB_PATH 설명 참고) 그때마다 /admin-setup으로 관리자
+// 계정을 새로 만들어야 하는 번거로움이 있었다. 서버가 뜰 때 딱 한 번, "관리자가 0명일 때만"
+// 아래 두 환경변수로 자동으로 관리자 계정을 만들어서 이 번거로움을 없앤다.
+// - 이미 관리자가 1명이라도 있으면 절대 덮어쓰지 않는다(기존 계정 보호, /admin-setup과 동일한 안전장치).
+// - 두 환경변수 중 하나라도 없으면 완전히 조용히 아무 일도 하지 않는다(기존 동작과 100% 동일).
+// - 런칭 후에는 Render 환경변수에서 이 두 값을 지우기만 하면 이 로직 자체가 꺼진다(코드 변경 불필요).
+// - 정직성 원칙: 가짜 계정이 아니라, 사용자가 직접 정한 실제 이메일/비밀번호로 실제 admins 테이블에
+//   생성되는 진짜 계정이다 — /api/admin/auth/bootstrap과 동일한 검증(이메일 형식, 비밀번호 10자 이상)을 거친다.
+function seedAdminFromEnvIfEmpty() {
+  const email = process.env.ADMIN_BOOTSTRAP_EMAIL;
+  const password = process.env.ADMIN_BOOTSTRAP_PASSWORD;
+  if (!email || !password) return;
+  const existingCount = db.prepare('SELECT COUNT(*) c FROM admins').get().c;
+  if (existingCount > 0) return;
+  if (!EMAIL_RE.test(email)) { console.warn('[관리자 자동시딩] ADMIN_BOOTSTRAP_EMAIL 형식이 올바르지 않아 건너뜁니다'); return; }
+  if (password.length < 10) { console.warn('[관리자 자동시딩] ADMIN_BOOTSTRAP_PASSWORD는 10자 이상이어야 합니다 — 건너뜁니다'); return; }
+  const id = randomUUID();
+  const hash = bcrypt.hashSync(password, 10);
+  db.prepare('INSERT INTO admins (id, email, password_hash, role) VALUES (?,?,?,?)').run(id, email, hash, 'super');
+  console.log('[관리자 자동시딩] ADMIN_BOOTSTRAP_EMAIL/PASSWORD로 관리자 계정을 생성했습니다:', email);
+}
+seedAdminFromEnvIfEmpty();
 
 // ===== 1. 인증 (소셜로그인은 데모용으로 간소화 — 실제로는 카카오/네이버 API와 통신해야 함) =====
 app.post('/api/auth/social/:provider', blockInProduction, socialAuthLimiter, (req, res) => {
