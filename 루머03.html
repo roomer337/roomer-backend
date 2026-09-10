@@ -107,20 +107,15 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 .hero-dots{position:absolute;right:16px;bottom:14px;display:flex;gap:6px}
 .hero-dots span{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.45)}
 .hero-dots span.on{background:#fff}
-/* 신규(사용자요청, 강남언니 참고): 첫화면 개편 — 모바일 앱다운로드 배너 / 로고 전용줄 / PC 전용 QR이벤트패널 */
-.mobile-app-banner{display:flex;align-items:center;justify-content:space-between;gap:10px;background:linear-gradient(90deg,var(--brass),#E8C078);color:#fff;padding:10px 16px;font-size:13px}
-.mobile-app-banner .mab-close{background:none;border:none;color:#fff;opacity:.75;font-size:19px;line-height:1;cursor:pointer;padding:0 2px;font-family:inherit}
+/* 신규(사용자요청, 강남언니 참고): 첫화면 개편 — 로고 전용줄 / PC 전용 QR이벤트패널 */
 .logo-row{display:flex;justify-content:center;padding:16px 20px 6px}
 .hero-qr-panel{display:none}
-.native-app .hero-qr-panel,
-.native-app .mobile-app-banner{display:none !important}
+.native-app .hero-qr-panel{display:none !important}
 @media (min-width:900px){
-  .mobile-app-banner{display:none}
   .logo-row{justify-content:flex-start;padding:22px 32px 4px}
-  /* 신규(사용자요청 — 헤더/하단CTA바가 본문(1200px)과 어긋나던 문제 통일수정):
-     .header/.fixed-cta는 96개 화면 전체가 공용으로 쓰는 클래스라 여기 한번만 고치면 예외없이 전체 적용됨 */
+  /* 신규(사용자요청 — 헤더가 본문(1200px)과 어긋나던 문제 통일수정): .header는 96개 화면 전체가
+     공용으로 쓰는 클래스라 여기 한번만 고치면 예외없이 전체 적용됨 */
   .header{max-width:900px;margin-left:auto;margin-right:auto}
-  .fixed-cta{max-width:900px;margin-left:auto;margin-right:auto}
   /* 신규(사용자요청 — 전체 PC폭 통일): 채팅방도 다른 화면과 동일하게 1200px 중앙정렬 */
   #chat-flex-wrap{max-width:900px;margin-left:auto;margin-right:auto}
   .content{padding-left:32px;padding-right:32px}
@@ -175,10 +170,6 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   #s-ai-audit #audit-result, #s-ai-audit #audit-result *{visibility:visible}
   #s-ai-audit #audit-result{position:absolute;left:0;top:0;width:100%;margin:0}
 }
-
-/* ===== 하단 고정 CTA(랜딩 전용) ===== */
-.fixed-cta{position:sticky;bottom:0;background:#fff;border-top:1px solid var(--stone);display:flex;gap:10px;padding:12px 20px}
-.fixed-cta .btn{flex:1}
 
 /* ===== 카드 그리드(피드용) ===== */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:18px;padding-bottom:32px}
@@ -1135,14 +1126,6 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
      소비자 콘텐츠(히어로+카테고리+지역검색)가 곧바로 시작화면이 되고, 업체 진입은 푸터의
      "파트너 가입 및 로그인" 링크로만 존재(노출 최소화, 집닥형 패턴) -->
 <div class="scr on" id="s-00">
-  <!-- 신규(사용자요청, 강남언니 참고): 모바일 전용 앱다운로드 유도배너, 닫으면 세션 내 재노출 안함 -->
-  <div class="mobile-app-banner" id="mobile-app-banner">
-    <span>앱다운로드시 <b>29,000크레딧</b>을 드려요</span>
-    <div style="display:flex;align-items:center;gap:8px">
-      <button onclick="setReturnTo(currentScreenId()); go('app-download')" style="background:#fff;color:var(--charcoal);border:none;border-radius:6px;padding:6px 12px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">앱다운로드</button>
-      <button class="mab-close" onclick="closeMobileAppBanner()" aria-label="닫기">&times;</button>
-    </div>
-  </div>
 
   <!-- 결함정리(사용자요청 — 관리자 PIN 진입 안되던 문제): 레퍼런스 스타일 개편시 로고텍스트 자체가
        삭제되어 있었음(.logo 요소가 없어 5번클릭 트리거 대상이 없었음) → 작게 복원 -->
@@ -1364,10 +1347,14 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
           <div id="region-sido-tabs" style="width:84px;flex-shrink:0;background:var(--ivory);overflow-y:auto"></div>
           <div id="region-gu-checklist" style="flex:1;overflow-y:auto;padding:6px 14px"></div>
         </div>
-        <!-- 신규(사용자요청): 완료버튼 바로 위에 선택한 지역 수를 항상 보여줘서, 목록을 스크롤해도
-             지금까지 몇 곳을 골랐는지 계속 확인할 수 있게 함 -->
-        <div id="region-selected-count" style="flex-shrink:0;font-size:13.5px;font-weight:700;color:var(--charcoal);padding:10px 2px 0"></div>
-        <button type="button" onclick="applyRegionSelection()" class="btn btn-primary" style="width:100%;margin-top:8px;flex-shrink:0">선택 완료</button>
+        <!-- 재설계(사용자요청 — 레퍼런스 앱(강남언니 지역필터) 참고): 텍스트 카운트 대신 선택한 지역을
+             하나씩 제거 가능한 칩으로 나열. 선택이 없으면 이 줄 자체가 빈 채로 남는다(레퍼런스와 동일). -->
+        <div id="region-selected-chips" style="flex-shrink:0;display:flex;gap:8px;overflow-x:auto;padding:10px 2px 0"></div>
+        <!-- 재설계(사용자요청 — 레퍼런스 앱 참고): 버튼 1개("선택 완료") → "초기화"+"필터 선택 완료" 2개로 분리 -->
+        <div style="display:flex;gap:8px;margin-top:8px;flex-shrink:0">
+          <button type="button" onclick="resetRegionSelection()" class="btn btn-outline" style="flex:1">초기화</button>
+          <button type="button" onclick="applyRegionSelection()" class="btn btn-primary" style="flex:1.4">필터 선택 완료</button>
+        </div>
       </div>
       <div id="region-preview" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--stone)">
         <div class="caption" style="margin-bottom:10px" id="lb-region-preview"></div>
@@ -1382,12 +1369,6 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div style="text-align:right;margin:6px 0 12px"><button type="button" onclick="setReturnTo(currentScreenId()); renderVerifiedFeed(); go('verified-feed')" style="background:none;border:none;color:var(--steelblue);font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:2px">검수 인증 사례 전체보기 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button></div>
   </div>
 
-  <div class="fixed-cta">
-    <!-- 재설계(사용자요청): "앱 다운받기"=실제 다운로드 안내화면 오픈 / "내지역 업체 견적받기"=안내창 없이
-         바로 지역검색+공간검색(카테고리) 화면으로 진입(같은 화면 안이라 스크롤 이동) -->
-    <button class="btn btn-outline" id="btn-appdl-bottom" onclick="setReturnTo(currentScreenId()); go('app-download')"></button>
-    <button class="btn btn-primary" id="btn-tolocal" onclick="setReturnTo('00'); go('local-search')"></button>
-  </div>
 </div>
 
 <!-- 신규(사용자요청): 앱 다운로드 안내+경로 화면 -->
@@ -2913,24 +2894,6 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
 
 <!-- 신규(사용자요청): 좌측 슬라이드 메뉴(오늘의집 스타일) -->
-<!-- 신규(사용자요청): 첫화면 하단 앱유도 바텀시트(네이버 스타일 참고) — 세션 내 1회만 노출 -->
-<!-- 결함수정(사용자요청 — 히어로 클릭이 먹통이라는 실사용 리포트 재현·확인): 이 배경(inset:0 전체화면)에
-     달려있던 onclick="closeAppBottomsheet()" 때문에, 진입 0.6초 후 자동으로 뜨는 이 바텀시트가 화면
-     최상단의 히어로 배너까지 통째로 뒤덮고 있어서 — 실제 사용자가 히어로를 눌러도 그 클릭이 배경의
-     "닫기"로만 소비되고 heroGoToDetail()까지 전달되지 않았다(사용자가 두 번째로 다시 눌러야만 정상
-     동작). 안에 명시적인 닫기 버튼이 이미 2개("편리한 앱으로 보기"/"모바일 웹으로 볼래요") 있으므로,
-     배경 자체의 탭-닫기는 제거해 첫 클릭이 절대 소비되지 않게 한다. -->
-<div id="app-bottomsheet-overlay" style="display:none;position:fixed;inset:0;background:rgba(44,74,99,.45);z-index:75;align-items:flex-end;justify-content:center;pointer-events:none">
-  <div style="width:100%;max-width:480px;background:#fff;border-radius:20px 20px 0 0;padding:28px 24px 24px;text-align:center;box-shadow:0 -8px 24px rgba(0,0,0,.12);pointer-events:auto">
-    <div style="width:56px;height:56px;border-radius:16px;background:var(--charcoal);display:flex;align-items:center;justify-content:center;margin:0 auto 16px">
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M12 2 L14.6 8.8 L21.8 9.2 L16.2 13.9 L18 21 L12 17 L6 21 L7.8 13.9 L2.2 9.2 L9.4 8.8 Z"/></svg>
-    </div>
-    <div style="font-size:19px;font-weight:800;color:var(--charcoal);line-height:1.4;margin-bottom:8px">앱에서는 더 빠르게!<br>간편하게 이용하기</div>
-    <div style="font-size:13.5px;color:var(--slate);margin-bottom:22px">★★★★★ 검증된 인테리어 업체만 만나보세요</div>
-    <button type="button" onclick="setReturnTo(currentScreenId()); closeAppBottomsheet(); go('app-download')" style="width:100%;background:var(--charcoal);color:#fff;border:none;border-radius:var(--radius-button);padding:15px;font-size:15.5px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:14px">편리한 앱으로 보기</button>
-    <button type="button" onclick="closeAppBottomsheet()" style="background:none;border:none;color:var(--slate);font-size:13.5px;cursor:pointer;font-family:inherit">모바일 웹으로 볼래요</button>
-  </div>
-</div>
 
 <div id="side-menu-overlay" onclick="closeSideMenu()" style="display:none;position:fixed;inset:0;background:rgba(44,74,99,.45);z-index:70">
   <div id="side-menu-panel" onclick="event.stopPropagation()" style="position:absolute;left:0;top:0;bottom:0;width:78%;max-width:300px;background:#fff;transform:translateX(-100%);transition:transform .28s ease;overflow-y:auto;padding:20px">
@@ -3077,11 +3040,6 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div id="vf-list"></div>
   </div>
 
-  <!-- 신규(사용자요청): 하단 앱다운로드+회원가입 유도 -->
-  <div class="fixed-cta">
-    <button class="btn btn-outline" onclick="setReturnTo(currentScreenId()); go('app-download')">앱 다운받기</button>
-    <button class="btn btn-primary" onclick="needSignup('verified-feed')">회원가입하고 더 보기</button>
-  </div>
 </div>
 
 <!-- 신규(사용자요청 — 루머칼럼 Notion 연동): 칼럼 상세화면 -->
@@ -3096,11 +3054,6 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
          전문은 실제 원본 기사 링크로 연결(직접 인용 최소화 + 출처 명시) -->
     <div id="column-detail-source" style="display:none;background:var(--ivory);border-radius:var(--radius-card);padding:18px;margin-bottom:24px"></div>
   </div>
-  <!-- 신규(사용자요청): 하단 앱다운로드+회원가입 유도(다른 독립화면과 통일) -->
-  <div class="fixed-cta">
-    <button class="btn btn-outline" onclick="setReturnTo(currentScreenId()); go('app-download')">앱 다운받기</button>
-    <button class="btn btn-primary" onclick="setReturnTo('00'); go('local-search')">내 지역 업체 견적 받기</button>
-  </div>
 </div>
 
 <!-- 신규(사용자요청 — 레퍼런스 참고): 칼럼 전체보기 화면(태그탭+전체목록) -->
@@ -3110,11 +3063,6 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div class="h1" style="margin:8px 0 14px">루머 칼럼</div>
     <div id="column-list-tabs" style="display:flex;gap:8px;overflow-x:auto;padding-bottom:14px;-webkit-overflow-scrolling:touch"></div>
     <div id="column-list-full" style="display:flex;flex-direction:column"></div>
-  </div>
-  <!-- 신규(사용자요청): 하단 앱다운로드+회원가입 유도(다른 독립화면과 통일) -->
-  <div class="fixed-cta">
-    <button class="btn btn-outline" onclick="setReturnTo(currentScreenId()); go('app-download')">앱 다운받기</button>
-    <button class="btn btn-primary" onclick="setReturnTo('00'); go('local-search')">내 지역 업체 견적 받기</button>
   </div>
 </div>
 
@@ -3365,13 +3313,6 @@ window.ROOMER_APP_DOWNLOAD_URL = 'https://roomer-backend.onrender.com/app/';
       if (mtime !== initialMtime) { location.reload(); }
     }).catch(function(){});
   }, 3000);
-})();
-// 신규(사용자요청 — 앱/웹 구분 표시): 초기 페이지 로드 시점(go() 호출 전, 첫화면이 이미 표시된 상태)에도
-// 네이티브 앱 안이면 "앱 다운로드 유도 배너"를 즉시 숨김(go('00') 훅만으로는 최초 1회를 놓칠 수 있어서)
-(function(){
-  if (!window._isNativeApp) return;
-  var mab = document.getElementById('mobile-app-banner');
-  if (mab) mab.style.display = 'none';
 })();
 // 재설계(사용자요청 — 헤더 재구성): 지역선택 아이콘·큰검색창 아이콘 채우기는
 // icon()/ICONS/T가 전부 정의된 뒤(아래쪽)로 옮겨서 실행함(안전한 순서 보장)
@@ -5657,21 +5598,6 @@ function go(id){
   if(id === 'admin-points' && typeof switchPointsTab==='function'){ switchPointsTab('consumer'); }
   if(id === 'admin-pending-partners' && typeof renderAdminPendingPartnersList==='function'){ renderAdminPendingPartnersList(); }
   if(id === 'admin-inspection-queue' && typeof renderAdminInspectionQueue==='function'){ renderAdminInspectionQueue(); }
-  // 신규(사용자요청): 모바일 앱배너를 한번 닫았으면 첫화면 재방문시에도 계속 숨김 유지
-  if(id === '00' && window.mobileAppBannerClosed){
-    var mab = document.getElementById('mobile-app-banner');
-    if(mab){ mab.style.display = 'none'; }
-  }
-  // 신규(사용자요청 — 앱/웹 구분 표시): 설치된 앱 안에서는 "앱 다운로드 유도 배너" 자체가 필요 없음(이미 앱이니까)
-  if(id === '00' && window._isNativeApp){
-    var mabNative = document.getElementById('mobile-app-banner');
-    if(mabNative){ mabNative.style.display = 'none'; }
-  }
-  // 신규(사용자요청): 하단 앱유도 바텀시트 — 첫화면 최초 진입 시에만 1회 노출(단, 네이티브 앱 안에서는 노출 안 함)
-  if(id === '00' && !window.appBottomsheetClosed && !window.appBottomsheetShown && !window._isNativeApp){
-    window.appBottomsheetShown = true;
-    setTimeout(function(){ if(typeof openAppBottomsheet==='function') openAppBottomsheet(); }, 600);
-  }
   if(id === '00'){
     if(typeof renderHeroSubAds==='function') renderHeroSubAds();
     if(typeof updateAuthBtn00==='function') updateAuthBtn00();
@@ -6042,18 +5968,18 @@ function openRegionPicker(){
   window._selectedGuSet = new Set();
   renderSidoTabs();
   selectSidoTab(Object.keys(REGION_DATA)[0]);
-  updateRegionSelectedCount();
+  renderRegionSelectedChips();
   fitRegionPickerColumns();
 }
 // 신규(사용자요청 — 화면 높이에 맞춘 지역선택): 목록(2열)만 남은 공간만큼 내부 스크롤되게 하고,
-// 검색창·"선택한 지역 N곳"·완료버튼은 항상 화면에 보이도록 목록 높이를 실측해서 지정한다.
+// 검색창·선택 지역 칩 줄·하단 버튼 2개는 항상 화면에 보이도록 목록 높이를 실측해서 지정한다.
 // (고정 vh/px값 대신 실제 DOM 위치를 재는 이유: 광고배너·헤더 높이가 화면폭마다 달라 고정값으로는
 // PC·모바일 모두에 맞추기 어렵기 때문)
 function fitRegionPickerColumns(){
   var cols = document.getElementById('region-picker-columns');
   var picker = document.getElementById('region-picker');
   if(!cols || !picker || getComputedStyle(picker).display === 'none') return;
-  var reserveBelow = 96; // "선택한 지역 N곳" 줄 + 완료버튼 + 여백
+  var reserveBelow = 108; // 선택 지역 칩 줄 + 버튼 2개(초기화/필터 선택 완료) + 여백
   var viewportH = window.innerHeight || document.documentElement.clientHeight;
   var top = cols.getBoundingClientRect().top;
   var available = viewportH - top - reserveBelow;
@@ -6104,16 +6030,36 @@ function buildGuCheckboxRow(label, key, isAll){
   row.onclick=function(){
     if(window._selectedGuSet.has(key)) window._selectedGuSet.delete(key); else window._selectedGuSet.add(key);
     renderGuCheckboxes(window._currentPickerSido);
-    updateRegionSelectedCount();
+    renderRegionSelectedChips();
   };
   return row;
 }
-// 신규(사용자요청): 완료버튼 바로 위 "선택한 지역 N곳" 실시간 갱신
-function updateRegionSelectedCount(){
-  var el=document.getElementById('region-selected-count'); if(!el) return;
-  var n=window._selectedGuSet.size;
-  el.textContent = n>0 ? ('선택한 지역 '+n+'곳') : '지역을 선택해주세요';
-  el.style.color = n>0 ? 'var(--terracotta)' : 'var(--slate)';
+// 재설계(사용자요청 — 레퍼런스 앱(강남언니 지역필터) 참고): "선택한 지역 N곳" 텍스트 대신,
+// 선택된 지역마다 하나씩 제거 가능한 칩을 가로 스크롤 줄로 표시. "OO 전체"로 선택된 항목은
+// "OO 전체"로, 개별 구/군은 시/도 접두어를 뗀 구 이름만 보여준다(레퍼런스 칩 표기와 동일).
+function renderRegionSelectedChips(){
+  var el=document.getElementById('region-selected-chips'); if(!el) return;
+  var list=Array.from(window._selectedGuSet);
+  el.innerHTML = list.map(function(key){
+    var isAllKey = Object.prototype.hasOwnProperty.call(REGION_DATA, key);
+    var label = isAllKey ? (key+' 전체') : key.replace(/^\S+\s+/, '');
+    var safeKey = key.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    return '<span style="display:inline-flex;align-items:center;gap:5px;flex-shrink:0;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-pill);padding:7px 8px 7px 14px;font-size:13px;font-weight:600;color:var(--charcoal);white-space:nowrap">'
+      + label
+      + '<button type="button" onclick="removeRegionSelection(\''+safeKey+'\')" aria-label="'+label+' 선택 해제" style="background:none;border:none;cursor:pointer;font-size:15px;line-height:1;color:var(--slate);padding:2px;display:flex;align-items:center">&times;</button></span>';
+  }).join('');
+}
+// 칩의 ✕를 눌러 그 지역 하나만 선택 해제 — 체크박스 목록·칩 둘 다 즉시 갱신
+function removeRegionSelection(key){
+  window._selectedGuSet.delete(key);
+  renderGuCheckboxes(window._currentPickerSido || Object.keys(REGION_DATA)[0]);
+  renderRegionSelectedChips();
+}
+// "초기화" 버튼 — 선택된 지역을 전부 지우고 목록·칩을 처음 상태로 되돌림
+function resetRegionSelection(){
+  window._selectedGuSet = new Set();
+  renderGuCheckboxes(window._currentPickerSido || Object.keys(REGION_DATA)[0]);
+  renderRegionSelectedChips();
 }
 // 검색창은 유지 — 입력하면 시/도 무관하게 매칭되는 구/군을 체크박스 목록으로 바로 표시
 function filterRegionSearch(kw){
@@ -6138,7 +6084,6 @@ function applyRegionSelection(){
   window.selectedRegionList = list;
   showRegionPreview(regionName, {viaPicker:true});
 }
-document.getElementById('btn-appdl-bottom').textContent = '앱 다운받기';
 // 결함정리(재설계로 화면전환 방식으로 대체됨): scrollToRegionSearch() 죽은함수 제거
 // 신규: 앱 다운로드 안내화면 아이콘/QR 채움
 function renderRoomerDownloadQr(targetId){
@@ -6161,7 +6106,6 @@ function renderRoomerDownloadQr(targetId){
   }
   renderRoomerDownloadQr('hero-download-qr');
 })();
-document.getElementById('btn-tolocal').textContent = '내 지역 업체 견적 받기';
 
 const LANDING_SLIDES = ['#2C4A63','#4A7BA6','#D9A15C','#8FA890','#E08A5B'];
 // 첫화면 히어로: AI 완성 인테리어 영상 자동재생(무음·루프). 색상 슬라이드 → 영상 교체.
@@ -6689,10 +6633,6 @@ if(window.MVP && window.MVP.live){
 renderHeroSubAds();
 if(typeof renderHeroAdBadge==='function') renderHeroAdBadge(); // 결함정리(사용자요청): 최초 페이지 로드시(go() 거치기 전)에도 AD배지 반영
 if(typeof updateAuthBtn00==='function') updateAuthBtn00();
-if(!window.appBottomsheetClosed && !window.appBottomsheetShown){
-  window.appBottomsheetShown = true;
-  setTimeout(function(){ if(typeof openAppBottomsheet==='function') openAppBottomsheet(); }, 600);
-}
 // 신규(사용자요청): 새로고침 시 첫화면으로 초기화되던 것을 개선 — 마지막 화면(+로그인상태) 복원 시도
 // 정직한 한계: 서버가 없는 프로토타입이라 실제 로그인 세션·입력데이터까지 완벽히 복원되지는 않음. 최소한 "화면 위치"는 항상 유지되도록 보장.
 (function(){
@@ -7185,21 +7125,6 @@ function goAdProfile(){
   window.selectedPartnerCard = { name: ad.partner, area: ad.region, tier: '광고 파트너', rating: '4.9', reviews: 0, gu: ad.region, category: '' };
   if(typeof renderCprofile==='function') renderCprofile();
   go('cprofile');
-}
-// 신규(사용자요청): 첫화면 하단 앱유도 바텀시트 — 세션 내 1회만 노출(상단 배너와 별개, 병행 유지)
-function openAppBottomsheet(){
-  var el = document.getElementById('app-bottomsheet-overlay');
-  if(el){ el.style.display = 'flex'; }
-}
-function closeAppBottomsheet(){
-  var el = document.getElementById('app-bottomsheet-overlay');
-  if(el){ el.style.display = 'none'; }
-  window.appBottomsheetClosed = true;
-}
-function closeMobileAppBanner(){
-  var el = document.getElementById('mobile-app-banner');
-  if(el){ el.style.display = 'none'; }
-  window.mobileAppBannerClosed = true;
 }
 function confirmGoHome(){
   // 결함수정: 브라우저 기본 confirm()은 미리보기 환경에서 차단될 수 있어(alert 사고와 동일 계열)
