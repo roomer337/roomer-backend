@@ -149,7 +149,18 @@ async function waitReady(){for(let i=0;i<30;i++){try{const r=await fetch(`http:/
   const jpegHeader=Buffer.from([0xff,0xd8,0xff,0xe0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
   const pngHeader=Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0,0,0,0,0]);
   let mp=buildMultipart({roomId},'file','test.jpg','image/jpeg',jpegHeader);
-  r=await apiMultipart(`/api/rooms/${roomId}/attachments`,mp,u1);check('저장소 미설정시 가짜성공 아닌 503',r.status===503,r.status);
+  // 결함수정(사용자요청 — 사업자등록증 등 첨부 시 "객체 저장소 환경변수가 설정되지 않았습니다"
+  // 오류가 계속 발생): storage.js에 OBJECT_STORAGE_BUCKET 미설정시의 로컬 디스크 폴백을 추가해
+  // 항상 실제로 업로드가 동작하도록 고쳤다. 이 테스트는 원래 "가짜로 성공한 척하지 않고 정직하게
+  // 503을 던지는지"를 검증했는데, 이제는 계약이 바뀌어 "실제로 저장되고 실제로 재조회까지 되는지"를
+  // 검증해야 같은 취지(가짜성공 금지)를 지킬 수 있다 — 200만 확인하고 끝내면 그게 오히려 새로운
+  // 가짜성공 허용이 되므로, 업로드 응답 형태와 실제 바이트 재조회까지 함께 검증한다.
+  r=await apiMultipart(`/api/rooms/${roomId}/attachments`,mp,u1);
+  check('로컬 폴백 저장소 — 실제 업로드 성공(가짜성공 아닌 진짜 저장)',r.status===200&&r.json.success&&r.json.data&&r.json.data.attachment&&typeof r.json.data.attachment.id==='string'&&r.json.data.attachment.id.length>0&&r.json.data.attachment.mimeType==='image/jpeg'&&r.json.data.attachment.sizeBytes===jpegHeader.length,JSON.stringify(r.json));
+  const localFallbackAttachmentUrl=r.json.data.attachment.url;
+  const downloadResponse=await fetch(`http://127.0.0.1:${port}${localFallbackAttachmentUrl}`,{headers:{authorization:`Bearer ${u1}`}});
+  const downloadedBytes=Buffer.from(await downloadResponse.arrayBuffer());
+  check('로컬 폴백 저장소 — 업로드한 파일이 실제로 재조회되고 바이트 일치(가짜성공 아님)',downloadResponse.status===200&&downloadResponse.headers.get('content-type')==='image/jpeg'&&downloadedBytes.equals(jpegHeader),{status:downloadResponse.status,contentType:downloadResponse.headers.get('content-type'),len:downloadedBytes.length});
   mp=buildMultipart({roomId},'file','test.jpg','image/jpeg',jpegHeader);
   r=await apiMultipart(`/api/rooms/${roomId}/attachments`,mp,u2);check('첨부 비참여자 업로드 차단',r.status===403,r.status);
   mp=buildMultipart({roomId},'file','evil.svg','image/svg+xml',Buffer.from('<svg onload="alert(1)"></svg>'));
