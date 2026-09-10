@@ -1243,7 +1243,13 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
       <!-- 결함정리(사용자요청): 기능버튼 2개("업체상세페이지 진입하기"/"광고하기") 삭제 →
            순수 타이틀 문구로 교체. 대신 이미지 전체 클릭시 heroGoToDetail() 연결(아래) -->
       <div style="position:absolute;top:12px;left:12px;right:12px;z-index:4;pointer-events:none">
-        <div style="display:inline-block;background:rgba(255,255,255,.92);color:var(--charcoal);border-radius:var(--radius-pill);padding:9px 16px;font-size:13px;font-weight:700">우리동네 추천 디자인 업체</div>
+        <!-- 결함정리(사용자요청 — 히어로 클릭시 실제 광고주 상세로 연결): 지금 보이는 슬라이드에 실제로
+             크레딧을 내고 노출중인 광고주가 있으면 "AD" 배지 + 실제 업체명으로 정직하게 표시하고,
+             없으면 기존 기본 문구를 그대로 보여준다(renderHeroAdBadge()가 갱신). -->
+        <div id="hero-top-pill" style="display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.92);color:var(--charcoal);border-radius:var(--radius-pill);padding:9px 16px;font-size:13px;font-weight:700;max-width:100%">
+          <span id="hero-top-pill-ad-tag" style="display:none;background:var(--charcoal);color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:var(--radius-pill);flex-shrink:0">AD</span>
+          <span id="hero-top-pill-text" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">우리동네 추천 디자인 업체</span>
+        </div>
       </div>
       <div style="position:absolute;left:18px;right:18px;bottom:40px;color:#fff;pointer-events:none">
         <div id="hero-eyebrow" style="font-size:12px;letter-spacing:1.5px;opacity:.85;margin-bottom:6px;font-weight:600">AI COMPLETED INTERIOR</div>
@@ -1418,8 +1424,10 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 <!-- ============================================================ -->
 <div class="scr" id="s-02">
   <header class="header">
+    <!-- 결함수정(사용자 지적 — 전수조사 중 발견): 이 검색창은 onclick이 연결된 적이 없어 처음부터
+         아무 화면으로도 이동하지 않던 장식용 죽은 UI였음. 실제 검색 진입점(상단 큰 검색창·공간별
+         바로가기·지역검색 미니검색 등)은 이미 다른 화면에 충분히 있어 기능 이관 없이 삭제 -->
     <div class="logo" onclick="confirmGoHome()" style="cursor:pointer"><span style="display:inline-flex;align-items:baseline;gap:6px"><span style="font-size:22px;font-weight:800;color:var(--charcoal);letter-spacing:-0.5px">루머</span><span style="font-size:20px;font-weight:800;color:var(--terracotta);letter-spacing:0.5px">ROOMER</span></span></div>
-    <div class="search-box"><span id="ic-search-02"></span><input type="text" placeholder="지역, 시공 종류로 검색"></div>
     <div class="header-icons">
       <button id="btn-signup-02" onclick="needSignup()"></button>
     </div>
@@ -5522,6 +5530,7 @@ function go(id){
     if(sharedHero && sharedHeroMount && sharedHero.parentNode !== sharedHeroMount){
       sharedHeroMount.appendChild(sharedHero);
     }
+    if(typeof renderHeroAdBadge==='function') renderHeroAdBadge(); // 결함정리(사용자요청): 화면 진입시에도 현재 슬라이드의 AD배지를 최신 상태로
   }
   window.scrollTo(0,0);
   // 신규(사용자요청): 새로고침해도 현재 화면(+최대한 주요 상태)에 머물도록 세션에 기록
@@ -6097,6 +6106,7 @@ const LANDING_SLIDES = ['#2C4A63','#4A7BA6','#D9A15C','#8FA890','#E08A5B'];
     var pc = document.getElementById('hero-page-counter');
     if(pc) pc.textContent = (i+1) + ' | ' + vids.length;
     window.currentHeroSlideIdx = i; // 신규(사용자요청): 상단 버튼이 "지금 보고 있는 슬라이드"를 알 수 있도록 전역 노출
+    if(typeof renderHeroAdBadge==='function') renderHeroAdBadge(); // 결함정리(사용자요청): 슬라이드가 바뀔 때마다 AD배지도 그 슬라이드에 매칭된 실제 광고주로 갱신
   }
   // 특정 슬라이드로 강제 이동(자동재생 공용) — 현재 영상 정지, 목표 영상 처음부터 재생
   window.goToHeroSlide = function(i){
@@ -6143,11 +6153,28 @@ const LANDING_SLIDES = ['#2C4A63','#4A7BA6','#D9A15C','#8FA890','#E08A5B'];
   // 신규(사용자요청): 슬라이드별 AD배지 클릭 시 해당 슬라이드에 매칭된 광고주 상세로 정확히 이동
   // 신규(사용자요청): "업체상세페이지 진입하기" — 지금 보고 있는 슬라이드에 매칭된 광고주가 있으면 업체상세로 직행, 없으면 검색화면으로 안내
   window.heroGoToDetail = function(){
-    var heroAds = (window.AD_SLOTS||[]).filter(function(a){ return a.slotType==='hero' && a.status==='active'; });
-    var ad = heroAds[window.currentHeroSlideIdx || 0];
-    if(ad){
+    // 결함수정(사용자요청 — 히어로 클릭시 "해당 광고에 실제로 연결된 업체" 상세로 이동): 이전에는
+    // AD_SLOTS가 실서버에서 한 번도 채워진 적이 없어 이 분기가 사실상 죽은 코드였고, 항상 검색화면으로
+    // 빠졌음. renderHeroAdBadge()가 실제 /api/ads/active 데이터를 window._heroAdBySlide에 채워두면
+    // 여기서는 "지금 보고 있는 슬라이드"에 매칭된 실제 광고(진짜 partnerId 포함)만 사용한다.
+    var ad = (window._heroAdBySlide || {})[window.currentHeroSlideIdx || 0];
+    if(ad && window.MVP.live && ad.partnerId){
       setReturnTo('00');
-      window.selectedPartnerCard = { name: ad.partner, area: ad.region, tier: '광고 파트너', rating: '4.9', reviews: 0, gu: ad.region, category: '' };
+      apiFetch('/api/partners/'+ad.partnerId).then(function(p){
+        window.selectedPartnerCard = mapPartnerRowToCard(p);
+        if(typeof renderCprofile==='function') renderCprofile();
+        go('cprofile');
+      }).catch(function(e){
+        // 광고주가 그새 승인취소됐거나 조회 실패 — 없는 척 가짜 카드로 채우지 않고 정직하게 검색으로 안내
+        console.error('광고주 상세 조회 실패:', e.message);
+        go('search'); if(typeof resetSearch==='function') resetSearch();
+      });
+      return;
+    }
+    if(ad){
+      // 프로토타입(데모) 모드 — 실제 백엔드 없이 로컬 AD_SLOTS만으로 동작할 때의 기존 폴백 유지
+      setReturnTo('00');
+      window.selectedPartnerCard = { id: ad.partnerId||null, name: ad.partner, area: ad.region, tier: '광고 파트너', rating: '4.9', reviews: 0, gu: ad.region, category: '' };
       if(typeof renderCprofile==='function') renderCprofile();
       go('cprofile');
     } else {
@@ -6194,6 +6221,58 @@ window.AD_PRICING = {
   'hero-sub': { label:'히어로 하단 소형', periodDays:7, price:29000 },
   'region-top': { label:'지역 상위노출', periodDays:30, price:200000 }
 };
+// 결함수정(사용자요청 — 히어로 클릭시 실제 광고주 상세로 연결): 검색결과(runSearch)의 파트너 매핑과
+// 동일한 규칙으로 서버 원본(/api/partners/:id, snake_case) → 카드 표시용 객체(camelCase)를 변환한다.
+// 이렇게 만든 카드는 real id를 그대로 갖고 있어 resolvePartnerCardIdentity()가 "server" 출처로 인식하고,
+// s-cprofile의 "견적 의뢰하기" 버튼까지 실제 견적요청 흐름으로 정상 연결된다.
+function mapPartnerRowToCard(p){
+  function safeParse(s){ try{ return JSON.parse(s||'[]'); }catch(e){ return []; } }
+  return { id: p.id, name: p.business_name, tier: p.tier, rating: p.rating || 0, reviews: p.reviews_count || 0, area: p.region || '',
+    years: p.years_experience || 0, contracts: p.contracts_count || 0,
+    intro: p.intro || '', strengthTags: safeParse(p.strength_tags), portfolioImages: safeParse(p.portfolio_images),
+    availableHours: p.available_hours || '', spaceCategories: safeParse(p.space_categories), address: p.address || '' };
+}
+// 결함수정(사용자요청 — 히어로 클릭시 실제 광고주 상세로 연결): 히어로 캐러셀은 5개의 고정 브랜드
+// 영상이라 슬라이드 자체엔 광고주별 차이가 없다 — 그래서 "지금 보고 있는 슬라이드가 실제로 어느
+// 광고주의 자리인지"를 서버의 실제 노출중(active) 광고와 정직하게 매칭해 배지로 보여주고, 매칭이
+// 없는 슬라이드는 원래의 일반 문구를 그대로 유지한다(있지도 않은 광고주를 있는 척 꾸미지 않음).
+// AD_CAPACITY.hero(현재 4)가 영상 슬라이드 수(5)보다 작거나 같으므로, i번째로 조회된 광고를 그대로
+// i번째 슬라이드에 배정한다 — 정원 안에서는 항상 슬라이드당 최대 1개 광고만 배정되어 안전하다.
+window._heroAdBySlide = {};
+window._heroAdsLoadedOnce = false;
+function renderHeroAdBadge(){
+  var pillWrap = document.getElementById('hero-top-pill');
+  var adTag = document.getElementById('hero-top-pill-ad-tag');
+  var textEl = document.getElementById('hero-top-pill-text');
+  if(!pillWrap || !adTag || !textEl) return;
+  function applyFromCache(){
+    var ads = (window.AD_SLOTS||[]).filter(function(a){ return a.slotType==='hero' && a.status==='active'; });
+    window._heroAdBySlide = {};
+    ads.forEach(function(ad, i){ window._heroAdBySlide[i] = ad; });
+    var current = window._heroAdBySlide[window.currentHeroSlideIdx || 0];
+    if(current){
+      adTag.style.display = 'inline-block';
+      textEl.textContent = current.partner;
+    } else {
+      adTag.style.display = 'none';
+      textEl.textContent = '우리동네 추천 디자인 업체';
+    }
+  }
+  if(window.MVP.live && !window._heroAdsLoadedOnce){
+    window._heroAdsLoadedOnce = true; // 중복호출 방지(먼저 기본문구로 표시해서 재요청 안 함)
+    apiFetch('/api/ads/active?slotType=hero').then(function(list){
+      window.AD_SLOTS = (window.AD_SLOTS||[]).filter(function(a){ return a.slotType!=='hero'; }).concat(
+        (list||[]).map(function(row){
+          return { id: row.id, partnerId: row.partner_id, partner: row.partner_name || '광고 파트너', region: row.region,
+            slotType: row.slot_type, status: row.status, tagline: row.tagline };
+        })
+      );
+      applyFromCache();
+    }).catch(function(e){ console.error('히어로 광고 조회 실패:', e.message); applyFromCache(); });
+    return;
+  }
+  applyFromCache();
+}
 // 신규(사용자요청): 소비자 포인트 원장 10건 샘플 — 지급 5건(가입축하) + 이벤트 3건 + 사용 2건
 window.CONSUMER_POINTS_LEDGER = [];
 // 신규(사용자요청): 업체 크레딧 원장 10건 샘플 — 구매(충전) 5건 + 광고 소진 5건(AD_SLOTS 연동)
@@ -6479,6 +6558,7 @@ if(window.MVP && window.MVP.live){
   }).catch(function(e){ console.error('완공사례 피드 로딩 실패:', e.message); });
 }
 renderHeroSubAds();
+if(typeof renderHeroAdBadge==='function') renderHeroAdBadge(); // 결함정리(사용자요청): 최초 페이지 로드시(go() 거치기 전)에도 AD배지 반영
 if(typeof updateAuthBtn00==='function') updateAuthBtn00();
 if(!window.appBottomsheetClosed && !window.appBottomsheetShown){
   window.appBottomsheetShown = true;
@@ -6553,7 +6633,6 @@ function filterGridByMajor(gridId, major){
 // 결함정리(재설계로 filter-category 요소 자체가 사라짐): buildCategoryChips 호출 제거(죽은 코드)
 <!-- s-01b 고아화면 정리(사용자 지적 버그수정 과정에서 진입경로 0개 확인 → 화면+JS 함께 제거) -->
 
-document.getElementById('ic-search-02').innerHTML = icon('search', T.slate, 15);
 document.getElementById('btn-signup-02').textContent = '회원가입';
 document.getElementById('btn-signup-02').style.cssText = 'background:var(--charcoal);color:#fff;border:none;border-radius:var(--radius-button);padding:8px 16px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit';
 
