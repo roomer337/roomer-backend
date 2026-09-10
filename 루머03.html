@@ -1648,7 +1648,11 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div class="caption" style="margin-bottom:6px;font-weight:700;color:var(--charcoal)">상호명</div>
     <div id="p2-company-name-display" style="width:100%;box-sizing:border-box;padding:12px 14px;background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;color:var(--charcoal);margin-bottom:20px">-</div>
     <label id="ocrbox" style="height:120px;border:1.5px dashed var(--stone);border-radius:var(--radius-card);display:flex;align-items:center;justify-content:center;cursor:pointer;margin-bottom:20px;overflow:hidden;position:relative" class="caption">
-      <input type="file" id="ocr-file-input" accept="image/*" style="position:absolute;width:1px;height:1px;opacity:0">
+      <!-- 결함수정(사용자 지적 — PC에서 사업자등록증 첨부가 안 된다는 문제 조사 후 확인): 홈택스에서
+           발급받는 사업자등록증은 통상 PDF인데 accept가 image/*라 파일선택창에서 PDF가 아예 선택
+           불가능했음(백엔드 detectStoredFile은 이미 사업자등록증 PDF를 지원하도록 구현돼 있어서
+           프론트-백엔드 불일치였음) — PDF를 허용 목록에 추가 -->
+      <input type="file" id="ocr-file-input" accept="image/jpeg,image/png,image/webp,application/pdf" style="position:absolute;width:1px;height:1px;opacity:0">
     </label>
     <div id="ocrresult" style="display:none;border-radius:var(--radius-card);padding:16px;font-size:14.5px;line-height:1.9;margin-bottom:12px"></div>
     <div class="caption" style="color:var(--terracotta);margin-bottom:16px" id="ocr-required-note">사업자등록증을 올려야 다음 단계로 진행할 수 있어요</div>
@@ -1874,7 +1878,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
       <button type="button" onclick="setReturnTo('welcome-portfolio'); go('local-search')" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">지역별 둘러보기</button>
       <button type="button" onclick="renderVerifiedFeed(); go('verified-feed')" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">검수 인증 사례</button>
       <button type="button" onclick="if(!window.currentUserLoggedIn){needSignup('07');}else{renderMemberFeed();go('07');}" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">맞춤피드</button>
-      <button type="button" onclick="setReturnTo('welcome-portfolio'); go('calc')" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">AI 간편견적</button>
+      <button type="button" onclick="setReturnTo('welcome-portfolio'); go('calc')" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">AI 간편 견적</button>
       <button type="button" onclick="if(!window.currentUserLoggedIn){needSignup('chatlist');}else{setReturnTo('welcome-portfolio');renderChatlist();go('chatlist');}" style="flex-shrink:0;background:var(--ivory);border:none;border-radius:var(--radius-pill);padding:clamp(5px,4px + 1vw,8px) clamp(6px,3px + 1.8vw,14px);font-size:clamp(10.5px,8.5px + 1vw,13.5px);font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit;white-space:nowrap">메신저</button>
     </div>
     <!-- 신규(사용자요청): 스크롤힌트(그라데이션 페이드) -->
@@ -1888,7 +1892,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <!-- 신규(사용자요청): 20개씩 더보기(향후 데이터 증가 대비 페이지네이션) -->
     <div style="text-align:center;margin-bottom:20px"><button type="button" id="btn-welcome-more" onclick="loadMoreWelcomePortfolio()" style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-pill);padding:10px 22px;font-size:13.5px;font-weight:700;color:var(--charcoal);cursor:pointer;font-family:inherit">더보기</button></div>
     <div style="display:flex;gap:8px;max-width:420px;margin:0 auto">
-      <button class="btn btn-outline" onclick="setReturnTo('welcome-portfolio'); go('calc')" style="flex:1">AI간편견적</button>
+      <button class="btn btn-outline" onclick="setReturnTo('welcome-portfolio'); go('calc')" style="flex:1">AI 간편 견적</button>
       <button class="btn btn-primary" onclick="go('consumer-home')" id="btn-welcome-continue" style="flex:1"></button>
     </div>
   </div>
@@ -2205,6 +2209,9 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   <header class="header">
     <div class="logo" onclick="confirmGoHome()" style="cursor:pointer;flex:1"><span style="display:inline-flex;align-items:baseline;gap:6px"><span style="font-size:22px;font-weight:800;color:var(--charcoal);letter-spacing:-0.5px">루머</span><span style="font-size:20px;font-weight:800;color:var(--terracotta);letter-spacing:0.5px">ROOMER</span></span></div>
     <div class="header-icons">
+      <!-- 결함수정(사용자 지적 — PC(900px 이상)에서 하단탭바가 안 보여 안읽은 메시지가 없으면 메신저로
+           갈 방법이 전혀 없던 문제): 헤더에 알림종과 나란히 상시 노출되는 메신저 아이콘 추가 -->
+      <button id="btn-consumer-chat" onclick="setReturnTo('consumer-home'); go('chatlist')" style="background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-pill);padding:6px 11px;display:flex;align-items:center;gap:5px;margin-right:6px"><span id="chat-icon-consumer" style="display:flex"></span><span id="chatbadge-consumer-header" style="display:none;font-size:12px;font-weight:800;color:var(--terracotta)"></span></button>
       <button id="btn-consumer-alerts" onclick="renderConsumerAlertList(); go('consumer-alert-list')" style="background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-pill);padding:6px 11px;display:flex;align-items:center;gap:5px;margin-right:6px"><span id="bell-icon-consumer" style="display:flex"></span><span id="tabbadge-consumer-alerts" style="display:none;font-size:12px;font-weight:800;color:var(--charcoal)"></span></button>
     </div>
   </header>
@@ -2331,6 +2338,9 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div class="logo" onclick="confirmGoHome()" style="cursor:pointer"><span style="display:inline-flex;align-items:baseline;gap:6px"><span style="font-size:22px;font-weight:800;color:var(--charcoal);letter-spacing:-0.5px">루머</span><span style="font-size:20px;font-weight:800;color:var(--terracotta);letter-spacing:0.5px">ROOMER</span></span></div>
     <div class="header-icons">
       <span id="tier-badge-ph" style="font-size:13px;font-weight:700;background:var(--ivory);color:var(--charcoal);padding:5px 12px;border-radius:var(--radius-pill)"></span>
+      <!-- 결함수정(사용자 지적 — 파트너 마이페이지 메신저 접근성 강화): 이미 "빠른 실행 > 메신저 확인"으로
+           존재하지만 목록 중간에 묻혀 눈에 안 띄었음 → 알림종과 나란히 헤더에 상시 노출 -->
+      <button id="btn-partner-header-chat" onclick="setReturnTo('partner-home'); go('chatlist')" style="background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-pill);padding:6px 11px;display:flex;align-items:center;gap:5px;margin-right:6px"><span id="chat-icon-partner" style="display:flex"></span><span id="chatbadge-partner-header" style="display:none;font-size:12px;font-weight:800;color:var(--terracotta)"></span></button>
       <button id="btn-partner-header-alerts" onclick="renderPartnerAlertList(); go('partner-alert-list')" style="background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-pill);padding:6px 11px;display:flex;align-items:center;gap:5px;margin-right:6px"><span id="bell-icon-partner" style="display:flex"></span><span id="tabbadge-partner-header-alerts" style="display:none;font-size:12px;font-weight:800;color:var(--terracotta)"></span></button>
     </div>
   </header>
@@ -2922,7 +2932,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
          "공간 맞춤검색"은 첫화면 8개 공간카테고리와 중복되어 삭제. "루머 칼럼"은 신규 추가 -->
     <div style="border-bottom:1px solid var(--stone);padding-bottom:14px;margin-bottom:16px">
       <div onclick="closeSideMenu(); renderVerifiedFeed(); go('verified-feed')" style="padding:11px 4px;font-size:15px;font-weight:700;color:var(--charcoal);cursor:pointer;display:flex;align-items:center;gap:10px">검수 인증사례</div>
-      <div onclick="closeSideMenu(); setReturnTo('00'); go('calc')" style="padding:11px 4px;font-size:15px;font-weight:700;color:var(--charcoal);cursor:pointer;display:flex;align-items:center;gap:10px">AI간편견적</div>
+      <div onclick="closeSideMenu(); setReturnTo('00'); go('calc')" style="padding:11px 4px;font-size:15px;font-weight:700;color:var(--charcoal);cursor:pointer;display:flex;align-items:center;gap:10px">AI 간편 견적</div>
       <!-- 신규(사용자요청 — 상병마크 메뉴 신설): AI간편견적 바로 아래에 "AI 견적 감사" 직접 진입로 추가.
            s-calc 안의 텍스트링크(눈에 잘 안 띔)는 그대로 두고, 이미 다른 곳 견적서를 들고 있는
            사용자를 위한 1차 진입로를 사이드메뉴에 별도로 마련한다. (초기화는 go() 라우터의
@@ -4106,7 +4116,16 @@ function renderAdminPendingPartnerDetail(id){
   var v = aiPreVerdict(a);
   var el = document.getElementById('admin-pending-partner-detail-body');
   function photoBox(label, src, uploaded){
-    return '<div class="caption" style="font-weight:700;margin-bottom:4px">'+label+'</div><div style="height:100px;border-radius:var(--radius-input);background:'+(uploaded?'#fff':'var(--ivory)')+';border:1px solid var(--stone);margin-bottom:12px;overflow:hidden">'+(uploaded&&src?'<img src="'+src+'" style="width:100%;height:100%;object-fit:cover">':'<div class="caption" style="display:flex;align-items:center;justify-content:center;height:100%">미제출</div>')+'</div>';
+    // 결함수정(사용자 지적 — 사업자등록증 PDF 첨부 허용에 따른 후속조치): src가 문자열(dataURL, 프로토타입)이거나
+    // {url,mime}(실서버, loadAdminPrivateFileUrl) 둘 다 올 수 있음. PDF면 <img> 대신 "새 탭에서 열기" 링크로 표시.
+    var url = (src && typeof src === 'object') ? src.url : src;
+    var mime = (src && typeof src === 'object') ? (src.mime||'') : (typeof src === 'string' && /^data:application\/pdf/i.test(src) ? 'application/pdf' : '');
+    var isPdf = mime === 'application/pdf';
+    var body;
+    if(!uploaded || !url){ body = '<div class="caption" style="display:flex;align-items:center;justify-content:center;height:100%">미제출</div>'; }
+    else if(isPdf){ body = '<a href="'+url+'" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;gap:6px;height:100%;color:var(--charcoal);text-decoration:none;font-size:13px;font-weight:700">'+icon('fileText',T.charcoal,18)+'PDF 새 탭에서 열기</a>'; }
+    else { body = '<img src="'+url+'" style="width:100%;height:100%;object-fit:cover">'; }
+    return '<div class="caption" style="font-weight:700;margin-bottom:4px">'+label+'</div><div style="height:100px;border-radius:var(--radius-input);background:'+(uploaded?'#fff':'var(--ivory)')+';border:1px solid var(--stone);margin-bottom:12px;overflow:hidden">'+body+'</div>';
   }
   el.innerHTML = '<div class="h1" style="margin:12px 0 4px">'+a.name+'</div>'
     + '<div class="caption" style="margin-bottom:16px">신청 '+(a.appliedAt||'')+'</div>'
@@ -4129,7 +4148,11 @@ async function loadAdminPrivateFileUrl(ref){
   var headers={};if(window.authToken&&window.MVP.authMode!=='cookie')headers.Authorization='Bearer '+window.authToken;
   var response=await fetch(window.MVP.apiBase+'/api/admin/files/'+encodeURIComponent(ref.fileId),{credentials:'include',headers:headers});
   if(!response.ok) throw new Error('증빙파일을 불러오지 못했습니다');
-  return URL.createObjectURL(await response.blob());
+  // 결함수정(사용자 지적 — 사업자등록증 PDF 첨부 허용에 따른 후속조치): blob URL만 반환하면
+  // photoBox가 PDF인지 이미지인지 구분할 방법이 없어 PDF를 <img>로 렌더해 깨진 이미지로 보이던 문제 —
+  // 서버가 내려준 실제 Content-Type을 함께 반환해 photoBox에서 분기하도록 함
+  var blob = await response.blob();
+  return { url: URL.createObjectURL(blob), mime: blob.type || response.headers.get('content-type') || '' };
 }
 function approvePendingPartner(){
   if(!requireRoomerRole('admin')) return;
@@ -7970,28 +7993,48 @@ function verifyCeo04(){
 document.getElementById('lb-step04b').textContent = '2 / 4 단계 · 서류 업로드';
 document.getElementById('bar04b').innerHTML = progressBar04(2,4);
 document.getElementById('t-p2').textContent = '사업자등록증을 올려주세요';
-document.getElementById('d-p2').textContent = '사업자등록증을 첨부하면 일치성을 검증합니다';
+document.getElementById('d-p2').textContent = '사업자등록증을 첨부하면 일치성을 검증합니다 (이미지 또는 PDF)';
 // 결함 보완(사용자 요청: 업체가입 흐름 전체 실제사진 가능하게): 사업자등록증 OCR박스가
 // 가짜 클릭 시뮬레이션이었던 것을 실제 파일선택+미리보기로 전환
 document.getElementById('ocrbox').appendChild(Object.assign(document.createElement('span'), {innerHTML: icon('fileText',T.slate,22)+'<br>탭하여 업로드'}));
 document.getElementById('btn-next2').textContent = '다음';
 // 신규(사용자요청): 관리자 콘솔에서 신규가입 심사에 쓸 데이터를 모아두는 컨테이너
 window.pendingPartnerUpload = window.pendingPartnerUpload || { ocrImg:null, extImg:null, intImg:null, docUploaded:false, extUploaded:false, intUploaded:false, freelancerMode:false, idCardImg:null, bankbookImg:null };
+// 결함수정(사용자 지적 — PC 사업자등록증 파일첨부 문제): 허용 MIME 목록을 백엔드(detectStoredFile)와
+// 동일하게 맞추고, 선택 즉시 검증해서 확실한 안내를 준다. PDF는 이미지 미리보기 대신 파일아이콘+파일명 카드로 표시.
+var OCR_ALLOWED_TYPES = ['image/jpeg','image/png','image/webp','application/pdf'];
+function ocrFilePreviewCardHtml(file){
+  if(file.type === 'application/pdf'){
+    return '<div class="caption" style="padding:14px;display:flex;align-items:center;gap:8px;justify-content:center">'+icon('fileText',T.charcoal,20)+'<span style="color:var(--charcoal);font-weight:600">'+escapeConsumerIdentityHtml(file.name)+'</span></div>';
+  }
+  return null; // 이미지는 각 분기에서 직접 미리보기(썸네일/dataURL)를 그린다
+}
 document.getElementById('ocr-file-input').addEventListener('change', function(){
   const input = document.getElementById('ocr-file-input');
   if(!input.files || !input.files[0]) return;
+  var file = input.files[0];
+  if(OCR_ALLOWED_TYPES.indexOf(file.type) === -1){
+    var rBad = document.getElementById('ocrresult');
+    rBad.style.display='block'; rBad.style.background=''; rBad.style.color='var(--danger)';
+    rBad.textContent = 'JPG, PNG, WebP 이미지 또는 PDF 파일만 업로드할 수 있어요.';
+    input.value = '';
+    return;
+  }
   if(window.MVP.live){
-    var file=input.files[0],r=document.getElementById('ocrresult');r.style.display='block';r.textContent='비공개 저장소에 업로드 중…';
+    var r=document.getElementById('ocrresult');r.style.background='';r.style.color='';r.style.display='block';r.textContent='비공개 저장소에 업로드 중…';
     uploadPartnerSignupEvidence(file,'business_registration').then(function(data){
       window.pendingPartnerUpload.ocrImg=data.fileId;window.pendingPartnerUpload.docUploaded=true;window.pendingPartnerUpload.needsManualReview=true;
-      var box=document.getElementById('ocrbox');box.innerHTML='<div class="caption" style="padding:20px">'+escapeConsumerIdentityHtml(file.name)+'</div>';box.style.borderColor='var(--success)';
+      var box=document.getElementById('ocrbox');
+      box.innerHTML = ocrFilePreviewCardHtml(file) || ('<div class="caption" style="padding:20px">'+escapeConsumerIdentityHtml(file.name)+'</div>');
+      box.style.borderColor='var(--success)';
       r.innerHTML=icon('checkCircle',T.success,13)+' 사업자등록증이 안전하게 저장되었습니다.';document.getElementById('ocr-required-note').style.display='none';
     }).catch(function(e){r.style.color='var(--danger)';r.textContent='업로드 실패: '+e.message;});return;
   }
   const reader = new FileReader();
   reader.onload = function(e){
     const box = document.getElementById('ocrbox');
-    box.innerHTML = '<img src="'+e.target.result+'" style="width:100%;height:100%;object-fit:cover">';
+    var pdfCard = ocrFilePreviewCardHtml(file);
+    box.innerHTML = pdfCard || ('<img src="'+e.target.result+'" style="width:100%;height:100%;object-fit:cover">');
     box.style.borderStyle = 'solid';
     box.style.borderColor = 'var(--success)';
     const r = document.getElementById('ocrresult');
@@ -9376,7 +9419,7 @@ buildTabbar('tabbar-search', false, 'search');
    결함 수정: 기존 단가(욕실 85,000원/평 등)가 가견적서(#08, 평당150만원 기준)와 18배
    차이나는 비현실적인 단가였음 — 정확히 사용자가 확정한 평당가 구간(70만~170만원)과
    주거형태별 보정계수(원룸·주택 더 높게)를 정확히 반영해 전면 재설계 ===== */
-document.getElementById('t-calc').textContent = 'AI 간편견적';
+document.getElementById('t-calc').textContent = 'AI 간편 견적';
 document.getElementById('d-calc').textContent = '주거형태와 시공범위, 평수만 알려주시면 예상 공사비를 바로 계산해드려요';
 document.getElementById('lb-calc-type').textContent = '주거형태';
 document.getElementById('lb-calc-scope').textContent = '시공 범위';
@@ -12184,7 +12227,9 @@ function confirmMydataDelete(){
   );
 }
 /* ===== 신규: 내 정보 (회원 전용) — userProfile 기반 동적 렌더링 ===== */
-const MYPAGE_MENU = ['견적서 열람하기', '계약서내용 열람하기', 'AI 공사 감리', '하자보수 접수', '알림 설정', '회원 탈퇴하기', '고객센터'];
+// 결함수정(사용자 지적 — PC(900px 이상)에서는 하단탭바 자체가 안 보이는 설계라, 안읽은 메시지가
+// 없을 때는 소비자가 메신저로 갈 방법이 전혀 없던 문제): 마이페이지 메뉴 최상단에 "메신저" 추가
+const MYPAGE_MENU = ['메신저', '견적서 열람하기', '계약서내용 열람하기', 'AI 공사 감리', '하자보수 접수', '알림 설정', '회원 탈퇴하기', '고객센터'];
 function renderMypage(){
   // 결함 보완(사용자 요청: 회원가입 후 내정보 채우는 방법): 고정된 "소비자 회원님" 텍스트 대신
   // 실제 가입 시 선택한 경로(socialProvider)와 질문5단계 답변을 그대로 읽어와 채움
@@ -12251,7 +12296,9 @@ function renderMypage(){
     row.appendChild((function(){ const s=document.createElement('span'); s.innerHTML=icon('chevronRight','var(--slate)',15); return s; })());
     // 재설계(사용자요청 — 메뉴통합): "견적서확인"+"내가받은견적"을 "견적서 열람하기"로 통합,
     // "계약진행하기"+"계약내역"을 "계약서내용 열람하기"로 통합(실제 열람용 화면으로 연결)
-    if(m === '견적서 열람하기'){
+    if(m === '메신저'){
+      row.onclick = function(){ setReturnTo('consumer-home'); go('chatlist'); };
+    } else if(m === '견적서 열람하기'){
       row.onclick = function(){ setReturnTo('consumer-home'); renderMyQuotes(); go('my-quotes'); };
     } else if(m === '계약서내용 열람하기'){
       row.onclick = function(){ setReturnTo('consumer-home'); renderMyContracts(); go('my-contracts'); };
@@ -12357,10 +12404,21 @@ function loadServerNotifications(){
 function updateConsumerAlertBadge(){
   var iconEl = document.getElementById('bell-icon-consumer');
   if(iconEl && !iconEl.innerHTML) iconEl.innerHTML = icon('bell', T.charcoal, 17);
-  var badge = document.getElementById('tabbadge-consumer-alerts'); if(!badge) return;
-  var unread = (window.CONSUMER_ALERTS||[]).filter(function(a){return !a.read;}).length;
-  if(unread > 0){ badge.style.display='inline'; badge.textContent = unread>9?'9+':unread; }
-  else { badge.style.display='none'; }
+  var badge = document.getElementById('tabbadge-consumer-alerts');
+  if(badge){
+    var unread = (window.CONSUMER_ALERTS||[]).filter(function(a){return !a.read;}).length;
+    if(unread > 0){ badge.style.display='inline'; badge.textContent = unread>9?'9+':unread; }
+    else { badge.style.display='none'; }
+  }
+  // 신규(사용자요청 — 헤더 메신저 아이콘): 안읽은 메시지 수를 알림배지와 동일한 방식으로 표시
+  var chatIconEl = document.getElementById('chat-icon-consumer');
+  if(chatIconEl && !chatIconEl.innerHTML) chatIconEl.innerHTML = icon('bookmark', T.charcoal, 17);
+  var chatBadgeEl = document.getElementById('chatbadge-consumer-header');
+  if(chatBadgeEl){
+    var chatUnread = (typeof getViewerTotalUnread === 'function') ? getViewerTotalUnread('consumer') : 0;
+    if(chatUnread > 0){ chatBadgeEl.style.display='inline'; chatBadgeEl.textContent = chatUnread>9?'9+':chatUnread; }
+    else { chatBadgeEl.style.display='none'; }
+  }
 }
 function renderConsumerAlertList(){
   var el = document.getElementById('consumer-alert-list-items'); if(!el) return;
@@ -12403,9 +12461,12 @@ buildTabbar('tabbar-partner-alert-list', true, null);
 buildTabbar('tabbar-consumer-alert-list', true, null);
 // 결함수정+신규: 카톡처럼 알림·메신저 탭에 안읽음 배지 표시
 function updatePartnerTabBadges(){
+  // 결함수정(사용자 지적 — 헤더 메신저 배지 추가하며 발견): unread 계산이 존재하지 않는
+  // tabbadge-chat 엘리먼트 유무에 조건부로 걸려있어, 실제로 쓰이는 헤더 배지에서 항상 undefined였음 —
+  // 계산을 무조건 실행하도록 분리
+  var unread = (typeof getViewerTotalUnread === 'function') ? getViewerTotalUnread('partner') : (window.measUnread || 0);
   var chatBadge = document.getElementById('tabbadge-chat');
   if(chatBadge){
-    var unread = (typeof getViewerTotalUnread === 'function') ? getViewerTotalUnread('partner') : (window.measUnread || 0);
     if(unread > 0){ chatBadge.style.display='flex'; chatBadge.textContent = unread>9?'9+':unread; }
     else { chatBadge.style.display='none'; }
   }
@@ -12430,6 +12491,14 @@ function updatePartnerTabBadges(){
     var unreadAlerts2 = (window.PARTNER_ALERTS||[]).filter(function(a){return !a.read;}).length;
     if(unreadAlerts2 > 0){ headerAlertBadge.style.display='inline'; headerAlertBadge.textContent = unreadAlerts2>9?'9+':unreadAlerts2; }
     else { headerAlertBadge.style.display='none'; }
+  }
+  // 신규(사용자요청 — 파트너 마이페이지 헤더 메신저 아이콘): 소비자 헤더와 동일한 위치·방식으로 상시 노출
+  var headerChatIcon = document.getElementById('chat-icon-partner');
+  if(headerChatIcon && !headerChatIcon.innerHTML) headerChatIcon.innerHTML = icon('bookmark', T.charcoal, 17);
+  var headerChatBadge = document.getElementById('chatbadge-partner-header');
+  if(headerChatBadge){
+    if(unread > 0){ headerChatBadge.style.display='inline'; headerChatBadge.textContent = unread>9?'9+':unread; }
+    else { headerChatBadge.style.display='none'; }
   }
 }
 
@@ -14045,11 +14114,11 @@ function chatbotAnswer(q){
   if(cbHas(t,'수수료납부','수수료어떻게','수수료내')) return '계약 성사 후 등급별 수수료율에 따라 [수수료 납부]에서 결제하면 정산이 진행돼요.'+'<button onclick="closeChatbot();if(typeof renderFeePay===\'function\')renderFeePay();go(\'feepay\')" style="margin-top:8px;display:inline-block;border:1px solid var(--terracotta);background:#fff;color:var(--terracotta);border-radius:8px;padding:6px 12px;font-size:13.5px;cursor:pointer;font-family:inherit;font-weight:600">수수료 납부하러 가기</button>';
   if(cbHas(t,'수수료')) return '플랫폼 수수료는 <b>업체가 부담</b>하며, 소비자님께는 별도로 부과되지 않습니다. 계약금액에도 포함되지 않아요.';
   // 3) 견적·시세
-  if(cbHas(t,'평당','시세','얼마정도','비용','예산','견적가','대략얼마','금액대')) return '2026년 기준 아파트 리모델링은 대략 <b>평당 150~250만원</b>, 범위에 따라 100만원대~350만원 이상입니다(부분·스탠다드·전체·프리미엄). [AI 간편견적]으로 평수·범위별 예상 금액을 확인할 수 있어요.'+goBtn('07','견적 알아보기');
+  if(cbHas(t,'평당','시세','얼마정도','비용','예산','견적가','대략얼마','금액대')) return '2026년 기준 아파트 리모델링은 대략 <b>평당 150~250만원</b>, 범위에 따라 100만원대~350만원 이상입니다(부분·스탠다드·전체·프리미엄). [AI 간편 견적]으로 평수·범위별 예상 금액을 확인할 수 있어요.'+goBtn('07','견적 알아보기');
   if(cbHas(t,'가견적','견적서보','견적어떻게','견적요청')) return '업체 프로필에서 견적을 요청하면 8대 공정 기반 가견적서가 작성돼 메신저로 옵니다. 항목별 단가는 AI가 시세와 실시간 대조해 경고를 표시해요.'+goBtn('search','업체 찾아보기');
   if(cbHas(t,'8대공정','공정항목','공정이뭐')) return '가설·철거 / 목공 / 방수·미장 / 타일 / 도배·도장 / 전기·조명 / 바닥 / 주방·가구 등 8대 공정으로 견적이 구성됩니다.';
   if(cbHas(t,'경고','빨간','노란','단가검증','비싸','바가지','과다')) return '입력 단가가 기준 시세와 ±20% 넘으면 주의, ±40% 경고(사유 필수), ±60% 초과 시 발송 차단됩니다. 소비자가 바가지를 피하도록 돕는 장치예요.';
-  if(cbHas(t,'견적','단가')) return '견적은 8대 공정별 단가로 구성되고 AI가 시세와 대조해 검증합니다. 평당 대략 150~250만원이 기준이에요.'+goBtn('calc','AI 간편견적 받기');
+  if(cbHas(t,'견적','단가')) return '견적은 8대 공정별 단가로 구성되고 AI가 시세와 대조해 검증합니다. 평당 대략 150~250만원이 기준이에요.'+goBtn('calc','AI 간편 견적 받기');
   // 4) 업체·등급
   if(cbHas(t,'등급','면허파트너','인증파트너','등록파트너')) return '업체 등급은 면허·인증·등록 3단계로, 심사 수준에 따라 나뉩니다. 등급별 플랫폼 수수료(업체 부담)가 다르며, 소비자에겐 부과되지 않아요.';
   // 10) 신규기능(사용자요청): 업체(파트너)용 질문 보강
@@ -14097,7 +14166,7 @@ function chatbotAnswer(q){
   if(cbHas(t,'입주청소','청소언제')) return '입주 청소는 모든 공사·가구 설치가 끝난 뒤, 이삿짐 들이기 직전에 하는 게 가장 효율적이에요.';
   if(cbHas(t,'장마','겨울','계절','여름','추울때','더울때')) return '장마철엔 누수, 겨울엔 결로·동파를 특히 살펴보세요. 계절성 하자도 보증 기간 내면 접수 대상입니다.';
   if(cbHas(t,'자재','좋은자재','친환경','등급차이','원자재')) return '자재는 등급(일반/중급/고급)에 따라 평당 단가와 내구성이 달라요. 친환경 자재는 새집증후군 완화에 도움이 됩니다. 견적서에서 자재 등급을 확인하세요.';
-  if(cbHas(t,'돈모으','저렴','아끼','절약','싸게')) return '부분 시공·자재 등급 조정·불필요 공정 제외로 예산을 줄일 수 있어요. AI 간편견적으로 범위별 금액을 비교해 보세요.'+goBtn('calc','AI 간편견적 받기');
+  if(cbHas(t,'돈모으','저렴','아끼','절약','싸게')) return '부분 시공·자재 등급 조정·불필요 공정 제외로 예산을 줄일 수 있어요. AI 간편 견적으로 범위별 금액을 비교해 보세요.'+goBtn('calc','AI 간편 견적 받기');
   // 11) 스몰토크
   if(cbHas(t,'안녕','하이','반가','헬로','ㅎㅇ','hello')) return '안녕하세요! 무엇을 도와드릴까요? 계약·견적·공사·하자 무엇이든 물어보세요.';
   if(cbHas(t,'고마','감사','ㄱㅅ','thank','수고')) return '도움이 되었다니 기뻐요! 더 궁금한 점 있으면 언제든 물어보세요.';
