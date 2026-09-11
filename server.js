@@ -1431,8 +1431,18 @@ app.get('/api/quote-requests/:id/quotes', authRequired, (req, res) => {
 });
 
 // ===== 4-2. 계약 확정 =====
-// 등급별 수수료율(프론트엔드 루머02.html의 window.TIER_FEE와 정확히 동일하게 유지할 것)
+// 등급별 수수료율 기본값(프론트엔드 루머02.html의 window.TIER_FEE와 정확히 동일하게 유지할 것)
+// 결함정리(2026-09, 전수조사 발견 — 운영콘솔): 관리자 콘솔 "정책 설정"에서 수수료율을 바꿔도
+// 그 화면(브라우저 메모리)만 바뀔 뿐 여기 이 상수는 그대로였음 → 실제 계약 확정 시 적용되는
+// 수수료율이 관리자가 뭘 설정하든 항상 기본값(1.5/2.5/3%)으로 고정되는 심각한 결함이었다.
+// admin_policies 테이블(getAdminPolicy, 아래 정의)에 관리자가 저장한 값이 있으면 그것을 우선
+// 적용하고, 없으면 이 기본값으로 폴백한다.
 const TIER_FEE = { '면허 파트너': 0.015, '인증사업자': 0.025, '부분공사가능업체': 0.03 };
+function getTierFeeRate(tier) {
+  const overrides = getAdminPolicy('tier_fee_rates', {});
+  const rate = (overrides && typeof overrides[tier] === 'number') ? overrides[tier] : TIER_FEE[tier];
+  return (typeof rate === 'number') ? rate : 0.03;
+}
 
 app.post('/api/contracts', authRequired, (req, res) => {
   if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 계약을 확정할 수 있습니다' } });
@@ -1453,7 +1463,7 @@ app.post('/api/contracts', authRequired, (req, res) => {
 
   // 결함방지(사용자요청 반영): 확정 시점의 수수료율을 스냅샷으로 고정 저장 — 이후 업체 등급이 바뀌어도
   // 이미 확정된 이 계약의 수수료율은 절대 바뀌지 않아야 함(정산 정합성의 핵심)
-  const feeRateSnapshot = TIER_FEE[partner.tier] ?? 0.03;
+  const feeRateSnapshot = getTierFeeRate(partner.tier);
 
   const totalAmount = (deposit || 0) + (down || 0) + (middle || 0) + (final || 0);
   if (totalAmount !== quote.total_amount) return res.status(400).json({ success:false, error:{ code:'PAYMENT_SCHEDULE_MISMATCH', message:'계약금·선금·중도금·잔금 합계가 견적 총액과 일치해야 합니다' } });
@@ -1656,6 +1666,24 @@ app.get('/api/settlements/mine', authRequired, (req, res) => {
   res.json({ success: true, data: list });
 });
 
+// 신규(2026-09, 전수조사 발견 — 운영콘솔 실연동): 관리자 "정산 감독" 화면이 그동안 전체 업체를
+// 조회하는 API가 아예 없어서 항상 빈 배열(window.SETTLEMENTS=[])만 보여주고 있었다 — 뱃지 카운트
+// (settleHold, /api/admin/dashboard/counts)는 실제 DB를 세고 있었는데 정작 목록 화면은 0건/빈 화면으로
+// 나오는 불일치 결함이었음.
+app.get('/api/admin/settlements', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare(`
+    SELECT s.*, p.business_name AS partner_name, p.tier AS partner_tier
+    FROM settlements s
+    LEFT JOIN partners p ON p.id = s.partner_id
+    ORDER BY (s.status = 'hold') DESC, s.created_at DESC
+  `).all();
+  res.json({ success: true, data: rows.map(r => ({
+    id: r.id, contractId: r.contract_id, partnerId: r.partner_id, partnerName: r.partner_name || '(알 수 없음)',
+    tier: r.partner_tier || '-', amount: r.amount, feeRate: r.fee_rate, status: r.status,
+    holdReason: r.hold_reason, payoutDate: r.payout_date, createdAt: r.created_at
+  })) });
+});
+
 app.put('/api/settlements/:id/pay-fee', blockInProduction, authRequired, (req, res) => {
   const settlement = db.prepare('SELECT * FROM settlements WHERE id=?').get(req.params.id);
   if (!settlement) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '정산건을 찾을 수 없습니다' } });
@@ -1668,11 +1696,15 @@ app.put('/api/settlements/:id/pay-fee', blockInProduction, authRequired, (req, r
 
 // ===== 6. 분쟁 =====
 // 프론트엔드(루머02.html) DISPUTE_TYPES와 판단기준을 그대로 동기화
+// 결함정리(2026-09, 전수조사 발견 — 운영콘솔): 프론트는 하자미처리/대금정산/노쇼/품질불만/기타 5종을
+// 보여주는데 여기엔 '기타'가 빠져 있어서, 소비자가 "기타"를 선택해 분쟁을 접수하면 이 서버가
+// INVALID_TYPE(400)으로 거부하는 결함이었다. 프론트와 동일하게 5종으로 맞춘다.
 const DISPUTE_TYPES = {
   defect:  { label: '하자 미처리',    basis: '하자 접수 이력 · 완공 사진 대조 · 업체 SLA(48h)', rec: '업체 SLA 초과 여부 확인 → 초과 시 업체 우선 책임, 이행보증금에서 대체 시공비 차감 검토' },
   payment: { label: '대금·정산 이견', basis: '계약서 대금 분할 · 정산 내역', rec: '계약 기준과 실제 지급 대조 → 차액 발생 시 분할 기준으로 조정' },
   noshow:  { label: '노쇼·잠수',      basis: '실측 일정 로그 · 노쇼 신고 기록', rec: '반복 노쇼(2회+) 시 어뷰징 큐 연계, 대체 업체 배정 또는 계약 해지 검토' },
-  quality: { label: '품질 불만',      basis: '완공 AI 검수 · 현장 사진 · 자재 미팅 기록', rec: '검수 기준 미달 항목 확인 → 재시공 또는 부분 환불 협의 권고' }
+  quality: { label: '품질 불만',      basis: '완공 AI 검수 · 현장 사진 · 자재 미팅 기록', rec: '검수 기준 미달 항목 확인 → 재시공 또는 부분 환불 협의 권고' },
+  etc:     { label: '기타',           basis: '제출 자료 및 대화 이력', rec: '양측 소명 자료 확보 후 관리자 정성 판단' }
 };
 function contractForMember(contractId, user) {
   const contract = db.prepare('SELECT * FROM contracts WHERE id=?').get(contractId);
@@ -1709,23 +1741,78 @@ app.post('/api/disputes/:id/ai-judge', authRequired, (req, res) => {
   res.json({ success: true, data: verdict });
 });
 
+// 결함정리(2026-09, 전수조사 발견 — 운영콘솔 분쟁 조정 큐를 실연동하며 발견): 이 엔드포인트는 그동안
+// settlementAdjustment가 있을 때 정산을 hold로 "거는" 코드만 있고, 기각·소비자책임 결정일 때 이미 걸린
+// hold를 "풀어주는" 코드가 아예 없었다(프론트 프로토타입의 resolveDispute()에는 있었는데 서버엔 빠짐).
+// 그래서 분쟁이 기각되어도 정산이 영구히 보류 상태로 남는 결함이 될 수 있었음 — 결정 유형별로
+// 명확히 분기해서 처리한다.
 app.put('/api/disputes/:id/resolve', adminAuthRequired(), (req, res) => {
   // 결함수정(팀장 지시 반영): "실서비스는 관리자 권한 확인 미들웨어 필요"라고 남겨뒀던 주석 처리 완료
   const { decision, settlementAdjustment } = req.body;
+  const DECISION_LABEL = { partner: '업체 책임', consumer: '소비자 책임', partial: '일부 조정', reject: '기각' };
+  if (!DECISION_LABEL[decision]) return validationError(res, '올바른 조정 결정이 아닙니다');
   const dispute = db.prepare('SELECT * FROM disputes WHERE id=?').get(req.params.id);
   if (!dispute) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '분쟁을 찾을 수 없습니다' } });
+  if (dispute.status === 'resolved') return res.status(409).json({ success: false, error: { code: 'ALREADY_RESOLVED', message: '이미 조정이 완료된 분쟁입니다' } });
+  const contract = db.prepare('SELECT * FROM contracts WHERE id=?').get(dispute.contract_id);
   const tx = db.transaction(() => {
     db.prepare("UPDATE disputes SET status='resolved', resolution=?, settlement_adjustment=?, resolved_at=datetime('now') WHERE id=?")
       .run(decision, settlementAdjustment || null, req.params.id);
-    if (settlementAdjustment) {
-      const settlement = db.prepare('SELECT * FROM settlements WHERE contract_id=?').get(dispute.contract_id);
-      if (settlement) {
-        db.prepare("UPDATE settlements SET status='hold', hold_reason=? WHERE id=?").run('분쟁 조정 반영: ' + decision, settlement.id);
+    const settlement = dispute.contract_id ? db.prepare('SELECT * FROM settlements WHERE contract_id=?').get(dispute.contract_id) : null;
+    if (settlement) {
+      if (decision === 'consumer' || decision === 'reject') {
+        // 기각 또는 소비자 책임 없음 → 보류 사유가 이 정산이면 해제하고 정산 정상 진행
+        if (settlement.status === 'hold') db.prepare("UPDATE settlements SET status='received', hold_reason=NULL WHERE id=?").run(settlement.id);
+      } else {
+        // 업체 책임 또는 일부 조정 → 보류 유지, 금액 조정분이 있으면 정산액에서 차감
+        const adj = settlementAdjustment ? Math.min(Math.abs(settlementAdjustment), settlement.amount) : 0;
+        db.prepare("UPDATE settlements SET status='hold', hold_reason=?, amount=amount-? WHERE id=?").run('분쟁 조정 반영: ' + DECISION_LABEL[decision], adj, settlement.id);
       }
+    }
+    if (contract) {
+      createNotification('consumer', contract.consumer_id, 'dispute_resolved', '분쟁 조정이 완료되었습니다', DECISION_LABEL[decision], 'contract', contract.id);
+      createNotification('partner', contract.partner_id, 'dispute_resolved', '분쟁 조정이 완료되었습니다', DECISION_LABEL[decision], 'contract', contract.id);
     }
   });
   tx();
   res.json({ success: true, data: { message: '조정 완료됐어요' } });
+});
+
+// 신규(2026-09, 전수조사 발견 — 운영콘솔 실연동): 관리자 콘솔 "분쟁 조정 큐" 화면이 그동안
+// 이 목록 API가 아예 없어서 그 브라우저 탭에서 방금 접수된 분쟁만 담기는 로컬 배열(window.DISPUTES)을
+// 보여주고 있었다 — 다른 사용자가 신고한 실제 분쟁은 관리자 화면에 전혀 뜨지 않던 결함.
+app.get('/api/admin/disputes', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare(`
+    SELECT d.*, c.consumer_id, c.partner_id, p.business_name AS partner_name, u.nickname AS consumer_name
+    FROM disputes d
+    LEFT JOIN contracts c ON c.id = d.contract_id
+    LEFT JOIN partners p ON p.id = c.partner_id
+    LEFT JOIN users u ON u.id = c.consumer_id
+    ORDER BY (d.status = 'resolved') ASC, d.filed_at DESC
+  `).all();
+  res.json({ success: true, data: rows.map(r => ({
+    id: r.id, contractId: r.contract_id, type: r.type, filedBy: r.filed_by, reason: r.reason,
+    aiVerdict: r.ai_verdict ? JSON.parse(r.ai_verdict) : null, status: r.status, resolution: r.resolution,
+    settlementAdjustment: r.settlement_adjustment, filedAt: r.filed_at, resolvedAt: r.resolved_at,
+    partnerName: r.partner_name || null, consumerName: r.consumer_name || null
+  })) });
+});
+app.get('/api/admin/disputes/:id', adminAuthRequired(), (req, res) => {
+  const r = db.prepare(`
+    SELECT d.*, c.consumer_id, c.partner_id, p.business_name AS partner_name, u.nickname AS consumer_name
+    FROM disputes d
+    LEFT JOIN contracts c ON c.id = d.contract_id
+    LEFT JOIN partners p ON p.id = c.partner_id
+    LEFT JOIN users u ON u.id = c.consumer_id
+    WHERE d.id=?
+  `).get(req.params.id);
+  if (!r) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '분쟁을 찾을 수 없습니다' } });
+  res.json({ success: true, data: {
+    id: r.id, contractId: r.contract_id, type: r.type, filedBy: r.filed_by, reason: r.reason,
+    aiVerdict: r.ai_verdict ? JSON.parse(r.ai_verdict) : null, status: r.status, resolution: r.resolution,
+    settlementAdjustment: r.settlement_adjustment, filedAt: r.filed_at, resolvedAt: r.resolved_at,
+    partnerName: r.partner_name || null, consumerName: r.consumer_name || null
+  } });
 });
 
 // ===== 6-1. 하자보수 =====
@@ -1769,10 +1856,22 @@ const INSPECT_PLANS = {
   expert: { label: '전문가 감리', basePrice: 300000 }
 };
 const INSPECT_TRIP_FEES = { seoul: 50000, chung: 100000, others: 150000, jeju: 200000 };
+// 결함정리(2026-09, 전수조사 발견 — 운영콘솔): 관리자 "정책 설정"에서 사진감리 장당가격·전문가
+// 감리 기본가를 바꿔도 실제 결제금액 계산은 이 파일의 하드코딩된 INSPECT_PLANS를 그대로 썼음.
+// admin_policies에 저장된 값이 있으면 우선 적용하고, 없으면 기본값으로 폴백.
+function getInspectPlans() {
+  const overrides = getAdminPolicy('inspect_plan_pricing', {});
+  return {
+    ai: INSPECT_PLANS.ai,
+    photo: { ...INSPECT_PLANS.photo, unitPrice: (overrides.photo && typeof overrides.photo.unitPrice === 'number') ? overrides.photo.unitPrice : INSPECT_PLANS.photo.unitPrice },
+    expert: { ...INSPECT_PLANS.expert, basePrice: (overrides.expert && typeof overrides.expert.basePrice === 'number') ? overrides.expert.basePrice : INSPECT_PLANS.expert.basePrice }
+  };
+}
 function calcInspectionPrice(plan, photoCount, tripKey) {
+  const plans = getInspectPlans();
   if (plan === 'ai') return 0;
-  if (plan === 'photo') { const c = Math.max(INSPECT_PLANS.photo.minCount, parseInt(photoCount) || INSPECT_PLANS.photo.minCount); return c * INSPECT_PLANS.photo.unitPrice; }
-  if (plan === 'expert') { const trip = tripKey ? (INSPECT_TRIP_FEES[tripKey] || 0) : 0; return INSPECT_PLANS.expert.basePrice + trip; }
+  if (plan === 'photo') { const c = Math.max(plans.photo.minCount, parseInt(photoCount) || plans.photo.minCount); return c * plans.photo.unitPrice; }
+  if (plan === 'expert') { const trip = tripKey ? (INSPECT_TRIP_FEES[tripKey] || 0) : 0; return plans.expert.basePrice + trip; }
   return 0;
 }
 // 등급별 판정 템플릿(루머02.html INSPECT_VERDICTS와 동일하게 유지)
@@ -2384,6 +2483,25 @@ const AD_PRICING = {
 };
 // 신규(사용자요청 — 5단계): 슬롯종류별 "지역당" 최대 동시노출 개수(자리 품절 방지)
 const AD_CAPACITY_PER_REGION = { hero: 1, 'hero-sub': 2, 'region-top': 1 };
+// 결함정리(2026-09, 전수조사 발견 — 운영콘솔): 관리자 "광고관리" 화면에서 단가·정원을 수정해도
+// 그 브라우저 세션 메모리만 바뀔 뿐 실제 광고 구매 시 적용되는 값은 이 하드코딩 상수 그대로였음.
+function getAdPricing() {
+  const overrides = getAdminPolicy('ad_pricing', {});
+  const out = {};
+  Object.keys(AD_PRICING).forEach(k => {
+    const o = overrides[k];
+    out[k] = { periodDays: AD_PRICING[k].periodDays, price: (o && typeof o.price === 'number') ? o.price : AD_PRICING[k].price };
+  });
+  return out;
+}
+function getAdCapacity() {
+  const overrides = getAdminPolicy('ad_capacity', {});
+  const out = {};
+  Object.keys(AD_CAPACITY_PER_REGION).forEach(k => {
+    out[k] = (typeof overrides[k] === 'number') ? overrides[k] : AD_CAPACITY_PER_REGION[k];
+  });
+  return out;
+}
 
 app.post('/api/ads', authRequired, (req, res) => {
   if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 광고를 등록할 수 있습니다' } });
@@ -2394,7 +2512,7 @@ app.post('/api/ads', authRequired, (req, res) => {
   if (!isNonEmptyString(region, 50)) return validationError(res, '노출 지역을 선택해주세요');
   if (!isNonEmptyString(tagline, 100)) return validationError(res, '광고 문구를 입력해주세요(100자 이내)');
 
-  const pricing = AD_PRICING[slotType];
+  const pricing = getAdPricing()[slotType];
   const hit = AD_BANNED_WORDS.filter(w => tagline.includes(w));
   const aiPrecheckResult = hit.length ? 'flagged' : 'pass';
   const id = randomUUID();
@@ -2403,7 +2521,7 @@ app.post('/api/ads', authRequired, (req, res) => {
     const tx = db.transaction(() => {
       // 1) 지역별 정원 확인 — 이미 이 지역+슬롯종류에 활성 광고가 꽉 찼으면 차단
       const activeCount = db.prepare("SELECT COUNT(*) as c FROM ad_slots WHERE slot_type=? AND region=? AND status='active'").get(slotType, region).c;
-      const capacity = AD_CAPACITY_PER_REGION[slotType] || 1;
+      const capacity = getAdCapacity()[slotType] ?? 1;
       if (activeCount >= capacity) {
         throw Object.assign(new Error('이 지역은 광고 자리가 모두 찼어요. 다른 지역을 선택하거나 대기 등록해주세요.'), { code: 'CAPACITY_FULL' });
       }
@@ -2978,6 +3096,35 @@ app.get('/api/admin/dashboard/counts', adminAuthRequired(), (req, res) => {
   res.json({ success: true, data: { ads, partners, dispute, abuse: abuseCandidates, inspect, inspectionQueue, settleHold, tier } });
 });
 
+// 신규(2026-09, 전수조사 발견 — 운영콘솔 "실시간 현황"): loadTodayStats()가
+// { newSignups:12, contracts:4, feeRevenue:1240000 }을 완전히 하드코딩해서 항상 똑같은 숫자만
+// 보여주고 있었다(⚡MVP-SWITCH 표시는 있었으나 실제 전환이 안 된 채 방치). 실제 DB 집계로 교체.
+app.get('/api/admin/today-stats', adminAuthRequired(), (req, res) => {
+  const newSignups = db.prepare("SELECT COUNT(*) c FROM users WHERE date(created_at)=date('now')").get().c;
+  const contracts = db.prepare("SELECT COUNT(*) c FROM contracts WHERE date(confirmed_at)=date('now')").get().c;
+  const feeRevenue = Math.round(db.prepare("SELECT COALESCE(SUM(amount*fee_rate),0) s FROM settlements WHERE date(created_at)=date('now')").get().s);
+  const disputeTotal = db.prepare("SELECT COUNT(*) c FROM disputes").get().c;
+  const disputeResolved = db.prepare("SELECT COUNT(*) c FROM disputes WHERE status='resolved'").get().c;
+  res.json({ success: true, data: { newSignups, contracts, feeRevenue, disputeTotal, disputeResolved } });
+});
+
+// 신규(2026-09, 전수조사 발견 — 운영콘솔 "이상 지표 알림"): notifyAdmin()이 그 브라우저 탭에서 일어난
+// 일만 로컬 배열(window.ADMIN_ALERTS)에 쌓아서, 다른 세션에서 admin으로 들어온 관리자에게는 항상 빈
+// 목록으로 보였다. 실제 DB에서 "지금 조치가 필요한" 최근 신호를 모아 대체.
+app.get('/api/admin/alerts/recent', adminAuthRequired(), (req, res) => {
+  const items = [];
+  db.prepare("SELECT id, business_name, created_at FROM partners WHERE verify_status='pending' ORDER BY created_at DESC LIMIT 5").all()
+    .forEach(p => items.push({ id: 'partner-' + p.id, type: '신규 업체 등록 신청', message: p.business_name, severity: 'info', at: p.created_at, target: 'admin-pending-partners' }));
+  db.prepare("SELECT id, plan, score, grade, paid_at FROM inspections WHERE grade='문제' ORDER BY paid_at DESC LIMIT 5").all()
+    .forEach(i => items.push({ id: 'insp-' + i.id, type: 'AI감리 문제판정', message: (i.plan||'') + ' · 점수 ' + (i.score != null ? i.score : '-'), severity: 'danger', at: i.paid_at, target: 'admin-inspection-queue' }));
+  db.prepare("SELECT id, type, filed_at FROM disputes WHERE status IN ('filed','ai_judged') ORDER BY filed_at DESC LIMIT 5").all()
+    .forEach(d => items.push({ id: 'dispute-' + d.id, type: '분쟁 신고 접수', message: (DISPUTE_TYPES[d.type] && DISPUTE_TYPES[d.type].label) || d.type, severity: 'danger', at: d.filed_at, target: 'admin-dispute-queue' }));
+  db.prepare("SELECT id, hold_reason, created_at FROM settlements WHERE status='hold' ORDER BY created_at DESC LIMIT 5").all()
+    .forEach(s => items.push({ id: 'settle-' + s.id, type: '정산 보류', message: s.hold_reason || '보류 사유 미상', severity: 'warn', at: s.created_at, target: 'admin-settle' }));
+  items.sort((a, b) => String(b.at||'').localeCompare(String(a.at||'')));
+  res.json({ success: true, data: items.slice(0, 10) });
+});
+
 // ===== 1-5(팀장 지시): API 문서 자동화(Swagger) — /api-docs 에서 43개 전체 확인·직접 테스트 가능 =====
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openapiSpec));
 
@@ -3239,6 +3386,31 @@ function getAdminPolicy(key, defaultValue) {
 app.get('/api/admin/policy/:key', adminAuthRequired(), (req, res) => {
   const row = db.prepare('SELECT value, updated_at FROM admin_policies WHERE key=?').get(req.params.key);
   res.json({ success:true, data: row ? { key: req.params.key, value: JSON.parse(row.value), updatedAt: row.updated_at } : { key: req.params.key, value: null, updatedAt: null } });
+});
+
+// 신규(2026-09, 전수조사 발견 — 운영콘솔 "이벤트 관리" 실연동): admin_events 테이블 CRUD.
+// 참여자·전환수는 아직 실제 추적 연동이 없어 항상 0으로 생성되고(가짜 숫자 없음), 목록·상세 화면에서
+// "아직 참여 추적 기능은 준비 중"임을 정직하게 표시한다.
+app.get('/api/admin/events', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare('SELECT * FROM admin_events ORDER BY created_at DESC').all();
+  res.json({ success:true, data: rows.map(e => ({ id:e.id, name:e.name, start:e.start_date, end:e.end_date, target:e.target, benefit:e.benefit, copy:e.copy, status:e.status, participants:e.participants, conversions:e.conversions, createdAt:e.created_at })) });
+});
+app.post('/api/admin/events', adminAuthRequired(), (req, res) => {
+  const { name, start, end, target, benefit, copy } = req.body;
+  if (!isNonEmptyString(name, 100)) return validationError(res, '이벤트 이름을 입력해주세요');
+  if (!['consumer','partner','all'].includes(target)) return validationError(res, '대상을 선택해주세요');
+  const id = randomUUID();
+  db.prepare('INSERT INTO admin_events (id, name, start_date, end_date, target, benefit, copy, status) VALUES (?,?,?,?,?,?,?,?)')
+    .run(id, name, start || null, end || null, target, benefit || null, copy || null, 'active');
+  res.json({ success:true, data: { id, status:'active' } });
+});
+app.patch('/api/admin/events/:id/status', adminAuthRequired(), (req, res) => {
+  const { status } = req.body;
+  if (!['draft','active','paused','ended'].includes(status)) return validationError(res, '올바른 상태가 아닙니다');
+  const row = db.prepare('SELECT id FROM admin_events WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ success:false, error:{ code:'NOT_FOUND', message:'이벤트를 찾을 수 없습니다' } });
+  db.prepare('UPDATE admin_events SET status=? WHERE id=?').run(status, req.params.id);
+  res.json({ success:true, data:{ id: req.params.id, status } });
 });
 // 신규(사용자요청 — 파트너가입 화면이 본인확인 온오프 여부를 알아야 "다음"단계 진행여부를
 // 결정할 수 있음): 로그인 없이도 조회 가능한 공개 정책 API. 민감정보 없는 on/off 값만 노출하므로 안전함.
