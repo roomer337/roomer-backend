@@ -58,7 +58,11 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { dotfiles: 
 // 그 파일을 브라우저가 <img src="...">로 바로 열 수 있어야 하므로 public/ 하위만 정적 서빙한다.
 // private/ 하위(사업자등록증 등 비공개 증빙)는 여기서 절대 공개하지 않고, 지금까지처럼 인증이 필요한
 // /api/files/:fileId, /api/admin/files/:fileId 라우트를 통해서만 접근 가능하다.
-app.use('/storage-local/public', express.static(path.join(__dirname, 'uploads', 'private-store', 'public'), { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
+// 신규(사용자요청 — DB 영속성 점검 후속): storage.js와 반드시 동일한 기준(LOCAL_STORAGE_DIR)으로
+// 폴더를 찾아야 한다. 여기서만 예전처럼 __dirname을 그대로 쓰면, 실제 저장은 영구 디스크에
+// 되는데 서빙은 옛 임시 폴더를 봐서 이미지가 깨지는 불일치가 생긴다.
+const LOCAL_STORE_PUBLIC_DIR = path.join(process.env.LOCAL_STORAGE_DIR || path.join(__dirname, 'uploads', 'private-store'), 'public');
+app.use('/storage-local/public', express.static(LOCAL_STORE_PUBLIC_DIR, { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
 
 // 결함수정: 관리자 로그인에 무차별대입(brute-force) 방지가 전혀 없었음 → IP당 15분에 10회로 제한
 const adminLoginLimiter = rateLimit({
@@ -3049,6 +3053,165 @@ function sendRoomerApp(req, res) {
   res.type('html').sendFile(appFile);
 }
 app.get(['/app', '/app/'], sendRoomerApp);
+
+// 신규(사용자요청 — 앱스토어 등록 준비 1단계): 개인정보처리방침·이용약관을 로그인·앱실행 없이
+// 순수 정적 페이지로 즉시 열람 가능하게 하는 공개 라우트. 애플/구글 심사 시 "공개 URL"로 그대로 제출 가능.
+// ⚠️ 본문은 앱(루머03.html)의 LEGAL_DOCS와 동일한 원문을 그대로 옮겨둔 것 — 문서 내용을 수정할 때는
+// 반드시 두 곳(여기, 루머03.html의 LEGAL_DOCS.privacy/terms) 모두 함께 갱신해야 함(단일 소스 아님).
+const LEGAL_PAGES = {
+  privacy: { title:'개인정보처리방침', body:
+`제1조 (개인정보의 처리 목적)
+루머(ROOMER)는 다음의 목적을 위해 개인정보를 처리합니다.
+① 회원 가입 및 관리(본인확인, 부정이용 방지)
+② 견적 매칭 및 계약 이행(소비자-업체 연결, 계약금액 확인)
+③ 고객 상담 및 민원 처리
+④ 요금 정산(업체 수수료 산정)
+
+제2조 (처리하는 개인정보의 항목)
+· 소비자: 이름, 연락처, 이메일, 주소(견적 시), 로그인 정보
+· 업체: 상호, 대표자명, 사업자등록번호, 사업장 주소, 연락처,
+       사업자등록증 사본, 사무실 사진
+· 자동 수집: 접속기록, 쿠키, 기기정보
+
+제3조 (14세 미만 아동의 개인정보 처리)
+본 서비스는 만 14세 미만 아동의 회원가입을 받지 않습니다.
+
+제4조 (개인정보의 처리 및 보유 기간)
+· 회원 정보: 회원 탈퇴 시까지(탈퇴 후 즉시 파기, 관계법령상
+  보관 의무가 있는 경우 해당 기간까지 보관)
+· 계약·거래 기록: 전자상거래법에 따라 5년
+· 소비자 불만·분쟁처리 기록: 3년
+
+제5조 (개인정보의 파기 절차 및 방법)
+보유기간 경과 또는 처리목적 달성 시 지체 없이 파기하며,
+전자적 파일은 복구 불가능한 방법으로 영구 삭제합니다.
+
+제6조 (개인정보의 제3자 제공)
+계약 진행을 위해 필요한 최소한의 정보만 계약 상대방(업체 또는
+소비자)에게 제공하며, 정보주체의 동의 없이는 외부에 제공하지
+않습니다.
+
+제7조 (정보주체의 권리·의무 및 행사방법)
+이용자는 언제든지 자신의 개인정보 열람, 정정, 삭제, 처리정지를
+요구할 수 있으며, 마이페이지 또는 고객센터를 통해 행사할 수
+있습니다.
+
+제8조 (개인정보의 안전성 확보조치)
+비밀번호 암호화, 접근권한 관리, 접속기록 보관 등 기술적·관리적
+조치를 시행합니다.
+
+제9조 (개인정보 보호책임자)
+· 성명: 정경훈
+· 연락처: roomer0829@naver.com
+
+제10조 (권익침해 구제방법)
+개인정보침해신고센터(privacy.kisa.or.kr / 국번없이 118) 등에
+분쟁조정을 신청할 수 있습니다.
+
+부칙: 이 방침은 2026년 8월 29일부터 시행합니다.
+
+※ 이 문서는 표준 항목을 참고한 초안이며, 실제 서비스 출시 전
+반드시 법무 검토가 필요합니다.` },
+  terms: { title:'이용약관', body:
+`제1조 (목적)
+이 약관은 루머(ROOMER, 이하 "회사")가 제공하는 서비스 이용과
+관련하여 회사와 이용자 간의 권리·의무 및 책임사항을 규정합니다.
+
+제2조 (정의)
+① "이용자"란 회사의 서비스를 이용하는 소비자 및 업체를 말합니다.
+② "업체"란 인테리어 시공 서비스를 제공하기 위해 등록한 사업자를
+   말합니다.
+③ "계약"이란 소비자와 업체가 플랫폼을 통해 체결하는 시공 계약을
+   말합니다.
+
+제3조 (약관의 효력 및 변경)
+회사는 관계법령을 위반하지 않는 범위에서 약관을 변경할 수 있으며,
+변경 시 최소 7일 전(이용자에게 불리한 경우 30일 전) 공지합니다.
+
+제4조 (서비스 이용신청 및 회원가입)
+이용자는 회사가 정한 절차에 따라 가입을 신청하며, 회사는 다음의
+경우 가입을 거부하거나 제한할 수 있습니다.
+① 허위 정보를 기재한 경우
+② 타인의 명의를 도용한 경우
+③ 관계법령에 따라 등록이 제한된 사업자인 경우
+
+제5조 (계약의 체결)
+① 모든 계약은 반드시 회사의 메신저를 통해 진행해야 합니다.
+② 계약금액은 소비자와 업체가 각자 입력한 금액이 일치해야만
+   확정됩니다.
+③ 플랫폼 밖에서 이루어진 거래는 회사가 분쟁 조정 및 법적 대응을
+   지원하지 않을 수 있습니다.
+
+제6조 (서비스 이용료 및 수수료)
+① 소비자의 서비스 이용은 무료입니다.
+② 업체는 계약이 실제로 성사된 경우에만 등급별 수수료
+   (1.5%~3%)를 지급합니다.
+
+제7조 (이용자의 의무)
+이용자는 다음 행위를 해서는 안 됩니다.
+① 허위 정보 등록 및 실적 조작
+② 플랫폼 밖 직거래 유도
+③ 타인의 개인정보 도용
+④ 근거 없는 리뷰 작성 또는 리뷰 조작
+
+제8조 (회사의 의무)
+회사는 안정적인 서비스 제공을 위해 노력하며, 이용자의 개인정보를
+관계법령에 따라 보호합니다.
+
+제9조 (서비스 제공의 중지)
+시스템 점검, 천재지변 등 불가피한 사유가 있는 경우 서비스 제공을
+일시 중지할 수 있습니다.
+
+제10조 (계약해지 및 이용제한)
+이용자가 본 약관을 위반한 경우, 회사는 사전 통지 후 서비스 이용을
+제한하거나 계약을 해지할 수 있습니다.
+
+제11조 (손해배상 및 면책)
+① 회사의 고의 또는 과실로 인한 손해는 관계법령에 따라 배상합니다.
+② 이용자 간의 거래에서 발생한 분쟁에 대해 회사는 중개자로서
+   합리적인 조정을 지원하나, 최종 책임은 계약 당사자에게 있습니다.
+
+제12조 (분쟁해결)
+서비스 이용 중 발생한 분쟁은 플랫폼 내 기록을 근거로 회사의
+조정을 거치며, 필요시 관련 법령에 따라 처리합니다.
+
+제13조 (관할법원)
+이 약관과 관련한 분쟁에 대한 소송은 민사소송법상의 관할법원에
+제기합니다.
+
+부칙: 이 약관은 2026년 8월 29일부터 시행합니다.
+
+※ 이 문서는 표준 항목을 참고한 초안이며, 실제 서비스 출시 전
+반드시 법무 검토가 필요합니다.` }
+};
+function escapeHtmlLegal(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function sendLegalPage(key, res) {
+  const doc = LEGAL_PAGES[key];
+  const html = `<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${doc.title} · 루머 ROOMER</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;max-width:680px;margin:0 auto;padding:32px 20px 64px;color:#2C2A28;line-height:1.7;background:#fff}
+  h1{font-size:22px;margin-bottom:24px}
+  pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:14.5px}
+  a{color:#2C4A63}
+</style>
+</head>
+<body>
+<h1>${doc.title}</h1>
+<pre>${escapeHtmlLegal(doc.body)}</pre>
+<p><a href="/app">← 루머 ROOMER 앱으로 이동</a></p>
+</body>
+</html>`;
+  res.type('html').send(html);
+}
+app.get(['/privacy', '/privacy/'], (req, res) => sendLegalPage('privacy', res));
+app.get(['/terms', '/terms/'], (req, res) => sendLegalPage('terms', res));
 
 // 신규(사용자요청 — 네이버/카카오 OAuth 콜백시 ROUTE_NOT_FOUND 에러 수정): 소셜로그인 완료 후
 // 카카오/네이버가 리다이렉트하는 /oauth/*/callback 경로는 API가 아니라 "앱 화면"이 다시 열려야
