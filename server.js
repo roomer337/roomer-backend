@@ -746,6 +746,18 @@ app.patch('/api/users/me/consent', authRequired, (req, res) => {
   res.json({ success: true, data: { marketing, location } });
 });
 
+// 신규(사용자요청 — 카카오/네이버 로그인 시 닉네임 선택동의 미체크로 "카카오회원"/"네이버회원"으로만
+// 표시되고 고칠 방법이 없던 문제): 소비자가 언제든 직접 닉네임을 수정할 수 있는 API.
+app.patch('/api/users/me/nickname', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 닉네임을 변경할 수 있습니다' } });
+  const { nickname } = req.body;
+  if (!isNonEmptyString(nickname, 30)) return validationError(res, '닉네임은 1자 이상 30자 이내여야 합니다');
+  const trimmed = nickname.trim();
+  db.prepare('UPDATE users SET nickname=? WHERE id=?').run(trimmed, req.user.sub);
+  const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.sub);
+  res.json({ success: true, data: { nickname: trimmed, user } });
+});
+
 app.get('/api/users/me/data-export', authRequired, (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.sub);
   res.setHeader('Content-Disposition', 'attachment; filename="my-data.json"');
