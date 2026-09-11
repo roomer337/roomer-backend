@@ -26,7 +26,10 @@ const client = bucket ? new S3Client({
 // 주의: 로컬 폴백은 이 서버 프로세스가 떠 있는 디스크에 저장되므로, 디스크가 배포마다 초기화되는
 // 호스팅(예: Render의 기본 웹서비스)에서는 재배포 시 첨부파일이 사라질 수 있다 — 운영 환경에서는
 // 반드시 OBJECT_STORAGE_*를 설정해 실제 영구 스토리지를 쓸 것.
-const LOCAL_STORE_DIR = path.join(__dirname, 'uploads', 'private-store');
+// 신규(사용자요청 — DB 영속성 점검 후속): Render Persistent Disk를 마운트했다면 LOCAL_STORAGE_DIR
+// 환경변수로 그 마운트 경로 하위 폴더(예: /var/data/uploads/private-store)를 지정해 로컬 폴백도
+// 같은 디스크에 저장되게 할 수 있다. 미설정 시 기존과 동일하게 서버 코드 옆 폴더를 사용(재배포시 유실).
+const LOCAL_STORE_DIR = process.env.LOCAL_STORAGE_DIR || path.join(__dirname, 'uploads', 'private-store');
 
 function localKeyToPath(key) {
   // key는 서버 코드가 만든 값(예: private/partner-signup/.../uuid.pdf)이라 '..' 등 위험한
