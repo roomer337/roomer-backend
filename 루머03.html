@@ -155,7 +155,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 #s-my-payment .btn-primary, #s-my-alerts .btn-primary, #s-my-support .btn-primary,
 #s-wallet .btn-primary, #s-mydata .btn-primary{background:var(--charcoal);color:#fff}
 #s-calc .btn-primary, #s-ai-audit .btn-primary, #s-contract-wait .btn-primary,
-#s-contract-matched .btn-primary, #s-review .btn-primary{background:var(--charcoal);color:#fff}
+#s-contract-matched .btn-primary{background:var(--charcoal);color:#fff}
 /* 온보딩/기타 소비자 화면도 동일하게 웜톤 통일 */
 #s-app-download .btn-primary, #s-01b .btn-primary, #s-03 .btn-primary,
 #s-otp .btn-primary, #s-03b .btn-primary, #s-03c .btn-primary{background:var(--charcoal);color:#fff}
@@ -2721,51 +2721,21 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   </div>
 </div>
 
-<!-- 2단계 S6(#22): 완공 후 리뷰 + 캐시 지급 -->
-<div class="scr" id="s-review">
-  <header class="header"><div id="hdr-review" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
-  <div class="content" style="">
-    <div class="h1" style="margin:8px 0 4px">공사가 완료됐어요 🎉</div>
-    <div class="caption" style="margin-bottom:16px;line-height:1.6">완공 리뷰를 남기면 <b>캐시가 바로 적립</b>돼요. 사진·비포애프터·영상을 더할수록 캐시가 늘어납니다.</div>
-    <div id="review-body"></div>
-  </div>
-</div>
-
 <!-- 2단계 S7(#23): 캐시 지갑 -->
+<!-- 결함정리(2026-09, 전수조사 발견 — 사용자 결정으로 삭제): 이 화면에 있던 완공리뷰 캐시적립(#22 s-review) 및
+     캐시출금(#40 s-cash-withdraw) 화면은 삭제되었다. 리뷰적립은 어디서도 진입할 수 없는 죽은 화면이었고(openReview
+     호출부가 실제로 없었음), 출금은 서버가 업체(partner) 전용으로만 동작해 소비자가 호출하면 항상 403이 나던
+     기능이었다. 소비자 포인트는 이제 실제 토스페이먼츠 결제(POST /api/points/topup)로만 충전된다. -->
 <div class="scr" id="s-wallet">
   <header class="header"><div id="hdr-wallet" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
   <div class="content" style="">
     <div class="h1" style="margin:8px 0 16px">내 크레딧</div>
     <div id="wallet-balance"></div>
     <button type="button" onclick="openPointTopup()" style="width:100%;background:var(--charcoal);color:#fff;border:none;padding:12px;border-radius:var(--radius-button);font-size:14.5px;font-weight:700;cursor:pointer;font-family:inherit;margin:14px 0 8px">+ 포인트 충전하기</button>
-    <button type="button" onclick="setReturnTo('wallet'); renderWithdrawForm(); go('cash-withdraw')" style="width:100%;background:#fff;color:var(--charcoal);border:1px solid var(--charcoal);padding:12px;border-radius:var(--radius-button);font-size:14.5px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:14px">💳 출금 신청하기</button>
-    <div class="caption" style="font-weight:700;margin:20px 0 10px">적립 내역</div>
+    <div class="caption" style="font-weight:700;margin:20px 0 10px">충전 내역</div>
     <div id="wallet-history"></div>
-    <div class="caption" style="font-weight:700;margin:20px 0 10px">출금 내역</div>
-    <div id="wallet-withdraw-history"></div>
     <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--stone)"><button type="button" id="btn-go-referral" onclick="setReturnTo('wallet'); renderReferral(); go('referral')" style="width:100%;background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px;font-size:15px;font-weight:600;color:var(--charcoal);cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:6px">지인 소개하고 최대 14,000원 받기 &rsaquo;</button></div>
     <div style="margin-top:10px"><button class="btn btn-primary" onclick="closeToReturn()">닫기</button></div>
-  </div>
-</div>
-
-<!-- 3단계(#40) 캐시 출금 신청 -->
-<div class="scr" id="s-cash-withdraw">
-  <header class="header"><div id="hdr-cash-withdraw" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
-  <div class="content" style="">
-    <div class="h1" style="margin:8px 0 4px">출금 신청</div>
-    <div class="caption" style="margin-bottom:16px" id="cash-withdraw-balance"></div>
-    <label class="caption" style="font-weight:700;display:block;margin-bottom:6px">은행</label>
-    <select id="wd-bank" style="width:100%;padding:11px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:14px">
-      <option>국민은행</option><option>신한은행</option><option>우리은행</option><option>하나은행</option><option>카카오뱅크</option><option>토스뱅크</option>
-    </select>
-    <label class="caption" style="font-weight:700;display:block;margin-bottom:6px">계좌번호</label>
-    <input type="text" id="wd-account" placeholder="'-' 없이 숫자만 입력" style="width:100%;padding:11px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:14px">
-    <label class="caption" style="font-weight:700;display:block;margin-bottom:6px">출금액</label>
-    <input type="number" id="wd-amount" placeholder="최소 10,000원부터" style="width:100%;padding:11px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:6px">
-    <div class="caption" id="wd-error" style="margin-bottom:16px;color:var(--danger)"></div>
-    <button class="btn btn-primary" onclick="submitWithdrawal()">출금 신청하기</button>
-    <button class="btn btn-outline" style="margin-top:8px" onclick="closeToReturn()">닫기</button>
-    <div style="font-size:12px;color:var(--slate);margin-top:14px;line-height:1.6">⚡MVP-SWITCH: 지금은 신청 접수까지만 시뮬레이션됩니다. 실서비스 전환 시 processWithdrawal() 함수 내부만 PG사(토스페이먼츠 등) 출금이체 API 호출로 교체하면 됩니다 — 화면·검증 로직은 그대로 재사용.</div>
   </div>
 </div>
 
@@ -2885,7 +2855,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
       <div class="caption" style="margin-bottom:10px" id="topup-toss-amount-note"></div>
       <div id="credit-toss-payment-widget" style="margin-top:6px"></div>
       <div id="credit-toss-agreement-widget" style="margin-top:8px"></div>
-      <button type="button" id="btn-credit-toss-pay-confirm" onclick="requestCreditTopupPayment()" class="btn btn-primary" style="width:100%;margin-top:12px">결제하기</button>
+      <button type="button" id="btn-credit-toss-pay-confirm" onclick="requestTossTopupPayment()" class="btn btn-primary" style="width:100%;margin-top:12px">결제하기</button>
       <button class="btn btn-outline" style="margin-top:8px" onclick="backToTopupAmount()">이전</button>
       <div id="topup-toss-note" class="caption" style="text-align:center;margin-top:10px"></div>
     </div>
@@ -4972,7 +4942,7 @@ async function runAiInspectionAnalysis(){
   }
   renderAiInspectionBody();
 }
-var PAY_METHODS=[['카드결제','card'],['카카오페이','kakao'],['토스페이','toss']]; // 수정 여지: 결제수단 배열
+var PAY_METHODS=[['카드결제','card'],['카카오페이','kakao'],['토스페이','toss']]; // 프로토타입 미리보기 모드 전용(실서버는 토스 결제위젯이 대신함)
 function selectInspMethod(m){ window.inspPayMethod=m; renderInspectionPay(); }
 // 신규(사용자요청 — 크레딧 우선차감 결제): 보유크레딧을 결제에 반영하는 선택지 추가
 function selectInspCreditPay(){ window.inspPayMethod='credit-full'; renderInspectionPay(); }
@@ -4988,9 +4958,6 @@ function renderInspectionPay(){
     return;
   }
   var balance = window.cashBalance || 0;
-  var mb=PAY_METHODS.map(function(m){ var sel=(window.inspPayMethod===m[1]);
-    return '<button type="button" onclick="selectInspMethod(\''+m[1]+'\')" style="width:100%;text-align:left;background:'+(sel?'var(--ivory)':'#fff')+';border:1.5px solid '+(sel?'var(--terracotta)':'var(--stone)')+';border-radius:var(--radius-input);padding:14px 16px;margin-bottom:10px;font-size:16px;font-weight:600;color:var(--charcoal);cursor:pointer;font-family:inherit;display:flex;justify-content:space-between;align-items:center"><span>'+m[0]+'</span>'+(sel?'<span style="color:var(--terracotta);font-weight:800">선택됨</span>':'')+'</button>';
-  }).join('');
   // 신규(사용자요청 — 문제1·2: 크레딧 우선차감): 보유크레딧이 있으면 결제수단 위에 크레딧 옵션을 추가로 노출
   var creditBlockHtml = '';
   if(balance > 0){
@@ -5003,22 +4970,131 @@ function renderInspectionPay(){
         + icon('checkCircle',T.success,13)+' 보유 크레딧 <b>'+balance.toLocaleString()+'원</b>을 먼저 사용하고, 나머지 <b>'+remain.toLocaleString()+'원</b>만 아래 결제수단으로 결제돼요.</div>';
     }
   }
+  var canPayCreditFull = balance >= d.price && window.inspPayMethod === 'credit-full';
+  var payLabel = canPayCreditFull ? '크레딧으로 결제하기' : (balance > 0 && balance < d.price ? (d.price-balance).toLocaleString()+'원 결제하기(크레딧 '+balance.toLocaleString()+'원 자동사용)' : d.price.toLocaleString()+'원 결제하기');
+  var head = '<div style="background:var(--charcoal);border-radius:var(--radius-card);padding:16px;color:#fff;margin-bottom:16px"><div style="font-size:13.5px;color:#C7BFB0">선택한 요금제</div><div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px"><span style="font-size:16.5px;font-weight:700">'+d.planLabel+'</span><span style="font-size:21px;font-weight:800;color:#fff">'+d.price.toLocaleString()+'원</span></div></div>';
+  if(window.MVP.live){
+    // 결함정리(2026-09, 전수조사 발견 — 실연동): 이 화면은 서버가 실제로는 blockInProduction으로
+    // 막혀있어서 진입 자체가 안됐는데도, 프론트가 이를 감추고 setTimeout으로 결제성공을 흉내내던
+    // 가짜결제였다. 카드결제/카카오페이/토스페이 3버튼 선택 UI는 토스 결제위젯 하나로 통합하고,
+    // 보유크레딧으로 전액결제가 가능할 때만 결제요청 없이 즉시(동기) 크레딧을 차감한다.
+    var methodHtml = '';
+    var canPay = canPayCreditFull;
+    var needWidget = (balance < d.price) || (balance >= d.price && window.inspPayMethod === 'toss-widget');
+    if(balance >= d.price){
+      var otherSel = (window.inspPayMethod === 'toss-widget');
+      methodHtml += '<button type="button" onclick="selectInspMethod(\'toss-widget\')" style="width:100%;text-align:left;background:'+(otherSel?'var(--ivory)':'#fff')+';border:1.5px solid '+(otherSel?'var(--terracotta)':'var(--stone)')+';border-radius:var(--radius-input);padding:14px 16px;margin-bottom:10px;font-size:16px;font-weight:600;color:var(--charcoal);cursor:pointer;font-family:inherit;display:flex;justify-content:space-between;align-items:center"><span>카드 등 다른 결제수단</span>'+(otherSel?'<span style="color:var(--terracotta);font-weight:800">선택됨</span>':'')+'</button>';
+    }
+    if(needWidget){
+      methodHtml += '<div id="insp-toss-payment-widget" style="margin-bottom:8px"></div><div id="insp-toss-agreement-widget" style="margin-bottom:8px"></div>';
+      canPay = true;
+      prepareInspectionTossWidget(d);
+    }
+    body.innerHTML=''
+      + head + creditBlockHtml
+      + (methodHtml ? '<div class="caption" style="font-weight:700;margin-bottom:10px">결제 수단</div>'+methodHtml : '')
+      + '<div id="insp-toss-note" class="caption" style="text-align:center;margin-bottom:8px"></div>'
+      + '<button class="btn btn-primary" style="margin-top:8px'+(canPay?'':';opacity:.45;pointer-events:none')+'" onclick="payInspection()">'+payLabel+'</button>'
+      + '<button class="btn btn-outline" style="margin-top:8px" onclick="closeToReturn()">닫기</button>'
+      + '<div style="font-size:12.5px;color:var(--slate);line-height:1.6;margin-top:12px">'+icon('shieldCheck',T.slate,11)+' 토스페이먼츠 결제창을 통해 안전하게 결제됩니다.</div>';
+    return;
+  }
+  // 프로토타입 미리보기 모드(실서버 미연동 상태) — 카드/카카오페이/토스페이 데모, 실사용자에게는 노출되지 않음(window.MVP.live가 항상 true)
+  var mb=PAY_METHODS.map(function(m){ var sel=(window.inspPayMethod===m[1]);
+    return '<button type="button" onclick="selectInspMethod(\''+m[1]+'\')" style="width:100%;text-align:left;background:'+(sel?'var(--ivory)':'#fff')+';border:1.5px solid '+(sel?'var(--terracotta)':'var(--stone)')+';border-radius:var(--radius-input);padding:14px 16px;margin-bottom:10px;font-size:16px;font-weight:600;color:var(--charcoal);cursor:pointer;font-family:inherit;display:flex;justify-content:space-between;align-items:center"><span>'+m[0]+'</span>'+(sel?'<span style="color:var(--terracotta);font-weight:800">선택됨</span>':'')+'</button>';
+  }).join('');
   var canPay = balance >= d.price ? (window.inspPayMethod === 'credit-full') : !!window.inspPayMethod;
-  var payLabel = (balance >= d.price && window.inspPayMethod === 'credit-full') ? '크레딧으로 결제하기' : (balance > 0 && balance < d.price ? (d.price-balance).toLocaleString()+'원 결제하기(크레딧 '+balance.toLocaleString()+'원 자동사용)' : d.price.toLocaleString()+'원 결제하기');
   body.innerHTML=''
-    + '<div style="background:var(--charcoal);border-radius:var(--radius-card);padding:16px;color:#fff;margin-bottom:16px"><div style="font-size:13.5px;color:#C7BFB0">선택한 요금제</div><div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px"><span style="font-size:16.5px;font-weight:700">'+d.planLabel+'</span><span style="font-size:21px;font-weight:800;color:#fff">'+d.price.toLocaleString()+'원</span></div></div>'
-    + creditBlockHtml
+    + head + creditBlockHtml
     + '<div class="caption" style="font-weight:700;margin-bottom:10px">결제 수단</div>'+mb
     + '<button class="btn btn-primary" style="margin-top:8px'+(canPay?'':';opacity:.45;pointer-events:none')+'" onclick="payInspection()">'+payLabel+'</button>'
     + '<button class="btn btn-outline" style="margin-top:8px" onclick="closeToReturn()">닫기</button>'
     + '<div style="font-size:12.5px;color:var(--slate);line-height:1.6;margin-top:12px">'+icon('shieldCheck',T.slate,11)+' 간편결제(카드·카카오페이·토스)로 안전하게 결제됩니다. 실서비스에서는 실제 PG사 결제가 연동됩니다.</div>';
 }
-// ⚡MVP-SWITCH: 실서버 → 실제 PG 결제 API 호출(카드/카카오페이/토스) 후 성공 콜백에서 보고서 생성
+// 신규(실연동): POST /api/inspections/:id/pay — 보유크레딧으로 전액 충당되면 서버가 즉시(동기) 결제완료 처리하고,
+// 부족하면 서버가 계산한 나머지 금액으로 토스 결제위젯을 준비한다(계약대금/크레딧충전 결제와 동일한 위젯 구조).
+window._inspTossPendingWidgets = null;
+window._inspTossPendingOrder = null;
+window._inspTossReadyFor = null;
+async function prepareInspectionTossWidget(d){
+  if(window._inspTossReadyFor === d.id) return; // 재렌더시 중복 준비 방지
+  window._inspTossReadyFor = d.id;
+  var note = document.getElementById('insp-toss-note');
+  try{
+    var order = await apiFetch('/api/inspections/'+d.serverId+'/pay', {method:'POST', body: JSON.stringify({useCreditFull:false})});
+    if(order.status === 'paid'){
+      // 서버가 조회한 최신 잔액 기준으로 이미 전액 크레딧만으로 처리된 경우(동시성 등으로 방금 잔액이 바뀐 경우 포함)
+      window.cashBalance = Math.max(0, (window.cashBalance||0) - (order.creditUsed||0));
+      d.status='paid'; d.creditUsed=order.creditUsed||0; d.cardCharged=0; d.method='credit'; d.paidAt=(typeof measNow==='function'?measNow():'');
+      window.inspUploadedPhotos = [];
+      renderInspectionPay();
+      openInspectionPhotoUploadScreen(d.id);
+      return;
+    }
+    d.creditUsed = order.creditUsed || 0;
+    var TossPaymentsSdk = await loadTossPaymentsSdk();
+    var customerKey = (window.crypto&&window.crypto.randomUUID) ? window.crypto.randomUUID() : ('cust-'+Date.now()+'-'+Math.random().toString(36).slice(2));
+    var tossPayments = TossPaymentsSdk(order.clientKey);
+    var widgets = tossPayments.widgets({customerKey: customerKey});
+    await widgets.setAmount({currency:'KRW', value: order.amount});
+    await widgets.renderPaymentMethods({selector:'#insp-toss-payment-widget', variantKey:'DEFAULT'});
+    await widgets.renderAgreement({selector:'#insp-toss-agreement-widget'});
+    window._inspTossPendingWidgets = widgets;
+    window._inspTossPendingOrder = order;
+  }catch(e){ window._inspTossReadyFor = null; if(note) note.innerHTML = '<span style="color:var(--terracotta)">결제 준비를 완료하지 못했습니다: '+e.message+'</span>'; }
+}
+async function requestInspectionTossPayment(){
+  var d=(window.INSPECTIONS||[]).filter(function(x){return x.id===window.currentInspId;})[0];
+  var widgets = window._inspTossPendingWidgets, order = window._inspTossPendingOrder;
+  var note = document.getElementById('insp-toss-note');
+  if(!d || !widgets || !order){ if(note) note.innerHTML = '<span style="color:var(--terracotta)">결제 준비 정보를 찾을 수 없습니다. 잠시 후 다시 시도해주세요.</span>'; return; }
+  try{
+    var base = location.origin + location.pathname;
+    await widgets.requestPayment({
+      orderId: order.orderId, orderName: order.orderName,
+      successUrl: base+'?inspectionPaySuccess=1&inspServerId='+encodeURIComponent(d.serverId),
+      failUrl: base+'?inspectionPayFail=1&inspServerId='+encodeURIComponent(d.serverId)
+    });
+  }catch(e){ if(note) note.innerHTML = '<span style="color:var(--terracotta)">결제 요청에 실패했습니다: '+e.message+'</span>'; }
+}
+// 결제 성공/실패 리다이렉트 복귀 처리 — 토스 결제는 실제 페이지 이동이 발생해 in-memory 감리 목록이
+// 초기화되므로, 서버 확인응답에 담긴 정보로 사진업로드 화면까지 이어서 복원한다.
+(function handleInspectionPayRedirectReturn(){
+  try{
+    var params = new URLSearchParams(location.search);
+    if(params.get('inspectionPaySuccess')==='1' && params.get('paymentKey') && params.get('inspServerId')){
+      var paymentKey = params.get('paymentKey'), inspServerId = params.get('inspServerId');
+      history.replaceState(null,'',location.pathname);
+      apiFetch('/api/inspections/'+encodeURIComponent(inspServerId)+'/pay/confirm', {method:'POST', body: JSON.stringify({paymentKey: paymentKey})})
+        .then(function(confirmed){
+          if(confirmed.status === 'paid'){
+            var p = (typeof planByKey==='function') ? planByKey(confirmed.plan) : null;
+            var insp = { id:'ins'+Date.now(), serverId: inspServerId, plan: confirmed.plan, planLabel: (p?p.label:confirmed.plan), price: confirmed.price, status:'paid', creditUsed: confirmed.creditUsed||0, cardCharged: confirmed.price-(confirmed.creditUsed||0), method:'toss', paidAt:(typeof measNow==='function'?measNow():'') };
+            window.INSPECTIONS = window.INSPECTIONS || [];
+            window.INSPECTIONS.push(insp);
+            window.inspUploadedPhotos = [];
+            alert('감리 결제가 확인되었습니다.');
+            openInspectionPhotoUploadScreen(insp.id);
+          } else {
+            alert('결제 상태를 확인 중입니다.');
+          }
+        })
+        .catch(function(e){ alert('감리 결제 확인에 실패했습니다: '+e.message); });
+    } else if(params.get('inspectionPayFail')==='1'){
+      history.replaceState(null,'',location.pathname);
+      alert('감리 결제가 취소되었거나 실패했습니다: '+(params.get('message')||''));
+    }
+  }catch(e){}
+})();
 function payInspection(){
   var d=(window.INSPECTIONS||[]).filter(function(x){return x.id===window.currentInspId;})[0];
-  if(!d||d.status!=='unpaid'||!window.inspPayMethod) return;
-  // 신규(사용자요청 — 크레딧 우선차감 결제): 실제로 크레딧을 차감하고,
-  // 부족한 만큼만 카드/카카오페이/토스로 결제되도록 처리
+  if(!d||d.status!=='unpaid') return;
+  if(window.MVP.live){
+    if(window.inspPayMethod === 'credit-full') return payInspectionCreditFull(d);
+    return requestInspectionTossPayment();
+  }
+  // 프로토타입 미리보기 모드(실서버 미연동 상태) — 아래 로직은 실사용자에게 노출되지 않음(window.MVP.live가 항상 true)
+  if(!window.inspPayMethod) return;
   var balance = window.cashBalance || 0;
   if(window.inspPayMethod === 'credit-full'){
     window.cashBalance = balance - d.price;
@@ -5029,16 +5105,21 @@ function payInspection(){
   } else {
     d.creditUsed = 0; d.cardCharged = d.price; d.method = window.inspPayMethod;
   }
-  // 결함정리(사용자요청 — 2026-09-07 사업모델 전면개편: 사진감리·전문가감리는 AI 자동판정이
-  // 아니라 자체 전문인력이 직접 사진을 확인하고 답변 작성해야 함): 결제완료 후 곧바로
-  // 사진업로드 화면으로 이동. 여기서는 판정을 절대 만들지 않음(전문가 답변 대기 상태로 유지).
   d.status='paid'; d.paidAt=(typeof measNow==='function'?measNow():'');
   window.inspUploadedPhotos = [];
-  if(window.MVP.live && d.serverId){
-    apiFetch('/api/payments/dummy-noop', {method:'GET'}).catch(function(){}); // no-op 자리표시(결제기록은 이미 위에서 처리)
-  }
   renderInspectionPay();
   openInspectionPhotoUploadScreen(d.id);
+}
+// 신규(실연동): 보유크레딧 전액결제 — 결제요청(리다이렉트) 없이 서버에 바로 확정요청하는 동기 경로
+async function payInspectionCreditFull(d){
+  try{
+    var res = await apiFetch('/api/inspections/'+d.serverId+'/pay', {method:'POST', body: JSON.stringify({useCreditFull:true})});
+    window.cashBalance = Math.max(0, (window.cashBalance||0) - (res.creditUsed||d.price));
+    d.status='paid'; d.paidAt=(typeof measNow==='function'?measNow():''); d.creditUsed=res.creditUsed; d.cardCharged=0; d.method='credit';
+    window.inspUploadedPhotos = [];
+    renderInspectionPay();
+    openInspectionPhotoUploadScreen(d.id);
+  }catch(e){ reportLiveActionFailure('감리 결제', e); }
 }
 function openInspectionPhotoUploadScreen(inspId){
   window.currentInspId = inspId; window.inspUploadedPhotos = window.inspUploadedPhotos || [];
@@ -5104,88 +5185,38 @@ function handlePendingInspectionPhoto(){
   });
 }
 
-/* ===== 2단계 S6(#22): 완공 후 리뷰 + 캐시 지급 (로드맵 명세) ===== */
-var CASH_RULES={ text:3000, photo:2000, beforeAfter:5000, video:15000 }; // 수정 여지: 적립 기준
-window.REVIEWS = window.REVIEWS || [];
-window.cashBalance = (typeof window.cashBalance==='number') ? window.cashBalance : 0;
-window.reviewDraft = { rating:5, text:'', photo:false, beforeAfter:false, video:false, done:false };
-function openReview(){ window.reviewDraft={ rating:5, text:'', photo:false, beforeAfter:false, video:false, done:false }; renderReview(); go('review'); }
-function reviewExpectedCash(d){ var sum=0; if((d.text||'').trim().length>0) sum+=CASH_RULES.text; if(d.photo) sum+=CASH_RULES.photo; if(d.beforeAfter) sum+=CASH_RULES.beforeAfter; if(d.video) sum+=CASH_RULES.video; return sum; }
-function reviewStar(n){ window.reviewDraft.rating=n; renderReview(); }
-function reviewToggle(k){ window.reviewDraft[k]=!window.reviewDraft[k]; renderReview(); }
-function reviewSyncText(v){ window.reviewDraft.text=v; var e=document.getElementById('review-expected-cash'); if(e) e.textContent=reviewExpectedCash(window.reviewDraft).toLocaleString()+'원'; }
-function renderReview(){
-  var el=document.getElementById('review-body'); if(!el) return;
-  var d=window.reviewDraft;
-  if(d.done){
-    el.innerHTML='<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:24px;text-align:center">'
-      + '<div style="margin-bottom:10px">'+icon('checkCircle',T.success,40)+'</div>'
-      + '<div style="font-size:17.5px;font-weight:800;color:var(--charcoal);margin-bottom:6px">리뷰 등록 완료</div>'
-      + '<div class="caption" style="line-height:1.7">크레딧 <b style="color:var(--charcoal)">+'+reviewExpectedCash(d).toLocaleString()+'크레딧</b> 적립됐어요<br>현재 잔액 <b>'+window.cashBalance.toLocaleString()+'크레딧</b></div>'
-      + '<button class="btn btn-primary" style="margin-top:18px" onclick="go(\'07\')">홈으로</button></div>';
-    return;
-  }
-  var stars=''; for(var s=1;s<=5;s++){ stars+='<span onclick="reviewStar('+s+')" style="cursor:pointer;font-size:32.5px;color:'+(s<=d.rating?'var(--charcoal)':'var(--stone)')+';margin-right:2px">'+(s<=d.rating?'\u2605':'\u2606')+'</span>'; }
-  var toggles=[['photo','사진 첨부',CASH_RULES.photo],['beforeAfter','비포/애프터',CASH_RULES.beforeAfter],['video','영상 리뷰',CASH_RULES.video]];
-  var tb=toggles.map(function(t){ var on=d[t[0]]; return '<button type="button" onclick="reviewToggle(\''+t[0]+'\')" style="width:100%;display:flex;justify-content:space-between;align-items:center;background:'+(on?'var(--ivory)':'#fff')+';border:1.5px solid '+(on?'var(--charcoal)':'var(--stone)')+';border-radius:var(--radius-input);padding:12px 14px;margin-bottom:8px;cursor:pointer;font-family:inherit"><span style="font-size:15px;font-weight:600;color:var(--charcoal)">'+t[1]+'</span><span style="font-size:13.5px;font-weight:700;color:var(--charcoal)">+'+t[2].toLocaleString()+'원'+(on?' '+icon('checkCircle','var(--charcoal)',13):'')+'</span></button>'; }).join('');
-  el.innerHTML=''
-    + '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px;margin-bottom:14px">'
-      + '<div class="caption" style="font-weight:700;margin-bottom:8px">별점</div><div style="margin-bottom:14px">'+stars+'</div>'
-      + '<div class="caption" style="font-weight:700;margin-bottom:8px">리뷰 내용 <span style="color:var(--charcoal);font-weight:600">(+'+CASH_RULES.text.toLocaleString()+'원)</span></div>'
-      + '<textarea id="review-text" rows="4" oninput="reviewSyncText(this.value)" placeholder="시공은 어떠셨나요? 솔직한 후기를 남겨주세요." style="width:100%;padding:12px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;resize:vertical">'+(d.text||'')+'</textarea>'
-    + '</div>'
-    + '<div class="caption" style="font-weight:700;margin-bottom:8px">추가하면 캐시가 늘어나요</div>'+tb
-    + '<div style="background:var(--ivory);border-radius:var(--radius-card);padding:14px 16px;color:var(--charcoal);display:flex;justify-content:space-between;align-items:center;margin:14px 0"><span style="font-size:14.5px;color:var(--slate)">예상 적립 캐시</span><span id="review-expected-cash" style="font-size:21px;font-weight:800">'+reviewExpectedCash(d).toLocaleString()+'원</span></div>'
-    + '<button class="btn btn-primary" onclick="submitReview()">리뷰 등록하고 크레딧 받기</button>';
-}
-// ⚡MVP-SWITCH: 실서버 → 캐시 적립은 PG 캐시백 API 트랜잭션(await fetch POST /cash/credit)
-function submitReview(){
-  if(!requireRoomerRole('consumer','리뷰 등록은 소비자 계정에서만 할 수 있습니다.')) return;
-  var d=window.reviewDraft; if(d.done) return;
-  var earned=reviewExpectedCash(d);
-  window.REVIEWS.push({ id:'rv'+Date.now(), rating:d.rating, text:d.text, photo:d.photo, beforeAfter:d.beforeAfter, video:d.video, cash:earned, at:(typeof measNow==='function'?measNow():'') });
-  window.cashBalance += earned; d.done=true;
-  if(window.MVP.live && earned > 0){
-    // 신규(2단계 프론트연동): 실서버 캐시적립 API 연결(fire-and-forget, 화면은 이미 로컬에서 즉시 반영됨)
-    apiFetch('/api/cash/credit', {method:'POST', body: JSON.stringify({amount: earned, reason: '리뷰 작성'})}).catch(function(e){ console.error('캐시적립 서버반영 실패:', e.message); });
-  }
-  // 결함수정(전수점검 발견): 리뷰를 써도 그 업체 프로필의 리뷰수·평점이 영원히 고정값(48건·4.9점)이던 문제
-  // → 리뷰 등록 시 실제로 +1건·새 평균으로 재계산
-  if(window.PARTNER_PROFILE){
-    var oldCount = window.PARTNER_PROFILE.reviews || 0;
-    var oldRating = window.PARTNER_PROFILE.rating || 0;
-    var newCount = oldCount + 1;
-    var newRating = ((oldRating * oldCount) + d.rating) / newCount;
-    window.PARTNER_PROFILE.reviews = newCount;
-    window.PARTNER_PROFILE.rating = Math.round(newRating * 10) / 10;
-  }
-  renderReview();
-  if(window.CHAT_LOG && typeof renderChat==='function'){ CHAT_LOG.push({who:'system', text:'[리뷰 등록] 별점 '+d.rating+'점 · 캐시 '+earned.toLocaleString()+'원이 적립됐어요 (잔액 '+window.cashBalance.toLocaleString()+'원)'}); }
-}
-
 /* ===== 2단계 S7(#23): 캐시 지갑 ===== */
-// 수정 여지: 적립 항목 라벨·아이콘을 배열로 분리 (나중에 사용처·출금 등 추가 용이)
-var WALLET_SOURCE_LABEL={ review:'완공 리뷰 적립' };
-function walletHistory(){
-  // 현재는 REVIEWS가 유일한 적립원. 나중에 지인소개(#24) 등 추가 시 이 배열에 합치면 됨.
-  return (window.REVIEWS||[]).map(function(r){
-    var parts=[]; if((r.text||'').trim()) parts.push('텍스트'); if(r.photo) parts.push('사진'); if(r.beforeAfter) parts.push('비포애프터'); if(r.video) parts.push('영상');
-    return { label:WALLET_SOURCE_LABEL.review, detail:'별점 '+r.rating+'점 · '+(parts.join('·')||'별점만'), amount:r.cash, at:r.at };
-  }).slice().reverse();
-}
+window.cashBalance = (typeof window.cashBalance==='number') ? window.cashBalance : 0;
+// 결함정리(2026-09, 전수조사 발견 -- 사용자 결정으로 삭제): 이 화면에 있던 완공리뷰 캐시적립 기능은
+// openReview() 호출부가 실제로는 어디에도 없는 죽은 화면이었다 -- 화면(s-review)-관련 함수
+// (openReview/renderReview/reviewStar/reviewToggle/reviewSyncText/submitReview/reviewExpectedCash)-
+// window.REVIEWS-CASH_RULES-서버라우트(POST /api/cash/credit)를 전부 삭제했다. "적립 내역"은 이제
+// 실제 포인트 충전 내역(GET /api/points/topup/mine)을 보여준다.
 function renderWallet(){
   var bal=document.getElementById('wallet-balance');
-  if(bal){ bal.innerHTML='<div style="background:var(--ivory);border-radius:var(--radius-card);padding:20px;color:var(--charcoal)"><div style="font-size:13.5px;color:var(--slate);margin-bottom:6px">보유 크레딧</div><div style="font-size:32.5px;font-weight:800;letter-spacing:-0.5px">'+(window.cashBalance||0).toLocaleString()+'크레딧</div><div style="font-size:12px;color:var(--slate);margin-top:8px;line-height:1.5">'+icon('shieldCheck','var(--slate)',10)+' 가입 시 지급되며, 완공 리뷰 작성 시 추가 적립됩니다. 실서비스에서는 계약금 결제 시 크레딧으로 차감 사용할 수 있습니다.</div></div>'; }
+  if(bal){ bal.innerHTML='<div style="background:var(--ivory);border-radius:var(--radius-card);padding:20px;color:var(--charcoal)"><div style="font-size:13.5px;color:var(--slate);margin-bottom:6px">보유 크레딧</div><div style="font-size:32.5px;font-weight:800;letter-spacing:-0.5px">'+(window.cashBalance||0).toLocaleString()+'크레딧</div><div style="font-size:12px;color:var(--slate);margin-top:8px;line-height:1.5">'+icon('shieldCheck','var(--slate)',10)+' 결제 시 크레딧으로 차감 사용할 수 있습니다.</div></div>'; }
+  if(window.MVP.live){
+    apiFetch('/api/points/topup/mine', {method:'GET'})
+      .then(function(list){
+        renderWalletHistoryList((list||[]).filter(function(t){ return t.status==='paid'; }).map(function(t){
+          return { label:'포인트 충전', at:(t.paid_at||t.created_at||'').slice(0,16).replace('T',' '), amount:t.amount };
+        }));
+      })
+      .catch(function(e){ var hist=document.getElementById('wallet-history'); if(hist) hist.innerHTML='<div class="caption" style="text-align:center;color:var(--danger);padding:20px 0">충전 내역을 불러오지 못했습니다: '+e.message+'</div>'; });
+    return;
+  }
+  renderWalletHistoryList([]);
+}
+function renderWalletHistoryList(list){
   var hist=document.getElementById('wallet-history'); if(!hist) return;
-  var list=walletHistory();
-  if(!list.length){ hist.innerHTML='<div class="caption" style="text-align:center;color:var(--slate);padding:30px 0">아직 적립 내역이 없어요.<br>완공 리뷰를 작성하면 캐시가 쌓여요.</div>'; return; }
+  if(!list.length){ hist.innerHTML='<div class="caption" style="text-align:center;color:var(--slate);padding:30px 0">아직 충전 내역이 없어요.</div>'; return; }
   hist.innerHTML=list.map(function(h){
-    return '<div style="display:flex;justify-content:space-between;align-items:center;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 14px;margin-bottom:8px"><div><div style="font-size:15px;font-weight:700;color:var(--charcoal)">'+h.label+'</div><div style="font-size:12.5px;color:var(--slate);margin-top:2px">'+h.detail+' · '+h.at+'</div></div><div style="font-size:16.5px;font-weight:800;color:var(--terracotta);flex-shrink:0">+'+h.amount.toLocaleString()+'원</div></div>';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 14px;margin-bottom:8px"><div><div style="font-size:15px;font-weight:700;color:var(--charcoal)">'+h.label+'</div><div style="font-size:12.5px;color:var(--slate);margin-top:2px">'+h.at+'</div></div><div style="font-size:16.5px;font-weight:800;color:var(--terracotta);flex-shrink:0">+'+h.amount.toLocaleString()+'원</div></div>';
   }).join('');
 }
 
 /* ===== 2단계 S8(#24): 지인소개 (신규, 캐시지갑 내부 진입) ===== */
-// 수정 여지: 보상 단계·금액을 배열로 분리
+// 수정 여지: 보상 단계-금액을 배열로 분리
 var REFERRAL_STAGES=[
   {key:'signup',  label:'지인 가입',   amount:1000},
   {key:'quote',   label:'견적 요청',   amount:3000},
@@ -5196,58 +5227,6 @@ window.referralCode = window.referralCode || 'INSTA-' + Math.random().toString(3
 window.REFERRALS = window.REFERRALS || [];
 function referralEarned(r){ var sum=0; REFERRAL_STAGES.forEach(function(s){ if(r.stages[s.key]) sum+=s.amount; }); return sum; }
 function referralMax(){ return REFERRAL_STAGES.reduce(function(s,x){return s+x.amount;},0); }
-/* 3단계(#40) 캐시 출금 신청 — "손잡이만 돌리면" 실서비스 전환되도록 어댑터 함수로 격리 */
-window.CASH_WITHDRAWALS = window.CASH_WITHDRAWALS || [];
-// ⚡MVP-SWITCH: 실서비스 전환시 이 함수 내부만 PG사(토스페이먼츠 등) 출금이체 API 호출로 교체.
-// 화면·검증 로직(submitWithdrawal)은 이 함수를 호출하기만 하므로 그대로 재사용 가능
-async function processWithdrawal(bank, account, amount){
-  if(window.MVP.live){
-    // 신규(2단계 프론트연동): 이미 격리된 어댑터라 내부만 교체
-    try{
-      var data = await apiFetch('/api/withdrawals', {method:'POST', body: JSON.stringify({amount: amount, bankAccount: bank+' '+account})});
-      return { success: true, status: 'completed', processedAt: (typeof measNow==='function'?measNow():'') };
-    }catch(e){
-      return { success: false, error: e.message };
-    }
-  }
-  // 지금: 신청 접수 시뮬레이션(즉시 처리완료 처리)
-  return { success: true, status: 'completed', processedAt: (typeof measNow==='function'?measNow():'') };
-}
-function renderWithdrawForm(){
-  document.getElementById('cash-withdraw-balance').innerHTML = '보유 크레딧 <b style="color:var(--terracotta)">'+(window.cashBalance||0).toLocaleString()+'크레딧</b>';
-  document.getElementById('wd-account').value = '';
-  document.getElementById('wd-amount').value = '';
-  document.getElementById('wd-error').textContent = '';
-}
-function submitWithdrawal(){
-  if(!requireRoomerRole('consumer','크레딧 출금은 소비자 계정에서만 신청할 수 있습니다.')) return;
-  var bank = document.getElementById('wd-bank').value;
-  var account = document.getElementById('wd-account').value.trim();
-  var amount = parseInt(document.getElementById('wd-amount').value) || 0;
-  var errEl = document.getElementById('wd-error');
-  if(!account){ errEl.textContent = '계좌번호를 입력해주세요.'; return; }
-  if(amount < 10000){ errEl.textContent = '최소 출금액은 10,000원이에요.'; return; }
-  if(amount > (window.cashBalance||0)){ errEl.textContent = '보유 크레딧보다 많이 출금할 수 없어요.'; return; }
-  errEl.textContent = '';
-  processWithdrawal(bank, account, amount).then(function(result){
-    if(!result.success){ errEl.textContent = '출금 신청에 실패했어요. 잠시 후 다시 시도해주세요.'; return; }
-    window.cashBalance -= amount;
-    window.CASH_WITHDRAWALS.unshift({ id:'wd'+Date.now(), amount:amount, bank:bank, account:account, status:result.status, requestedAt:(typeof measNow==='function'?measNow():'') });
-    alert('출금 신청이 접수됐어요. 영업일 기준 2~3일 내 입금됩니다.');
-    go('wallet');
-  });
-}
-function renderWithdrawHistory(){
-  var el = document.getElementById('wallet-withdraw-history'); if(!el) return;
-  var list = window.CASH_WITHDRAWALS || [];
-  if(!list.length){ el.innerHTML = emptyStateBox('아직 출금 신청 내역이 없어요.'); return; }
-  el.innerHTML = list.map(function(w){
-    return '<div style="display:flex;justify-content:space-between;align-items:center;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 14px;margin-bottom:8px">'
-      + '<span style="font-size:14.5px;color:var(--slate)">'+w.bank+' · '+w.requestedAt+'</span>'
-      + '<span style="font-weight:700;color:var(--charcoal)">-'+w.amount.toLocaleString()+'원</span>'
-    + '</div>';
-  }).join('');
-}
 
 function renderReferral(){
   var el=document.getElementById('referral-body'); if(!el) return;
@@ -5531,7 +5510,6 @@ renderStdHeader('hdr-my-support', "closeToReturn()");
 renderStdHeader('hdr-settlement', "closeToReturn()");
 renderStdHeader('hdr-ai-inspection', "closeToReturn()");
 renderStdHeader('hdr-inspection-pay', "closeToReturn()");
-renderStdHeader('hdr-review', "closeToReturn()");
 renderStdHeader('hdr-referral', "closeToReturn()");
 renderStdHeader('hdr-ad-apply', "closeToReturn()");
 renderStdHeader('hdr-partner-alert-list', "closeToReturn()");
@@ -5556,7 +5534,6 @@ renderStdHeader('hdr-dispute-file', "go('chat')");
 renderStdHeader('hdr-dispute-ai', "go('chat')");
 renderStdHeader('hdr-tier-upgrade', "closeToReturn()");
 renderStdHeader('hdr-wallet', "closeToReturn()");
-renderStdHeader('hdr-cash-withdraw', "closeToReturn()");
 renderStdHeader('hdr-partner-stats', "closeToReturn()");
 renderStdHeader('hdr-my-ads', "closeToReturn()");
 function go(id){
@@ -5675,9 +5652,7 @@ function go(id){
   if(id === 'admin-tier' && typeof renderAdminTier==='function'){ renderAdminTier(); }
   if(id === 'tier-upgrade' && typeof renderTierUpgrade==='function'){ renderTierUpgrade(); }
   if(id === 'inspection-pay' && typeof renderInspectionPay==='function'){ renderInspectionPay(); }
-  if(id === 'review' && typeof renderReview==='function'){ renderReview(); }
   if(id === 'wallet' && typeof renderWallet==='function'){ renderWallet(); }
-  if(id === 'wallet' && typeof renderWithdrawHistory==='function'){ renderWithdrawHistory(); }
   if(id === 'referral' && typeof renderReferral==='function'){ renderReferral(); }
   if(id === 'partner-stats' && typeof renderPartnerStats==='function'){ renderPartnerStats(); }
   if(id === 'admin-alerts' && typeof renderAdminAlerts==='function'){ renderAdminAlerts(); }
@@ -12866,9 +12841,6 @@ function saveAdminAlertSettings(){
 // ⚡MVP-SWITCH: 실서버 → 정책값은 DB에 저장되고 전 사용자에게 즉시 반영. 지금은 이 세션의 window 전역값만 변경.
 function renderAdminPolicy(){
   var el=document.getElementById('admin-policy-body'); if(!el) return;
-  var cashRows=[['text','텍스트 리뷰'],['photo','사진 첨부'],['beforeAfter','비포/애프터'],['video','영상 리뷰']].map(function(k){
-    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--ivory)"><span style="font-size:14.5px;color:var(--charcoal)">'+k[1]+'</span><div style="display:flex;align-items:center;gap:4px"><input type="number" value="'+CASH_RULES[k[0]]+'" oninput="CASH_RULES[\''+k[0]+'\']=parseInt(this.value)||0" style="width:80px;padding:6px 8px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:14.5px;text-align:right;font-family:inherit"><span style="font-size:13px;color:var(--slate)">원</span></div></div>';
-  }).join('');
   var planRows=INSPECT_PLANS.map(function(p){
     return '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--ivory)"><span style="font-size:14.5px;color:var(--charcoal)">'+p.label+'</span><div style="display:flex;align-items:center;gap:4px"><input type="number" value="'+p.price+'" oninput="INSPECT_PLANS.filter(function(x){return x.key===\''+p.key+'\';})[0].price=parseInt(this.value)||0" style="width:90px;padding:6px 8px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:14.5px;text-align:right;font-family:inherit"><span style="font-size:13px;color:var(--slate)">원</span></div></div>';
   }).join('');
@@ -12877,7 +12849,6 @@ function renderAdminPolicy(){
     return '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--ivory)"><span style="font-size:14.5px;color:var(--charcoal)">'+t+'</span><div style="display:flex;align-items:center;gap:4px"><input type="number" step="0.1" value="'+pctNum+'" onchange="updateTierFee(\''+t+'\',this.value)" style="width:70px;padding:6px 8px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:14.5px;text-align:right;font-family:inherit"><span style="font-size:13px;color:var(--slate)">%</span></div></div>';
   }).join('');
   el.innerHTML=''
-    + '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px;margin-bottom:14px"><div class="caption" style="font-weight:700;margin-bottom:8px">크레딧 적립 기준 (완공 리뷰)</div>'+cashRows+'</div>'
     + '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px;margin-bottom:14px"><div class="caption" style="font-weight:700;margin-bottom:8px">AI 감리 요금제</div>'+planRows+'</div>'
     + '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px;margin-bottom:14px"><div class="caption" style="font-weight:700;margin-bottom:8px">등급별 수수료율</div>'+feeRows+'</div>'
     + '<button class="btn btn-primary" onclick="saveAdminPolicy()">정책 저장</button>'
@@ -13205,19 +13176,21 @@ function openTopupModal(context){
   document.getElementById('topup-step-toss').style.display = 'none';
 }
 // 재설계(사용자요청): "충전하기"를 누르면 바로 충전되던 것을, 결제수단 선택 → 실제 결제절차를 거쳐야만 충전되도록 분리
-// 신규(실연동): 업체 크레딧 충전(_topupContext==='partner')은 실서버 모드에서 실제 결제 백엔드(POST /api/credit/topup)가
-// 있으므로 간편결제 선택 데모를 건너뛰고 곧바로 토스페이먼츠 실결제 위젯으로 진입한다.
-// 소비자 포인트 충전은 아직 실제 백엔드가 없어 기존 시뮬레이션 흐름을 그대로 유지한다.
+// 신규(실연동): 업체 크레딧 충전(_topupContext==='partner')과 소비자 포인트 충전(_topupContext==='consumer')
+// 모두 실서버 모드에서 실제 결제 백엔드(POST /api/credit/topup, POST /api/points/topup)가 있으므로
+// 간편결제 선택 데모를 건너뛰고 곧바로 토스페이먼츠 실결제 위젯으로 진입한다.
+// 결함정리(2026-09, 전수조사 발견 — 소비자 포인트 충전만 이 분기에서 빠져있어 setTimeout으로
+// 결제성공을 흉내내던 가짜결제였음): partner 전용 조건을 consumer까지 포함하도록 수정.
 function goToPayMethod(){
   var amt = parseInt(document.getElementById('topup-amount').value)||0;
   if(amt<=0){ return; }
   window._topupTarget = amt;
   var unit = window._topupContext==='consumer' ? 'P' : '크레딧';
-  if(window._topupContext==='partner' && window.MVP.live){
+  if((window._topupContext==='partner' || window._topupContext==='consumer') && window.MVP.live){
     document.getElementById('topup-toss-amount-note').textContent = amt.toLocaleString()+unit+' 결제를 진행합니다';
     document.getElementById('topup-step-amount').style.display = 'none';
     document.getElementById('topup-step-toss').style.display = 'block';
-    startPartnerCreditTossFlow(amt);
+    startTossTopupFlow(amt);
     return;
   }
   document.getElementById('topup-method-amount-note').textContent = amt.toLocaleString()+unit+' 결제수단을 선택해주세요';
@@ -13229,11 +13202,13 @@ function backToTopupAmount(){
   document.getElementById('topup-step-toss').style.display = 'none';
   document.getElementById('topup-step-amount').style.display = 'block';
 }
-// 신규(실연동): POST /api/credit/topup으로 주문 생성 → 토스 결제위젯 렌더링(계약대금 결제 payContractInstallment와 동일 구조)
-async function startPartnerCreditTossFlow(amount){
+// 신규(실연동): context에 맞는 실제 결제 백엔드로 주문 생성 → 토스 결제위젯 렌더링(계약대금 결제 payContractInstallment와 동일 구조)
+var TOPUP_ENDPOINT_BY_CONTEXT = { partner: '/api/credit/topup', consumer: '/api/points/topup' };
+async function startTossTopupFlow(amount){
   var note = document.getElementById('topup-toss-note'); if(note) note.textContent='';
   try{
-    var order = await apiFetch('/api/credit/topup', {method:'POST', body: JSON.stringify({amount: amount})});
+    var endpoint = TOPUP_ENDPOINT_BY_CONTEXT[window._topupContext] || '/api/credit/topup';
+    var order = await apiFetch(endpoint, {method:'POST', body: JSON.stringify({amount: amount})});
     var TossPaymentsSdk = await loadTossPaymentsSdk();
     var customerKey = (window.crypto&&window.crypto.randomUUID) ? window.crypto.randomUUID() : ('cust-'+Date.now()+'-'+Math.random().toString(36).slice(2));
     var tossPayments = TossPaymentsSdk(order.clientKey);
@@ -13241,23 +13216,25 @@ async function startPartnerCreditTossFlow(amount){
     await widgets.setAmount({currency:'KRW', value: order.amount});
     await widgets.renderPaymentMethods({selector:'#credit-toss-payment-widget', variantKey:'DEFAULT'});
     await widgets.renderAgreement({selector:'#credit-toss-agreement-widget'});
-    window._creditTossPendingWidgets = widgets;
-    window._creditTossPendingOrder = order;
+    window._topupTossPendingWidgets = widgets;
+    window._topupTossPendingOrder = order;
   }catch(e){ if(note) note.innerHTML = '<span style="color:var(--terracotta)">결제 준비를 완료하지 못했습니다: '+e.message+'</span>'; }
 }
-async function requestCreditTopupPayment(){
-  var widgets = window._creditTossPendingWidgets, order = window._creditTossPendingOrder;
+async function requestTossTopupPayment(){
+  var widgets = window._topupTossPendingWidgets, order = window._topupTossPendingOrder;
   var note = document.getElementById('topup-toss-note');
   if(!widgets || !order){ if(note) note.innerHTML = '<span style="color:var(--terracotta)">결제 준비 정보를 찾을 수 없습니다. 다시 시도해주세요.</span>'; return; }
   try{
     var base = location.origin + location.pathname;
+    var successFlag = window._topupContext==='consumer' ? 'pointTopupSuccess' : 'creditTopupSuccess';
+    var failFlag = window._topupContext==='consumer' ? 'pointTopupFail' : 'creditTopupFail';
     await widgets.requestPayment({
       orderId: order.orderId, orderName: order.orderName,
-      successUrl: base+'?creditTopupSuccess=1', failUrl: base+'?creditTopupFail=1'
+      successUrl: base+'?'+successFlag+'=1', failUrl: base+'?'+failFlag+'=1'
     });
   }catch(e){ if(note) note.innerHTML = '<span style="color:var(--terracotta)">결제 요청에 실패했습니다: '+e.message+'</span>'; }
 }
-// 결제 성공/실패 리다이렉트 복귀 처리(계약대금 결제 handleTossPaymentRedirectReturn과 동일 원칙)
+// 결제 성공/실패 리다이렉트 복귀 처리(계약대금 결제 handleTossPaymentRedirectReturn과 동일 원칙) — 업체 크레딧
 (function handleCreditTopupRedirectReturn(){
   try{
     var params = new URLSearchParams(location.search);
@@ -13275,6 +13252,26 @@ async function requestCreditTopupPayment(){
     } else if(params.get('creditTopupFail')==='1'){
       history.replaceState(null,'',location.pathname);
       alert('크레딧 충전이 취소되었거나 실패했습니다: '+(params.get('message')||''));
+    }
+  }catch(e){}
+})();
+// 신규(실연동): 소비자 포인트 충전 리다이렉트 복귀 처리 — 위 업체 크레딧 처리와 동일 원칙(주문번호로 서버에 재확인)
+(function handlePointTopupRedirectReturn(){
+  try{
+    var params = new URLSearchParams(location.search);
+    if(params.get('pointTopupSuccess')==='1' && params.get('paymentKey') && params.get('orderId')){
+      var paymentKey = params.get('paymentKey'), orderId = params.get('orderId');
+      history.replaceState(null,'',location.pathname);
+      apiFetch('/api/points/topup/'+encodeURIComponent(orderId)+'/confirm', {method:'POST', body: JSON.stringify({paymentKey: paymentKey})})
+        .then(function(confirmed){
+          alert(confirmed.status==='paid' ? '포인트 충전이 확인되었습니다.' : '결제 상태를 확인 중입니다.');
+          if(typeof confirmed.balance === 'number') window.cashBalance = confirmed.balance;
+          if(typeof renderWallet==='function') renderWallet();
+        })
+        .catch(function(e){ alert('포인트 충전 확인에 실패했습니다: '+e.message); });
+    } else if(params.get('pointTopupFail')==='1'){
+      history.replaceState(null,'',location.pathname);
+      alert('포인트 충전이 취소되었거나 실패했습니다: '+(params.get('message')||''));
     }
   }catch(e){}
 })();
@@ -13625,17 +13622,61 @@ function renderMyContracts(){
   el.innerHTML = '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">'+icon('checkCircle',T.success,14)+'<span style="font-size:14.5px;font-weight:700;color:var(--success)">계약 확정</span></div><div style="font-size:15px;color:var(--charcoal);line-height:1.7">최종 계약금액이 확인되었습니다.<br>진행 상황은 메신저에서 계속 확인할 수 있어요.</div><button class="btn btn-outline" style="margin-top:12px" onclick="go(\'chat\')">메신저로 이동</button></div>';
 }
 window.userPaymentMethods = window.userPaymentMethods || [];
+// 결함정리(2026-09, 전수조사 발견 — 실연동): 이 화면에서 카드번호를 직접 입력받아 처리하던 방식은
+// PCI-DSS 위반이었다. 실서버 모드에서는 서버가 발급한 clientKey/customerKey로 토스페이먼츠의
+// 자체 보안 결제창(requestBillingAuth)을 열어 카드정보는 토스만 보고, 우리 서버는 그 결과인
+// authKey만 받아 빌링키로 교환한다(카드번호 전체는 우리 화면·서버 어디에도 닿지 않음).
 function renderMyPayment(){
+  if(window.MVP.live){
+    apiFetch('/api/payment-methods', {method:'GET'})
+      .then(function(list){ window.userPaymentMethods = list; renderMyPaymentList(); })
+      .catch(function(e){ var el = document.getElementById('my-payment-items'); if(el) el.innerHTML = '<div class="caption" style="color:var(--danger);text-align:center;padding:20px 0">결제수단을 불러오지 못했습니다: '+e.message+'</div>'; });
+    return;
+  }
+  renderMyPaymentList();
+}
+function renderMyPaymentList(){
   const el = document.getElementById('my-payment-items'); if(!el) return;
   if(!window.userPaymentMethods.length){ el.innerHTML = emptyStateBox('등록된 결제 수단이 없어요.<br>미리 등록해두면 계약금·잔금 결제가 더 빨라져요.'); return; }
-  el.innerHTML = window.userPaymentMethods.map(function(p,i){
-    return '<div style="display:flex;align-items:center;justify-content:space-between;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px 16px;margin-bottom:10px"><div style="display:flex;align-items:center;gap:10px">'+icon('fileText','var(--charcoal)',17)+'<span style="font-size:16px;font-weight:600;color:var(--charcoal)">'+p.label+'</span></div><button type="button" onclick="removePaymentMethod('+i+')" style="background:none;border:none;color:var(--slate);font-size:13.5px;cursor:pointer;font-family:inherit">삭제</button></div>';
+  el.innerHTML = window.userPaymentMethods.map(function(p){
+    var label = window.MVP.live ? ('카드'+(p.card_brand?' ('+p.card_brand+')':'')+(p.card_last4?' •••• '+p.card_last4.slice(-4):'')) : p.label;
+    // onclick 속성이 큰따옴표를 쓰므로 인자는 항상 작은따옴표로 감싼 문자열로 넘긴다(JSON.stringify는 큰따옴표라 속성이 깨짐)
+    var removeKey = String(window.MVP.live ? p.id : p._localIndex).replace(/'/g,"\\'");
+    return '<div style="display:flex;align-items:center;justify-content:space-between;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px 16px;margin-bottom:10px"><div style="display:flex;align-items:center;gap:10px">'+icon('fileText','var(--charcoal)',17)+'<span style="font-size:16px;font-weight:600;color:var(--charcoal)">'+label+'</span></div><button type="button" onclick="removePaymentMethod(\''+removeKey+'\')" style="background:none;border:none;color:var(--slate);font-size:13.5px;cursor:pointer;font-family:inherit">삭제</button></div>';
   }).join('');
 }
-// 재설계(사용자요청): 클릭 즉시 랜덤 가짜카드가 등록되던 데모 로직 제거 — 실제 카드정보 입력+검증을 거치도록 변경
 function addPaymentMethod(){
+  if(window.MVP.live) return startCardRegisterTossFlow();
   document.getElementById('card-register-overlay').style.display = 'flex';
 }
+// 신규(실연동): POST /api/payment-methods/register로 customerKey 발급 → 토스 자체 보안 결제창(카드정보 입력)으로 이동
+async function startCardRegisterTossFlow(){
+  try{
+    var reg = await apiFetch('/api/payment-methods/register', {method:'POST'});
+    var TossPaymentsSdk = await loadTossPaymentsSdk();
+    var tossPayments = TossPaymentsSdk(reg.clientKey);
+    var payment = tossPayments.payment({customerKey: reg.customerKey});
+    var base = location.origin + location.pathname;
+    await payment.requestBillingAuth({ method:'CARD', successUrl: base+'?cardRegisterSuccess=1', failUrl: base+'?cardRegisterFail=1' });
+  }catch(e){ alert('카드 등록을 시작하지 못했습니다: '+e.message); }
+}
+// 카드 등록 성공/실패 리다이렉트 복귀 처리 — authKey/customerKey를 서버로 보내 실제 빌링키로 교환
+(function handleCardRegisterRedirectReturn(){
+  try{
+    var params = new URLSearchParams(location.search);
+    if(params.get('cardRegisterSuccess')==='1' && params.get('authKey') && params.get('customerKey')){
+      var authKey = params.get('authKey'), customerKey = params.get('customerKey');
+      history.replaceState(null,'',location.pathname);
+      apiFetch('/api/payment-methods/confirm', {method:'POST', body: JSON.stringify({authKey: authKey, customerKey: customerKey})})
+        .then(function(){ alert('카드가 등록되었습니다.'); if(typeof renderMyPayment==='function') renderMyPayment(); })
+        .catch(function(e){ alert('카드 등록 확인에 실패했습니다: '+e.message); });
+    } else if(params.get('cardRegisterFail')==='1'){
+      history.replaceState(null,'',location.pathname);
+      alert('카드 등록이 취소되었거나 실패했습니다: '+(params.get('message')||''));
+    }
+  }catch(e){}
+})();
+// 프로토타입 미리보기 모드 전용(실서버 미연동 상태) — 카드정보 입력 데모, 실사용자에게는 절대 노출되지 않음(window.MVP.live가 항상 true)
 function confirmCardRegister(){
   var num = (document.getElementById('cr-card-number').value||'').replace(/[^0-9]/g,'');
   var exp = (document.getElementById('cr-card-expiry').value||'').trim();
@@ -13646,21 +13687,15 @@ function confirmCardRegister(){
     if(note) note.innerHTML = '<span style="color:var(--danger)">카드정보를 정확히 입력해주세요.</span>';
     return;
   }
-  // 중요(실서비스): 카드번호를 이 화면에서 직접 받아 처리하는 방식은 PCI-DSS 위반입니다.
-  // 실서비스에서는 PG사가 제공하는 보안 결제창(iframe)·SDK로 교체해야 하며, 카드번호가
-  // 우리 서버/화면에 절대 그대로 닿아서는 안 됩니다.
   var btn = document.getElementById('cr-card-btn');
   btn.disabled = true; btn.textContent = '카드 확인중...';
   if(note) note.textContent = '';
   var orderId = generateOrderId();
-  // TODO(실서비스): processPaymentAPI 대신 PG사의 "빌링키 발급"(카드 등록 전용) API로 교체
-  // 기대 계약: POST /api/cards/register { orderId, cardNumber(PG위탁), expiry, cvc, name }
-  //           → { success, last4, brand, billingKey } (카드번호 전체는 절대 응답에 포함되면 안 됨)
   processPaymentAPI('card', 0, orderId).then(function(res){
     btn.disabled = false; btn.textContent = '등록하기';
     if(!res.success){ if(note) note.innerHTML = '<span style="color:var(--danger)">카드 확인에 실패했어요. 다시 시도해주세요.</span>'; return; }
     var last4 = num.slice(-4);
-    window.userPaymentMethods.push({label:'카드 (•••• '+last4+')', orderId:res.orderId});
+    window.userPaymentMethods.push({label:'카드 (•••• '+last4+')', orderId:res.orderId, _localIndex: window.userPaymentMethods.length});
     document.getElementById('card-register-overlay').style.display = 'none';
     document.getElementById('cr-card-number').value = '';
     document.getElementById('cr-card-expiry').value = '';
@@ -13670,7 +13705,16 @@ function confirmCardRegister(){
     if(typeof adminLog==='function') adminLog('결제수단(카드) 등록 완료: '+last4);
   });
 }
-function removePaymentMethod(i){ window.userPaymentMethods.splice(i,1); renderMyPayment(); }
+function removePaymentMethod(key){
+  if(window.MVP.live){
+    apiFetch('/api/payment-methods/'+encodeURIComponent(key), {method:'DELETE'})
+      .then(function(){ renderMyPayment(); })
+      .catch(function(e){ alert('삭제에 실패했습니다: '+e.message); });
+    return;
+  }
+  window.userPaymentMethods = window.userPaymentMethods.filter(function(p){ return String(p._localIndex) !== String(key); });
+  renderMyPayment();
+}
 window.CONSUMER_ALERT_SETTINGS = window.CONSUMER_ALERT_SETTINGS || { phone:'', email:'', sms:true, mail:true, inapp:true };
 function renderMyAlerts(){
   const el = document.getElementById('my-alerts-body'); if(!el) return;
