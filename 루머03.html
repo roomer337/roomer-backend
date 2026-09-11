@@ -3290,8 +3290,21 @@ window.MVP.smsOtpEnabled=window.MVP.smsOtpEnabled===true;
 // 관리자가 Render에 ALIGO_* 3종을 등록하면 코드 수정 없이 즉시 휴대폰 가입이 열림.
 if(window.MVP.live){
   fetch((window.MVP.apiBase||'')+'/api/public/config').then(function(r){return r.json();})
-    .then(function(d){ if(d&&d.success) window.MVP.smsOtpEnabled = !!(d.data&&d.data.smsOtpEnabled); })
+    .then(function(d){
+      if(d&&d.success){
+        window.MVP.smsOtpEnabled = !!(d.data&&d.data.smsOtpEnabled);
+        // 신규(사용자요청 — 푸시알림 인프라 완성): Render에 VAPID 키가 설정된 경우에만
+        // 실제 공개키가 내려오고, 아니면 null 그대로 유지되어 구독 시도 자체를 하지 않는다.
+        window.MVP.vapidPublicKey = (d.data && d.data.vapidPublicKey) || null;
+      }
+    })
     .catch(function(e){ console.error('SMS 설정여부 조회 실패(기본값 비활성화 유지):', e.message); });
+}
+// 신규(사용자요청 — 푸시알림 인프라 완성): 서비스워커를 등록해야 registerRoomerPushIfAvailable()의
+// navigator.serviceWorker.ready가 실제로 resolve된다(지금까지 등록 코드가 아예 없어 영원히 대기했음).
+// 웹/설치형 앱 모두에서 안전하게 시도하고, 지원 안 하는 환경(구형 브라우저 등)에서는 조용히 무시.
+if(window.MVP.live && 'serviceWorker' in navigator){
+  navigator.serviceWorker.register('/sw.js').catch(function(e){ console.warn('서비스워커 등록 실패:', e.message); });
 }
 window.MVP.portfolioMaxPhotos=Math.max(1,Number(window.MVP.portfolioMaxPhotos)||10);
 window.MVP.portfolioImageMaxBytes=Math.max(1024,Number(window.MVP.portfolioImageMaxBytes)||10*1024*1024);
@@ -6850,12 +6863,7 @@ function openSideMenu(){
   var mypageBtnEl = document.getElementById('side-menu-mypage-btn');
   if(window.currentUserLoggedIn){
     // 결함수정(사용자요청): 로그인 상태에서 로그아웃할 방법 자체가 전혀 없던 문제 → 실제 로그아웃 버튼 추가
-    // 신규(방법B 체험용): 소비자/업체가 100% 같은 채팅방에서 만날 수 있는 "테스트 채팅" 진입점(실서버 연결시에만 노출)
-    var testChatBtn = (window.MVP.live && window.currentAccountMode==='consumer')
-      ? '<button type="button" onclick="startTestChat()" style="width:100%;background:var(--steelblue);color:#fff;border:none;border-radius:var(--radius-button);padding:11px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:8px">🧪 테스트 채팅 시작(체험용)</button>'
-      : '';
     authEl.innerHTML = '<div style="background:var(--ivory);border-radius:var(--radius-card);padding:14px;font-size:14.5px;color:var(--charcoal);font-weight:700;margin-bottom:8px">'+(window.currentAccountMode==='partner'?'사장님, 안녕하세요':'회원님, 안녕하세요')+'</div>'
-      + testChatBtn
       + '<button type="button" onclick="logoutUser()" style="width:100%;background:none;border:1px solid var(--stone);color:var(--slate);border-radius:var(--radius-button);padding:11px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">로그아웃</button>';
     mypageBtnEl.innerHTML = '<div onclick="closeSideMenu(); go(\''+(window.currentAccountMode==='partner'?'partner-home':'consumer-home')+'\')" style="padding:12px 4px;font-size:15px;font-weight:700;color:var(--charcoal);cursor:pointer">'+(window.currentAccountMode==='partner'?'업체 대시보드':'마이페이지')+'</div>';
   } else {
@@ -11520,66 +11528,11 @@ window.addEventListener('online',function(){
   if(window.MVP.live&&chatTransportScreenActive())startChatTransport();
 });
 
-// 신규(방법B 체험용): 소비자가 누르면 서버의 고정 "테스트업체"와 100% 같은 방으로 연결됨
-function startTestChat(){
-  if(!window.MVP.live){ alert('이 기능은 실서버 연결(window.MVP.live=true) 상태에서만 사용할 수 있어요.'); return; }
-  // 신규(카테고리 전체 테스트 지원): 채팅으로 바로 가지 않고, 업체 상세페이지를 먼저 거치게 해서
-  // "견적요청하기" 버튼부터 자연스럽게 전체 흐름(견적요청→견적서→계약→분쟁/감리/하자)이 이어지도록 함
-  apiFetch('/api/test-partner').then(function(partnerInfo){
-    window.selectedPartnerCard = { id: partnerInfo.id, partner: partnerInfo.businessName, name: partnerInfo.businessName };
-    return apiFetch('/api/test-room', {method:'POST'});
-  }).then(function(room){
-    var testConsumerIdentity = getConsumerIdentity();
-    activateRoom(room.id, testConsumerIdentity.displayName, (window.selectedPartnerCard&&window.selectedPartnerCard.partner)||'', {
-      consumerId:testConsumerIdentity.userId,
-      partnerId:(window.selectedPartnerCard&&window.selectedPartnerCard.id)||null,
-      isCurrentConsumerRoom:true,isTestRoom:true,roomKind:'test',roomStatus:'active'
-    });
-    window.CHAT_LOG = window.CHAT_LOG || [];
-    closeSideMenu();
-    if(typeof renderCprofile === 'function') renderCprofile();
-    go('cprofile');
-    alert('테스트업체 상세페이지로 이동했어요!\n\n순서: "견적 요청하기" 버튼 → 견적서 작성 → 발송\n그 다음 메신저에서 실측일정, 계약, 분쟁, AI감리 등을 계속 테스트하실 수 있어요.');
-  }).catch(function(e){ alert('테스트 시작 실패: '+e.message); });
-}
-// 신규(방법B 체험용): 주소 끝에 ?test-partner=1 을 붙여서 새 창(시크릿 모드 권장)을 열면
-// 자동으로 "테스트업체" 계정으로 로그인되어, 소비자 창과 정확히 같은 방에서 만날 수 있음
-(function(){
-  try{
-    var params = new URLSearchParams(location.search);
-    if(params.get('test-partner') === '1'){
-      window.MVP.live = true;
-      apiFetch('/api/test-partner-login', {method:'POST'}).then(function(data){
-        saveAuthToken(data.token);
-        window.currentUserLoggedIn = true;
-        window.currentAccountMode = 'partner';
-        // 메신저 참여자 연결 3/12: 테스트 계정도 일반 파트너와 같은 서버응답 정규화 경로를 사용한다.
-        applyPartnerProfile(data.partner || data, {source:'server', status:'connected', restoreState:'restored'});
-        // 신규: 로그인 직후 본인 채팅방을 자동으로 찾아 바로 입장(소비자가 먼저 "테스트 채팅 시작"을 눌러둬야 방이 존재함)
-        return apiFetch('/api/rooms/mine');
-      }).then(function(rooms){
-        if(rooms && rooms.length){
-          var testPartnerRoom=activateRoom(rooms[0].id, rooms[0].displayName || rooms[0].consumerName || '', window.PARTNER_PROFILE.name || '', {
-            consumerId:rooms[0].consumerId || rooms[0].consumer_id || null,
-            partnerId:(window.PARTNER_PROFILE||{}).id || rooms[0].partnerId || rooms[0].partner_id || null,
-            isCurrentPartnerRoom:true,
-            partnerTier:(window.PARTNER_PROFILE||{}).tier || rooms[0].partnerTier || rooms[0].partner_tier || null,
-            partnerVerifyStatus:(window.PARTNER_PROFILE||{}).verifyStatus || rooms[0].partnerVerifyStatus || rooms[0].partner_verify_status || null,
-            requestId:rooms[0].requestId||rooms[0].request_id||null,projectId:rooms[0].projectId||rooms[0].project_id||null,
-            roomKind:'test',roomStatus:rooms[0].status||'active',isTestRoom:true
-          });
-          if(!testPartnerRoom) throw new Error('테스트 파트너 Room 참여자 검증에 실패했습니다.');
-          loadRoomChatLog(rooms[0].id);
-          alert('테스트업체 계정으로 로그인해서, 소비자가 만든 채팅방에 자동으로 입장했어요!');
-          go('chat');
-        } else {
-          alert('테스트업체 계정으로 로그인됐어요. 다만 아직 소비자가 "테스트 채팅 시작"을 안 눌러서 방이 없어요 — 소비자 창에서 먼저 시작해주세요.');
-          go('partner-home');
-        }
-      }).catch(function(e){ console.error('테스트업체 자동로그인 실패:', e.message); });
-    }
-  }catch(e){}
-})();
+// 결함정리(사용자요청 — 실서비스에 "테스트 채팅 시작(체험용)" 버튼과 ?test-partner=1 자동로그인이
+// 그대로 노출되어 있던 문제): 서버 쪽 /api/test-partner·/api/test-room·/api/test-partner-login은
+// ENABLE_DEV_TEST_ROUTES 환경변수가 명시적으로 없으면 이미 404로 안전하게 막혀 있었지만(운영 Render엔
+// 등록 안 함), 로그인한 실사용자에게 클릭 가능한 버튼 자체가 계속 보이는 것은 혼란만 줄 뿐 실제로는
+// 항상 실패하는 죽은 기능이었음 — 프론트의 진입점을 완전히 제거함(서버 라우트는 로컬 개발용으로 유지).
 
 // 명세 기능2: 사진 전송 + AI 공정태그 (실제 파일 업로드로 전환)
 const PHOTO_TAGS = ['욕실 타일 시공','주방 철거','전기 배선 작업','도배 마감'];
