@@ -12528,7 +12528,10 @@ function renderMypage(){
   const greetingCard = document.getElementById('consumer-greeting-card');
   if(greetingCard){
     greetingCard.innerHTML =
-      '<div style="font-size:17px;font-weight:800;color:var(--charcoal);margin-bottom:3px">'+escapeConsumerIdentityHtml(greetingName)+'</div>'
+      '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
+      + '<span style="font-size:17px;font-weight:800;color:var(--charcoal)">'+escapeConsumerIdentityHtml(greetingName)+'</span>'
+      + '<button type="button" onclick="openNicknameEditSheet()" style="background:none;border:none;padding:2px 4px;cursor:pointer;font-size:11.5px;font-weight:700;color:var(--steelblue);font-family:inherit">닉네임 수정</button>'
+      + '</div>'
       + '<div style="font-size:12px;color:var(--slate);margin-bottom:5px">'+escapeConsumerIdentityHtml(subLine)+'</div>'
       + '<div style="font-size:11.5px;color:'+(identity.userId?'var(--success)':'var(--warning)')+';font-weight:700;margin-bottom:'+(kakaoStatusHtml?'3px':'11px')+'">'+(identity.userId?'계정 식별 완료':'계정 식별 대기')+'</div>'
       + kakaoStatusHtml
@@ -12575,6 +12578,47 @@ function renderMypage(){
     }
     mypageMenuEl.appendChild(row);
   });
+}
+// 신규(사용자요청 — 카카오/네이버 로그인 시 닉네임 선택동의를 체크 안 하면 "카카오회원"/"네이버회원"
+// 으로만 표시되고 고칠 방법이 전혀 없던 문제): 마이페이지에서 언제든 직접 닉네임을 수정할 수 있게 함.
+function openNicknameEditSheet(){
+  var current = normalizeConsumerIdentityValue(getConsumerIdentity().displayName);
+  openMeasSheet(
+    '<div style="font-size:16px;font-weight:800;color:var(--charcoal);margin-bottom:10px">닉네임 수정</div>'
+    + '<input id="nickname-edit-input" type="text" maxlength="30" value="'+escapeConsumerIdentityHtml(current)+'" placeholder="사용하실 닉네임을 입력해주세요" style="width:100%;box-sizing:border-box;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px 14px;font-size:15px;font-family:inherit;margin-bottom:6px">'
+    + '<div id="nickname-edit-error" style="display:none;color:var(--danger);font-size:12.5px;margin-bottom:8px"></div>'
+    + '<div style="display:flex;gap:8px;margin-top:8px">'
+    + '<button type="button" class="btn btn-outline" style="flex:1" onclick="closeMeasSheet()">취소</button>'
+    + '<button type="button" class="btn btn-primary" style="flex:1" onclick="saveNicknameEdit()">저장</button>'
+    + '</div>'
+  );
+  setTimeout(function(){ var el=document.getElementById('nickname-edit-input'); if(el){ el.focus(); el.select(); } }, 50);
+}
+function saveNicknameEdit(){
+  var el = document.getElementById('nickname-edit-input');
+  var errEl = document.getElementById('nickname-edit-error');
+  var value = normalizeConsumerIdentityValue(el ? el.value : '');
+  if(!value){
+    if(errEl){ errEl.textContent='닉네임을 입력해주세요.'; errEl.style.display='block'; }
+    return;
+  }
+  if(value.length > 30){
+    if(errEl){ errEl.textContent='닉네임은 30자 이내로 입력해주세요.'; errEl.style.display='block'; }
+    return;
+  }
+  function applyLocally(){
+    window.userProfile.nickname = value;
+    ensureConsumerIdentity({displayName:value});
+    if(typeof renderMypage==='function') renderMypage();
+    closeMeasSheet();
+  }
+  if(window.MVP.live){
+    apiFetch('/api/users/me/nickname', {method:'PATCH', body: JSON.stringify({nickname:value})}).then(applyLocally).catch(function(e){
+      if(errEl){ errEl.textContent = e.message || '닉네임 저장에 실패했어요.'; errEl.style.display='block'; }
+    });
+  } else {
+    applyLocally();
+  }
 }
 
 /* ===== 운영자 완전분리: 계정전환에서 admin 제거 + 숨은 진입(로고 5회 탭) + PIN 게이트 =====
