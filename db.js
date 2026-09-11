@@ -480,6 +480,34 @@ CREATE TABLE IF NOT EXISTS credit_topups (
   paid_at TEXT
 );
 
+-- 신규(2026-09, 소비자 포인트 실충전 연동 — 결제기능 전수조사에서 "포인트 충전"이 서버 없이
+-- setTimeout으로 성공을 흉내내던 가짜결제였음이 발견되어 수정): 위 credit_topups(업체 광고크레딧)와
+-- 완전히 동일한 구조를 소비자 포인트(cash_balance)용으로 그대로 재사용한다.
+CREATE TABLE IF NOT EXISTS point_topups (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL UNIQUE,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  amount INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ready',
+  payment_key TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  paid_at TEXT
+);
+
+-- 신규(2026-09, 결제수단 실등록 연동 — "카드 등록"이 화면에서 카드번호를 직접 입력받아 처리하는
+-- PCI-DSS 위반 방식이었음이 발견되어 토스페이먼츠 빌링키 발급 방식으로 교체): 카드번호 전체는
+-- 토스 서버에만 존재하며 우리 DB에는 절대 저장하지 않는다. billing_key(자동결제용 키)만 보관.
+CREATE TABLE IF NOT EXISTS payment_methods (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  billing_key TEXT NOT NULL,
+  customer_key TEXT NOT NULL,
+  card_last4 TEXT,
+  card_brand TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  removed_at TEXT
+);
+
 -- 신규(사용자요청 — "추천 검색어"가 실제 통계 없이 하드코딩값이었던 문제 발견 후 수정): 검색은
 -- 지금까지 브라우저 안에서만 처리되고 서버에 남는 기록이 전혀 없어, "가장 많이 검색된 단어"라는
 -- 게 애초에 존재하지 않았다. 실제 검색어를 쌓아서 진짜 인기 검색어를 계산할 수 있게 로그 테이블 추가.
@@ -584,6 +612,10 @@ ensureColumn('inspections', 'trip_key', 'TEXT');
 ensureColumn('inspections', 'expert_answer', 'TEXT');
 ensureColumn('inspections', 'answered_at', 'TEXT');
 ensureColumn('inspections', 'answered_by', 'TEXT');
+// 신규(2026-09, AI 감리 결제 실연동): 보유크레딧으로 부족한 잔액만 토스페이먼츠로 결제하기 위해
+// 감리 1건당 진행 중인 토스 주문번호(order_id)와, 그 주문에 실제로 사용될 크레딧 계획값(credit_used)을 저장.
+ensureColumn('inspections', 'order_id', 'TEXT');
+ensureColumn('inspections', 'credit_used', 'INTEGER DEFAULT 0');
 // 신규(2026-09, 완공사례 피드 운영검수 게이트): 이미 배포된 DB에도 안전하게 컬럼 추가
 // (기존 행은 전부 status='pending'이 되어 재검수 필요 — 지금은 실제 등록건이 0개라 영향 없음)
 ensureColumn('portfolio_projects', 'status', "TEXT NOT NULL DEFAULT 'pending'");
@@ -595,5 +627,8 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_tier_upgrades_partner ON tier_upgrades(p
 db.exec('CREATE INDEX IF NOT EXISTS idx_tier_upgrades_status ON tier_upgrades(status, created_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_abuse_actions_room ON abuse_actions(room_id, created_at DESC)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_credit_topups_partner ON credit_topups(partner_id, created_at DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_point_topups_user ON point_topups(user_id, created_at DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_payment_methods_user ON payment_methods(user_id, removed_at)');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_inspections_order_id ON inspections(order_id) WHERE order_id IS NOT NULL');
 
 module.exports = db;
