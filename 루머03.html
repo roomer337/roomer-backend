@@ -3195,6 +3195,35 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   </div>
 </div>
 
+<!-- 신규(사용자요청 — 네이티브 alert() 전수조사 후 리디자인): 브라우저 기본 alert()가 미리보기/웹뷰에서
+     못생기게 뜨는 문제를 해결하기 위한 공용 안내 팝업. window.alert를 이걸로 오버라이드해서
+     기존 alert() 호출 전부(직접 호출 + requireRoomerRole/reportLiveActionFailure 경유)가 자동으로
+     이 디자인을 타도록 함(호출부 167곳을 일일이 안 고쳐도 전부 적용됨) -->
+<div id="app-notice-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100000;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeAppNotice()">
+  <div style="width:100%;max-width:380px;background:#fff;border:1px solid rgba(0,0,0,.08);border-radius:var(--radius-card);padding:clamp(22px,5vw,30px) clamp(20px,4.5vw,26px);box-shadow:0 18px 44px rgba(0,0,0,.16);text-align:center">
+    <div id="app-notice-icon-wrap" style="width:44px;height:44px;border-radius:50%;border:1.4px solid #111;display:flex;align-items:center;justify-content:center;margin:0 auto 16px"></div>
+    <div id="app-notice-title" style="font-size:17.5px;font-weight:700;color:#111;letter-spacing:-.2px;margin-bottom:8px;line-height:1.45"></div>
+    <div id="app-notice-desc" style="font-size:14px;color:#666;line-height:1.65;margin-bottom:20px;white-space:pre-line"></div>
+    <div style="height:1px;background:#ececec;margin-bottom:18px"></div>
+    <button id="app-notice-ok" onclick="closeAppNotice()" style="display:block;width:100%;padding:14px;border:none;border-radius:var(--radius-button);background:#111;color:#fff;font-size:15px;font-weight:700;letter-spacing:.2px;cursor:pointer;font-family:inherit">확인</button>
+  </div>
+</div>
+
+<!-- 신규(사용자요청 — "빠진곳없지?" 재점검에서 발견): 네이티브 alert() 옆에 prompt()도 똑같이 못생긴
+     브라우저 기본 입력창으로 뜨고 있었음(반려사유·정지사유·관리자 로그인 등 9곳). alert()와 같은 방식으로
+     window는 오버라이드하지 않고(입력값을 콜백으로 받아야 해서 구조가 달라 appPrompt()로 별도 제공),
+     호출부 8개 함수를 async로 바꿔 await appPrompt(...)를 쓰도록 교체 -->
+<div id="app-prompt-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100001;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeAppPrompt(null)">
+  <div style="width:100%;max-width:380px;background:#fff;border:1px solid rgba(0,0,0,.08);border-radius:var(--radius-card);padding:clamp(22px,5vw,28px) clamp(20px,4.5vw,24px);box-shadow:0 18px 44px rgba(0,0,0,.16)">
+    <div id="app-prompt-title" style="font-size:16.5px;font-weight:700;color:#111;letter-spacing:-.2px;margin-bottom:14px;line-height:1.5"></div>
+    <input id="app-prompt-input" type="text" onkeydown="if(event.key==='Enter'){event.preventDefault();submitAppPrompt();}else if(event.key==='Escape'){closeAppPrompt(null);}" style="width:100%;border:1px solid #ddd;border-radius:var(--radius-input);padding:12px 14px;font-size:15px;font-family:inherit;margin-bottom:18px;box-sizing:border-box;color:#111;outline:none" onfocus="this.style.borderColor='#111'" onblur="this.style.borderColor='#ddd'">
+    <div style="display:flex;gap:8px">
+      <button type="button" id="app-prompt-cancel" onclick="closeAppPrompt(null)" style="flex:1;padding:13px;border:1px solid #111;border-radius:var(--radius-button);background:#fff;color:#111;font-size:14.5px;font-weight:700;letter-spacing:.2px;cursor:pointer;font-family:inherit">취소</button>
+      <button type="button" id="app-prompt-ok" onclick="submitAppPrompt()" style="flex:1;padding:13px;border:none;border-radius:var(--radius-button);background:#111;color:#fff;font-size:14.5px;font-weight:700;letter-spacing:.2px;cursor:pointer;font-family:inherit">확인</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============================================================ -->
 <!-- 신규(로드맵 #14): 24시간 AI 챗봇 상담 (플로팅 버튼 + 계약DB 기반 응답) -->
 <!-- ============================================================ -->
@@ -4132,10 +4161,10 @@ function approvePendingPartner(){
   renderAdminPendingPartnersList();
   go('admin-pending-partners');
 }
-function rejectPendingPartner(){
+async function rejectPendingPartner(){
   if(!requireRoomerRole('admin')) return;
   var a = (window.PENDING_PARTNERS||[]).filter(function(x){return x.id===window.currentPendingPartnerId;})[0]; if(!a) return;
-  var reason = prompt('반려 사유를 입력해주세요.');
+  var reason = await appPrompt('반려 사유를 입력해주세요.');
   if(!reason) return;
   if(window.MVP.live){
     apiFetch('/api/admin/partners/'+encodeURIComponent(a.id)+'/reject',{method:'PUT',body:JSON.stringify({reason:reason})}).then(function(){
@@ -4336,7 +4365,7 @@ async function fileDispute(){
   var t=window._disputeType; var desc=(document.getElementById('dispute-desc')||{}).value||'';
   if(!t){ var b=document.getElementById('dispute-file-body'); if(b){ var w=document.createElement('div'); w.className='caption'; w.style.cssText='color:var(--terracotta);text-align:center;margin-top:10px'; w.textContent='분쟁 유형을 선택해 주세요.'; b.appendChild(w); setTimeout(function(){if(w.parentNode)w.parentNode.removeChild(w);},1800);} return; }
   var activeContractId = window.MVP.live ? getCurrentRoomServerId('contractId') : null;
-  if(window.MVP.live && !activeContractId){ alert('계약이 확인된 대화방에서만 분쟁을 신고할 수 있습니다.'); return; }
+  if(window.MVP.live && !activeContractId){ alert('분쟁 신고는 계약이 확정된 대화방에서만 접수할 수 있어요.\n업체와 계약을 먼저 진행한 뒤 다시 시도해 주세요.'); return; }
   var by=(window.currentAccountMode==='partner')?'업체':'소비자';
   var room = (typeof currentRoom==='function') ? currentRoom() : null;
   // 결함수정(전면검증 발견, A단계): DISPUTES에 어느 업체·소비자 것인지 식별필드가 전혀 없어서
@@ -4500,10 +4529,10 @@ function approveInspect(id){
   if(window.MVP.live){ apiFetch('/api/admin/portfolio/'+encodeURIComponent(id)+'/approve',{method:'PUT',body:'{}'}).then(function(){i.status='approved';window._portfolioQueueLoaded=false;renderAdminInspect();}).catch(function(e){alert(e.message);}); return; }
   i.status='approved'; renderAdminInspect();
 }
-function rejectInspect(id){
+async function rejectInspect(id){
   if(!requireRoomerRole('admin')) return;
   var i=(window.INSPECT_QUEUE||[]).filter(function(x){return x.id===id;})[0]; if(!i) return;
-  var reason=prompt('반려 사유를 입력해주세요.'); if(!reason||!reason.trim()) return;
+  var reason=await appPrompt('반려 사유를 입력해주세요.'); if(!reason||!reason.trim()) return;
   if(window.MVP.live){ apiFetch('/api/admin/portfolio/'+encodeURIComponent(id)+'/reject',{method:'PUT',body:JSON.stringify({reason:reason.trim()})}).then(function(){i.status='rejected';window._portfolioQueueLoaded=false;renderAdminInspect();}).catch(function(e){alert(e.message);}); return; }
   i.status='rejected'; renderAdminInspect();
 }
@@ -4549,12 +4578,12 @@ function renderAdminAbuse(){
       + '</div>';
   }).join('');
 }
-function abuseAction(id, act){
+async function abuseAction(id, act){
   var a=(window.ABUSE_QUEUE||[]).filter(function(x){return x.id===id;})[0];
   var label=(act==='warn')?'경고 발송':'일시 정지';
   if(window.MVP.live){
     var note = null;
-    if(act==='suspend'){ note = prompt('정지 사유를 입력해주세요(선택 입력 가능)', '반복 노쇼 확인됨'); if(note===null) return; }
+    if(act==='suspend'){ note = await appPrompt('정지 사유를 입력해주세요(선택 입력 가능)', {defaultValue:'반복 노쇼 확인됨'}); if(note===null) return; }
     apiFetch('/api/admin/abuse/'+encodeURIComponent(id)+'/action', {method:'POST', body: JSON.stringify({action:act, note:note})})
       .then(function(){
         if(a) a.status='handled';
@@ -4732,11 +4761,11 @@ function approveTier(){
   }
   u.status='approved'; if(window.tierApplicant && u.partner===window.tierApplicant.name){ window.tierApplicant.tier=u.to; if(window.PARTNER_PROFILE) window.PARTNER_PROFILE.tier=u.to; if(window.partnerTierInfo) window.partnerTierInfo.tierName=u.to; } adminLog('등급 승급 승인: '+u.partner+' → '+u.to+' (수수료 '+(window.TIER_FEE[u.to]||{}).pct+')'); renderAdminTierDetail();
 }
-function rejectTier(){
+async function rejectTier(){
   if(!requireRoomerRole('admin')) return;
   var u=(window.TIER_UPGRADES||[]).filter(function(x){return x.id===window.currentTierAppId;})[0]; if(!u||u.status!=='admin_review') return;
   if(window.MVP.live){
-    var reason=prompt('반려 사유를 입력해주세요.'); if(!reason||!reason.trim()) return;
+    var reason=await appPrompt('반려 사유를 입력해주세요.'); if(!reason||!reason.trim()) return;
     apiFetch('/api/admin/tier-upgrades/'+encodeURIComponent(u.id)+'/reject', {method:'PATCH', body:JSON.stringify({reason:reason.trim()})})
       .then(function(){
         u.status='rejected';
@@ -4860,7 +4889,7 @@ async function applyInspection(planKey){
 async function proceedApplyInspection(planKey, extra){
   extra = extra || {};
   var activeContractId = window.MVP.live ? getCurrentRoomServerId('contractId') : null;
-  if(window.MVP.live && !activeContractId){ alert('계약이 확인된 대화방에서만 감리를 신청할 수 있습니다.'); return; }
+  if(window.MVP.live && !activeContractId){ alert('감리 신청은 계약이 확정된 대화방에서만 가능해요.\n업체와 계약을 먼저 진행한 뒤 다시 요청해 주세요.'); return; }
   var p=planByKey(planKey);
   var price = planKey==='photo' ? calcPhotoPrice(extra.photoCount) : calcExpertPrice(extra.tripKey);
   var planLabel = p.label + (planKey==='photo' ? ' ('+extra.photoCount+'장)' : (planKey==='expert' && extra.tripKey ? ' (출장포함)' : ''));
@@ -4930,7 +4959,7 @@ function removeAiInspectionPhoto(idx){
 async function runAiInspectionAnalysis(){
   if(window.aiInspectionPhotos.length === 0) return;
   var activeContractId = window.MVP.live ? getCurrentRoomServerId('contractId') : null;
-  if(window.MVP.live && !activeContractId){ alert('계약이 확인된 대화방에서만 AI 공사 감리를 신청할 수 있습니다.'); return; }
+  if(window.MVP.live && !activeContractId){ alert('AI 공사 감리는 계약이 확정된 대화방에서만 신청할 수 있어요.\n업체와 계약을 먼저 진행한 뒤 다시 요청해 주세요.'); return; }
   if(window.MVP.live){
     try{
       var data = await apiFetch('/api/inspections', {method:'POST', body: JSON.stringify({contractId: activeContractId, plan:'ai', photoCount: window.aiInspectionPhotos.length})});
@@ -5427,6 +5456,119 @@ function icon(name,color,size){
   return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="'+color+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px;flex-shrink:0">'+ICONS[name]+'</svg>';
 }
 const T = {charcoal:'#2C4A63', terracotta:'#E08A5B', steelblue:'#4A7BA6', success:'#2E7D4F', slate:'var(--slate)', brass:'#D9A15C'};
+
+// 신규(사용자요청 — 네이티브 alert() 전수조사 후 리디자인, 2026-09):
+// 캡처로 제보받은 "'https://roomer-backend.onrender.com' 페이지 내용:" 같은 못생긴 브라우저 기본
+// alert()가 코드 전체에서 111곳(직접 호출) + requireRoomerRole 42곳 + reportLiveActionFailure 14곳
+// = 총 167곳에서 뜰 수 있는 것을 전수조사로 확인. 호출부 167곳을 일일이 다 고치는 대신, icon()/ICONS가
+// 준비된 이 시점에 window.alert 자체를 앱 톤에 맞춘 공용 팝업(app-notice-overlay, body 상단 HTML)으로
+// 오버라이드해서 한 곳만 고치면 167곳 전부에 자동 적용되도록 함. confirm()은 이미 예전에
+// openMeasSheet 패턴으로 전부 교체 완료돼 있었음(현재 라이브 코드에 0곳) — 그 선례를 그대로 따름.
+function detectAppNoticeTone(msg){
+  var s = String(msg==null?'':msg);
+  if(/실패했|못했|못 했|오류|에러|문제가\s*(있|생)/.test(s)) return 'error';
+  if(/됐어요|되었습니다|완료|전송됐|접수됐|처리됐|저장됐|성공/.test(s)) return 'success';
+  return 'info';
+}
+var APP_NOTICE_QUEUE = [];
+var APP_NOTICE_SHOWING = false;
+function openAppNotice(message, opts){
+  opts = opts || {};
+  APP_NOTICE_QUEUE.push({ message: message, tone: opts.tone || detectAppNoticeTone(message) });
+  if(!APP_NOTICE_SHOWING) renderNextAppNotice();
+}
+function renderNextAppNotice(){
+  if(!APP_NOTICE_QUEUE.length){ APP_NOTICE_SHOWING = false; return; }
+  APP_NOTICE_SHOWING = true;
+  var item = APP_NOTICE_QUEUE.shift();
+  // 결함수정(사용자 피드백 — "AI디자인 느낌 없애고 고급지게"): 톤마다 "안내드려요"/"완료됐어요" 같은
+  // 획일적 문구를 매번 반복해서 붙이니 템플릿처럼 보임 → 그 자리는 없애고 실제 메시지를 그대로 헤드라인으로
+  // 씀(줄바꿈(\n)이 있으면 첫 줄=제목/나머지=설명으로 자연 분리, 한 줄이면 그 문장 자체가 제목).
+  // 재수정(사용자 피드백 — "백색 배경+검정 글씨, 이모지 다 지우고 세련되게"): 톤별 색깔 아이콘(파랑/빨강/초록
+  // 원형 배경)을 전부 제거하고 흑백 단색으로 통일. 톤 구분은 색이 아니라 아이콘 모양(안내=alertCircle,
+  // 완료=checkCircle)만으로 하고, 원 배경은 채우지 않고(HTML에서 1.4px 검정 테두리만) 얇은 라인 아이콘만 표시.
+  var byTone = {
+    info:    { iconName:'alertCircle' },
+    error:   { iconName:'alertCircle' },
+    success: { iconName:'checkCircle' }
+  };
+  var pick = byTone[item.tone] || byTone.info;
+  var raw = String(item.message==null?'':item.message);
+  var lines = raw.split('\n').filter(function(l){ return l.length>0; });
+  var titleText = lines[0] || '';
+  var bodyText = lines.slice(1).join('\n');
+  var iconWrap = document.getElementById('app-notice-icon-wrap');
+  var titleEl = document.getElementById('app-notice-title');
+  var descEl = document.getElementById('app-notice-desc');
+  if(iconWrap){ iconWrap.innerHTML = icon(pick.iconName, '#111', 20); }
+  if(titleEl){
+    titleEl.textContent = titleText;
+    titleEl.style.fontSize = bodyText ? '17.5px' : '16.5px';
+    titleEl.style.fontWeight = bodyText ? '800' : '700';
+    titleEl.style.marginBottom = bodyText ? '8px' : '20px';
+  }
+  if(descEl){ descEl.textContent = bodyText; descEl.style.display = bodyText ? 'block' : 'none'; }
+  var overlay = document.getElementById('app-notice-overlay');
+  if(overlay) overlay.style.display = 'flex';
+}
+function closeAppNotice(){
+  var overlay = document.getElementById('app-notice-overlay');
+  if(overlay) overlay.style.display = 'none';
+  renderNextAppNotice();
+}
+// 브라우저 기본 alert()를 앱 내 공용 팝업으로 완전 대체. 기존 alert('메시지') 호출부는 그대로 두되
+// (콘텐츠·로직 무변경, 호출 시점에 즉시 return하는 기존 흐름과도 100% 호환) 화면에는 이 함수가 대신 뜸.
+if (typeof window !== 'undefined') {
+  window.alert = function(message){ openAppNotice(message); };
+}
+
+// 신규(사용자요청 — "빠진곳없지?" 재점검에서 발견): 브라우저 기본 prompt()도 alert()와 같은 계열의
+// 못생긴 네이티브 팝업이라 9곳을 찾아 이걸로 교체. prompt()는 입력값을 "리턴"해야 해서 alert()처럼
+// window.prompt 자체를 오버라이드할 수 없고(오버라이드해도 동기적으로 값을 즉시 리턴 못 함),
+// Promise로 값을 돌려주는 appPrompt()를 만들어 호출부 각각을 async/await로 바꿔 대응.
+var APP_PROMPT_QUEUE = [];
+var APP_PROMPT_SHOWING = false;
+var _appPromptResolve = null;
+function appPrompt(message, opts){
+  opts = opts || {};
+  return new Promise(function(resolve){
+    APP_PROMPT_QUEUE.push({ message: message, opts: opts, resolve: resolve });
+    if(!APP_PROMPT_SHOWING) renderNextAppPrompt();
+  });
+}
+function renderNextAppPrompt(){
+  if(!APP_PROMPT_QUEUE.length){ APP_PROMPT_SHOWING = false; return; }
+  APP_PROMPT_SHOWING = true;
+  var item = APP_PROMPT_QUEUE.shift();
+  var titleEl = document.getElementById('app-prompt-title');
+  var inputEl = document.getElementById('app-prompt-input');
+  var okBtn = document.getElementById('app-prompt-ok');
+  var cancelBtn = document.getElementById('app-prompt-cancel');
+  if(titleEl) titleEl.textContent = String(item.message==null?'':item.message);
+  if(inputEl){
+    inputEl.type = item.opts.inputType || 'text';
+    inputEl.placeholder = item.opts.placeholder || '';
+    inputEl.value = item.opts.defaultValue || '';
+  }
+  if(okBtn) okBtn.textContent = item.opts.okLabel || '확인';
+  if(cancelBtn) cancelBtn.textContent = item.opts.cancelLabel || '취소';
+  _appPromptResolve = item.resolve;
+  var overlay = document.getElementById('app-prompt-overlay');
+  if(overlay) overlay.style.display = 'flex';
+  if(inputEl) setTimeout(function(){ inputEl.focus(); inputEl.select(); }, 30);
+}
+function closeAppPrompt(result){
+  var overlay = document.getElementById('app-prompt-overlay');
+  if(overlay) overlay.style.display = 'none';
+  var resolve = _appPromptResolve; _appPromptResolve = null;
+  if(resolve) resolve(result);
+  renderNextAppPrompt();
+}
+function submitAppPrompt(){
+  var inputEl = document.getElementById('app-prompt-input');
+  closeAppPrompt(inputEl ? inputEl.value : '');
+}
+
 // 결함수정(실제 재현·발견된 버그): 헤더의 지역선택·큰검색창 아이콘 초기화 코드가 icon()/ICONS/T
 // 정의보다 훨씬 앞(2860번줄대)에 있어서 "Cannot access 'ICONS'/'T' before initialization" 에러로
 // 조용히 실패하고 아이콘이 하나도 안 뜨던 문제 → 여기(전부 정의된 직후)로 옮겨서 근본해결
@@ -11871,8 +12013,8 @@ function c_renderQuoteReadonly08(){
     + '</div>';
   }).join('') + '<button class="btn btn-outline" style="margin-top:10px" onclick="closeToReturn()">닫기</button>';
 }
-async function requestQuoteRevision(quoteId){var reason=prompt('수정이 필요한 내용을 입력해주세요.');if(!reason||!reason.trim())return;try{await apiFetch('/api/quotes/'+encodeURIComponent(quoteId)+'/revision-request',{method:'POST',body:JSON.stringify({reason:reason.trim()})});await loadLiveQuotesForCurrentRequest();}catch(e){reportLiveActionFailure('견적 수정요청',e);}}
-async function rejectReceivedQuote(quoteId){var reason=prompt('견적을 거절하는 이유를 입력해주세요.');if(!reason||!reason.trim())return;try{await apiFetch('/api/quotes/'+encodeURIComponent(quoteId)+'/reject',{method:'POST',body:JSON.stringify({reason:reason.trim()})});await loadLiveQuotesForCurrentRequest();}catch(e){reportLiveActionFailure('견적 거절',e);}}
+async function requestQuoteRevision(quoteId){var reason=await appPrompt('수정이 필요한 내용을 입력해주세요.');if(!reason||!reason.trim())return;try{await apiFetch('/api/quotes/'+encodeURIComponent(quoteId)+'/revision-request',{method:'POST',body:JSON.stringify({reason:reason.trim()})});await loadLiveQuotesForCurrentRequest();}catch(e){reportLiveActionFailure('견적 수정요청',e);}}
+async function rejectReceivedQuote(quoteId){var reason=await appPrompt('견적을 거절하는 이유를 입력해주세요.');if(!reason||!reason.trim())return;try{await apiFetch('/api/quotes/'+encodeURIComponent(quoteId)+'/reject',{method:'POST',body:JSON.stringify({reason:reason.trim()})});await loadLiveQuotesForCurrentRequest();}catch(e){reportLiveActionFailure('견적 거절',e);}}
 function measDatesArr(){ var out=[],d=new Date(),w=['일','월','화','수','목','금','토']; for(var i=1;i<=6;i++){ var t=new Date(d.getTime()+i*86400000); out.push((t.getMonth()+1)+'/'+t.getDate()+'('+w[t.getDay()]+')'); } return out; }
 function measDateObjs(){ var out=[],d=new Date(),w=['일','월','화','수','목','금','토']; for(var i=1;i<=6;i++){ var t=new Date(d.getTime()+i*86400000); var iso=t.getFullYear()+'-'+('0'+(t.getMonth()+1)).slice(-2)+'-'+('0'+t.getDate()).slice(-2); out.push({label:(t.getMonth()+1)+'/'+t.getDate()+'('+w[t.getDay()]+')', iso:iso}); } return out; }
 function measDday(iso){ if(!iso) return null; var today=new Date(); today.setHours(0,0,0,0); var dt=new Date(iso+'T00:00:00'); return Math.round((dt-today)/86400000); }
@@ -13415,12 +13557,12 @@ function saveAdAdminDetail(){
   var n = document.getElementById('ad-admin-save-note'); if(n){ n.innerHTML = icon('checkCircle',T.success,12)+' 저장됐어요.'; }
   if(typeof adminLog==='function') adminLog('광고 정보 수정: '+a.partner);
 }
-function setAdStatus(status){
+async function setAdStatus(status){
   var a = window._curAdAdmin; if(!a) return;
   if(window.MVP.live){
     var n = document.getElementById('ad-admin-save-note');
     var reason = null;
-    if(status==='rejected'){ reason = prompt('반려 사유를 입력해주세요', '관리자 검토 후 반려'); if(reason===null) return; }
+    if(status==='rejected'){ reason = await appPrompt('반려 사유를 입력해주세요', {defaultValue:'관리자 검토 후 반려'}); if(reason===null) return; }
     var url = '/api/admin/ads/'+encodeURIComponent(a.id)+'/'+(status==='active'?'approve':'reject');
     apiFetch(url, {method:'PATCH', body: JSON.stringify(status==='rejected'?{reason:reason}:{})})
       .then(function(){
@@ -13536,7 +13678,7 @@ function renderAdminPinDots(){
   for(var i=0;i<len;i++){ html += '<span style="width:14px;height:14px;border-radius:50%;background:'+(i<cur?'var(--charcoal)':'var(--stone)')+';display:inline-block"></span>'; }
   dots.innerHTML = html;
 }
-function adminPinKey(k){
+async function adminPinKey(k){
   if(k==='back'){ window._adminPinInput = window._adminPinInput.slice(0,-1); renderAdminPinDots(); return; }
   if(window._adminPinInput.length >= window.ADMIN_PIN.length) return;
   window._adminPinInput += k;
@@ -13545,8 +13687,8 @@ function adminPinKey(k){
     if(window.MVP.live){
       // 신규(2단계 프론트연동): 실서버 모드에서는 클라이언트측 PIN을 절대 신뢰하지 않고,
       // 실제 관리자 이메일+비밀번호 인증(/api/admin/auth/login)으로 완전히 대체
-      var email = prompt('관리자 이메일을 입력하세요');
-      var pw = email ? prompt('비밀번호를 입력하세요') : null;
+      var email = await appPrompt('관리자 이메일을 입력하세요');
+      var pw = email ? await appPrompt('비밀번호를 입력하세요', {inputType:'password'}) : null;
       if(!email || !pw){ window._adminPinInput=''; renderAdminPinDots(); return; }
       apiFetch('/api/admin/auth/login', {method:'POST', body: JSON.stringify({email:email, password:pw})})
         .then(function(data){
@@ -14033,7 +14175,7 @@ async function submitDefect(){
     return;
   }
   var activeContractId = window.MVP.live ? getCurrentRoomServerId('contractId') : null;
-  if(window.MVP.live && !activeContractId){ alert('계약이 확인된 대화방에서만 하자를 접수할 수 있습니다.'); return; }
+  if(window.MVP.live && !activeContractId){ alert('하자 접수는 계약이 확정된 대화방에서만 가능해요.\n업체와 계약을 먼저 진행한 뒤 다시 시도해 주세요.'); return; }
   var cls = classifyDefect(txt);
   var rep = {photos: window.defectDraftPhotos.slice(), text: txt.trim(), status:'received', grade: cls.grade, matched: cls.matched, temp:(cls.grade==='critical'? tempActionFor(txt):''), verdict:'', id: Date.now()};
   if(window.MVP.live){
@@ -14401,9 +14543,13 @@ window.chatbotStarted = false;
 var CHATBOT_TOPICS = {
   '계약·대금': ['납부 순서 알려줘','중도금 얼마야?','잔금은 언제 내?','계약 취소하면?','세금계산서 되나요?'],
   '견적·시세': ['평당 시세 얼마야?','가견적서 보는 법','8대 공정이 뭐야?','단가 경고는 왜 떠?'],
-  '공사 진행': ['공사 어디까지 됐어?','공사 기간 얼마나?','공사가 지연되면?','감리는 어떻게?'],
-  '하자·A/S': ['하자보수 기간은?','하자 접수하는 법','긴급 하자는 얼마나 빨리?','업체가 잠수하면?'],
+  '공사 진행': ['공사 어디까지 됐어?','공사 기간 얼마나?','공사가 지연되면?','실측 상대가 안 나왔어요'],
+  '하자·A/S': ['하자보수 기간은?','하자 접수하는 법','긴급 하자는 얼마나 빨리?','업체가 잠수하면?','분쟁 신고 어떻게 해?'],
   '업체·등급': ['업체 등급이 뭐야?','평점 믿어도 돼?','업체 고르는 기준'],
+  // 신규(사용자요청 — 챗봇 전수조사 후 보강): AI 공사감리는 이번에 실제 결제까지 연동된 유료 서비스인데
+  // 챗봇이 전혀 몰라서 "감리"라고 물으면 무관한 원격감리(공정사진) 답변만 나가던 문제 → 전용 주제 신설
+  'AI 공사감리': ['AI 공사감리 얼마야?','사진감리 신청 어떻게 해?','전문가 감리 출장비는?','원격 감리랑 뭐가 달라?'],
+  '가입·계정·리워드': ['비밀번호를 잊어버렸어요','소셜 계정이 없어요','탈퇴하고 싶어요','친구 초대하면 뭐 받아?'],
   '플랫폼 안내': ['이 서비스 뭐야?','수수료 있나요?','왜 전화번호가 가려져?','회원가입 방법']
 };
 var CHATBOT_TOPIC_NAMES = Object.keys(CHATBOT_TOPICS);
@@ -14488,33 +14634,44 @@ function chatbotAnswer(q){
   }
   if(cbHas(t,'공사기간','며칠','얼마나걸','기간','언제끝','완공일')) return '규모·범위에 따라 다르지만 아파트 전체 리모델링은 대략 <b>2~5주</b>가 일반적입니다. 정확한 일정은 업체 견적서·메신저에서 확인하세요.';
   if(cbHas(t,'지연','늦어','안와','연락안','미루')) return '공사 지연 시 메신저 기록이 근거가 됩니다. 단계별 사진 미승인이 7일 지속되면 자동 처리 규칙이 있고, 문제가 지속되면 담당자 연결이 가능해요.'+agentBtn;
-  if(cbHas(t,'감리')) return '공정 단계별 사진 의무 업로드 + 소비자 승인으로 원격 감리가 이뤄집니다. 착공전 3장·50% 5장·완공 10장 이상이 기준이에요.';
+  if(cbHas(t,'실측노쇼','상대가안','상대방이안','안나왔')) return '실측 상대가 안 나왔다면 확정된 약속 화면에서 [노쇼 신고]를 눌러주세요. 반복(2회 이상) 신고되면 어뷰징 검토 대상으로 기록됩니다.';
+  if(cbHas(t,'일정변경','일정바꾸','실측미루','실측변경')) return '확정된 실측 약속 화면에서 [일정 변경 요청]을 누르면 다시 일정을 조율할 수 있어요.';
+  // 5-1) 신규(사용자요청 — 챗봇 전수조사 후 보강): AI 공사감리는 원격 감리(공정사진)와는 별개인
+  // 유료 진단 서비스. "감리"라는 넓은 키워드보다 먼저 매칭돼야 해서 여기 최우선 배치.
+  if(cbHas(t,'사진감리')) return '사진감리는 전문가가 사진 1장당 상세 답변을 드리는 유료 서비스예요. 장당 <b>8,000원</b>, 최소 5장(4만원)부터 신청할 수 있고, 보유 포인트가 있으면 먼저 차감된 뒤 나머지 금액만 결제돼요.'+goBtn('ai-inspection','AI 공사감리 신청하기');
+  if(cbHas(t,'전문가감리')) return '전문가 감리는 전문가가 현장을 깊이 있게 종합 검토·답변하는 서비스로 기본 <b>30만원</b>에 지역별 출장비가 더해져요(서울·경기 5만원 / 충청권 10만원 / 전라·강원·경상권 15만원 / 제주권 20만원).'+goBtn('ai-inspection','AI 공사감리 신청하기');
+  if(cbHas(t,'ai감리','에이아이감리','감리비용','감리얼마','감리신청','감리종류','원격감리랑')) return 'AI 공사감리는 3가지로 나뉘어요 — AI 감리(무료·즉시 소견) / 사진감리(장당 8,000원·최소 5장) / 전문가 감리(30만원+출장비). 이건 공사 중 사진을 승인하는 "원격 감리"와는 별개로, 계약이 확정된 대화방에서 언제든 신청해 진단받는 유료 서비스예요.'+goBtn('ai-inspection','AI 공사감리 신청하기');
+  if(cbHas(t,'감리')) return '공정 단계별 사진 의무 업로드 + 소비자 승인으로 원격 감리가 이뤄집니다. 착공전 3장·50% 5장·완공 10장 이상이 기준이에요. 이와 별개로 언제든 신청 가능한 유료 "AI 공사감리"(AI 무료소견/사진감리/전문가감리)도 있어요.'+goBtn('ai-inspection','AI 공사감리 알아보기');
   // 6) 하자·A/S
   if(cbHas(t,'무상','유상','공짜','돈내야')) return '시공 불량은 무상 보수 대상입니다. 다만 사용 중 파손·관리 소홀은 유상 전환될 수 있어요. 준공일로부터 1년 무상 하자보수가 기본입니다.';
   if(cbHas(t,'잠수','대체업체','폐업','도망','연락두절','안고쳐')) return '업체가 기한 내 미처리·잠수하면 플랫폼 정책상 <b>대체 업체 배정</b>과 하자보수 이행보증금(계약금액 5%) 활용 절차가 있어요. 소비자 추가 부담 없이 진행되도록 담당자가 확인해드립니다.'+agentBtn;
   if(cbHas(t,'긴급하자','얼마나빨리','급한하자')) return '긴급도 3등급으로 자동 분류됩니다 — 긴급(누수·감전 등) 24시간 / 주의 72시간 / 일반 7일 이내 처리 요청.';
-  if(cbHas(t,'하자','보수','수리','고장','불량','에이에스','as','문제생','망가')) return '준공일로부터 <b>1년간 무상 하자보수</b>가 적용됩니다. [하자보수 접수]에서 사진·내용을 접수하면 AI가 긴급도(24/72/168h)를 분류해 업체에 처리를 요청해요.'+goBtn('defect','하자 접수하러 가기');
+  if(cbHas(t,'하자','보수','수리','고장','불량','에이에스','as','문제생','망가')) return '준공일로부터 <b>1년간 무상 하자보수</b>가 적용됩니다. 계약이 확정된 대화방에서 [하자보수 접수]로 사진·내용을 접수하면 AI가 긴급도(24/72/168h)를 분류해 업체에 처리를 요청해요.'+goBtn('defect','하자 접수하러 가기');
   // 7) 메신저·안전·보호
   if(cbHas(t,'전화번호','외부연락','카톡','계좌알려','따로연락','직거래')) return '안전을 위해 외부 연락처·계좌는 메신저에서 자동 마스킹·차단됩니다. 모든 소통·거래는 플랫폼 안에서 기록으로 보호돼요.';
   if(cbHas(t,'욕설','비속어','필터')) return '메신저에는 욕설·비속어 자동 필터가 적용됩니다.';
-  if(cbHas(t,'분쟁','조정','신고','피해','소비자보호','보증보험','hug','sgi')) return '분쟁 시 메신저 기록이 증거가 되며, 하자심사·분쟁조정위원회 및 하자보수 이행보증(SGI/HUG) 관련 절차는 담당자를 통해 정확히 안내받으실 수 있어요.'+agentBtn;
+  if(cbHas(t,'분쟁','조정','신고','피해','소비자보호','보증보험','hug','sgi')) return '분쟁 신고는 계약이 확정된 대화방에서만 접수할 수 있어요. 유형은 하자 미처리·대금 정산 이견·노쇼 잠수·품질 불만·기타 5가지로 나뉘고, 접수하면 메신저 기록·사진을 근거로 AI가 유형별 판단·권고안을 먼저 제시한 뒤 관리자 검토로 넘어가요. 하자보수 이행보증(SGI/HUG) 관련 절차는 담당자를 통해 정확히 안내받으실 수 있어요.'+goBtn('dispute-file','분쟁 신고하러 가기')+agentBtn;
   // 8) 가입·계정
   // 9) 신규기능(사용자요청): 광고·크레딧/결제수단·출금·찜하기·메신저
   if(cbHas(t,'광고','상위노출','광고신청','광고관리')) return '업체는 크레딧으로 히어로 배너·하단 소형·지역 상위노출 3가지 광고 슬롯을 신청할 수 있어요. 신청한 광고는 AI 1차 검수 후 관리자 승인을 거쳐 노출됩니다. 모든 광고에는 "AD" 배지가 표시돼 일반 콘텐츠와 구분돼요.'+(window.currentAccountMode==='partner'?goBtn('my-ads','광고관리 바로가기'):'');
-  if(cbHas(t,'크레딧','충전','결제수단','카드등록','카카오페이','네이버페이','토스페이')) return '포인트·크레딧 충전은 카카오페이·네이버페이·토스페이·카드결제 중 선택할 수 있어요. 카드 등록은 [결제수단 관리]에서, 충전은 [내 크레딧]에서 가능합니다.'+goBtn('wallet','내 크레딧으로 이동');
-  if(cbHas(t,'출금','출금신청','캐시출금','현금화')) return '적립된 크레딧은 [내 크레딧] 화면에서 언제든 출금 신청할 수 있어요. 신청 후 영업일 기준으로 처리됩니다.'+goBtn('wallet','출금 신청하러 가기');
+  if(cbHas(t,'크레딧','충전','결제수단','카드등록','카카오페이','네이버페이','토스페이')) return '크레딧 충전은 [내 크레딧]에서 토스페이먼츠 결제창을 통해 진행돼요(카드·계좌 등 토스에서 지원하는 수단 선택 가능). 1회 충전 한도는 <b>1만원 이상 1천만원 이하</b>이고, AI 공사감리 등 결제 시 보유 크레딧이 먼저 자동 차감된 뒤 부족한 금액만 결제돼요.'+goBtn('wallet','내 크레딧으로 이동');
+  if(cbHas(t,'출금','출금신청','캐시출금','현금화')) return (window.currentAccountMode==='partner') ? '업체 계정은 [정산] 화면에서 보유 크레딧을 은행 계좌로 출금 신청할 수 있어요. 신청 즉시 잔액이 차감되고 이후 영업일 기준으로 입금 처리됩니다.'+goBtn('settlement','정산·출금 화면으로 이동') : '아쉽게도 소비자 계정의 포인트·크레딧은 현금으로 출금할 수 없고, AI 공사감리 등 플랫폼 내 결제에만 사용할 수 있어요. 업체(파트너) 계정은 정산 화면에서 매출을 출금할 수 있습니다.'+goBtn('wallet','내 크레딧 보기');
   if(cbHas(t,'찜','저장','북마크','찜한사례')) return '마음에 드는 시공 사례는 하트를 눌러 찜해두면 [마이페이지 > 찜한 시공 사례]에서 언제든 다시 볼 수 있어요.'+'<button onclick="closeChatbot();if(typeof renderSavedList===\'function\')renderSavedList();go(\'saved-list\')" style="margin-top:8px;display:inline-block;border:1px solid var(--terracotta);background:#fff;color:var(--terracotta);border-radius:8px;padding:6px 12px;font-size:13.5px;cursor:pointer;font-family:inherit;font-weight:600">찜한 사례 보기</button>';
   if(cbHas(t,'메신저','채팅','대화','디엠','문의방법')) return '업체와의 모든 상담·계약·정산 논의는 메신저 안에서 이뤄져요. 외부 연락처는 자동 마스킹되니, 반드시 메신저로 소통해주세요.'+goBtn('chatlist','메신저 목록 보기');
-  if(cbHas(t,'가입','회원','로그인','소셜','카카오','애플')) return '카카오·애플 등 소셜 로그인으로 간편 가입할 수 있어요. 가입 시 소비자/업체를 선택합니다.';
+  if(cbHas(t,'비밀번호','비번','패스워드','아이디찾','계정찾')) return '루머는 비밀번호가 없는 서비스예요! 카카오·네이버·애플 소셜 로그인이나, 휴대폰·이메일로 받은 인증번호(OTP)로 바로 로그인해서 따로 비밀번호를 잊어버릴 걱정이 없어요.';
+  if(cbHas(t,'소셜계정없','소셜계정이없','sns계정없','sns계정이없','카톡없','계정을안쓰')) return '소셜 계정이 없어도 괜찮아요. 휴대폰 번호나 이메일로 인증번호(OTP)를 받아 비밀번호 없이 바로 가입·로그인할 수 있어요.';
+  if(cbHas(t,'탈퇴','계정삭제','회원탈퇴')) return (window.currentAccountMode==='partner') ? '사업자 탈퇴 화면에서 탈퇴를 신청할 수 있어요. 탈퇴하시면 계정과 모든 데이터가 삭제되며 되돌릴 수 없고, 계약 등 법적 보관이 필요한 데이터는 관련 법령에 따라 별도 보관 후 파기돼요.'+goBtn('partner-withdraw','사업자 탈퇴 화면으로 이동') : '[마이데이터] 화면에서 탈퇴를 신청할 수 있어요. 탈퇴하시면 계정과 모든 데이터가 삭제되며 이 작업은 되돌릴 수 없고, 계약 등 법적 보관이 필요한 데이터는 관련 법령에 따라 별도 보관 후 파기돼요.'+goBtn('mydata','마이데이터 화면으로 이동');
+  if(cbHas(t,'가입','회원','로그인','소셜','카카오','애플','네이버','휴대폰인증','otp','문자인증')) return '카카오·네이버·애플 소셜 로그인, 또는 휴대폰·이메일 인증번호(OTP)로 비밀번호 없이 간편하게 가입할 수 있어요. 가입 시 소비자/업체를 선택합니다.';
   if(cbHas(t,'전환','업체로','소비자로','계정')) return '[마이페이지]에서 소비자↔업체 계정을 전환할 수 있어요. 업체로 전환하면 대시보드(수수료 납부·공정 관리)로 이동합니다.';
   if(cbHas(t,'알림','위치','설정')) return '알림·위치 권한은 온보딩 또는 설정에서 조정할 수 있어요.'+'<button onclick="closeChatbot();if(typeof renderMyAlerts===\'function\')renderMyAlerts();go(\'my-alerts\')" style="margin-top:8px;display:inline-block;border:1px solid var(--terracotta);background:#fff;color:var(--terracotta);border-radius:8px;padding:6px 12px;font-size:13.5px;cursor:pointer;font-family:inherit;font-weight:600">알림 설정 바로가기</button>';
-  if(cbHas(t,'캐시','리워드','포인트','적립')) return '포트폴리오 업로드·SNS 공유 등 활동에 크레딧 리워드가 지급됩니다.'+goBtn('wallet','내 크레딧 보기');
+  if(cbHas(t,'친구초대','지인초대','추천인','초대하면','초대코드')) return '[내 크레딧 > 지인소개]에서 내 초대 코드를 공유하면, 초대한 지인이 가입·견적요청·계약체결·리뷰작성 단계를 밟을 때마다 화면에서 예상 크레딧이 표시돼요. 다만 자동 지급 연동은 아직 준비 중이라 실제 적립 여부·시점은 담당자 확인이 필요할 수 있어요.'+goBtn('referral','지인소개 화면 보기');
+  if(cbHas(t,'캐시','리워드','포인트','적립')) return '지금은 [내 크레딧]에서 직접 충전하는 방식이 기본이고, 업체가 신청한 광고가 반려되면 사용한 크레딧이 자동 환불돼요. "지인소개" 초대 리워드는 화면에 표시는 되지만 자동 지급 연동은 준비 중이라, 정확한 적립 여부는 담당자 확인을 권해드려요.'+goBtn('wallet','내 크레딧 보기')+agentBtn;
   // 9) 플랫폼 일반
   if(cbHas(t,'루머','서비스뭐','뭐하는','어떤앱','뭐야','소개')) return '루머는 검증된 인테리어 업체와 소비자를 안전하게 연결하는 매칭 플랫폼이에요. 견적·계약·대금·공사·하자보수까지 한 곳에서 관리합니다.';
   if(cbHas(t,'이용료','무료','유료','가입비')) return '소비자는 무료로 이용하실 수 있어요. 플랫폼 수수료는 업체가 부담합니다.';
   if(cbHas(t,'지역','어디서','서울','지방')) return '지역별 완공 사례·업체를 랜딩에서 미리 볼 수 있어요. 서비스 지역은 확대 중입니다.'+goBtn('local-search','지역별 업체 둘러보기');
   if(cbHas(t,'24시간','언제나','밤에')) return '저는 24시간 응답하는 AI 상담이에요. 복잡한 건은 담당자 연결로 이어드릴 수 있어요.';
-  if(cbHas(t,'개인정보','정보보호')) return '개인정보는 관련 법령에 따라 보호되며, 외부 연락처는 메신저에서 자동 마스킹됩니다.';
+  if(cbHas(t,'개인정보','정보보호')) return '개인정보는 관련 법령에 따라 보호되며, 외부 연락처는 메신저에서 자동 마스킹됩니다. 자세한 내용은 개인정보처리방침·이용약관에서 확인하실 수 있어요.'+goBtn('legal-doc','약관·정책 보기');
   // 10) 인테리어 상식
   if(cbHas(t,'곰팡이','결로','환기','습기')) return '결로·곰팡이는 환기 부족·단열 문제로 잘 생겨요. 환기를 자주 하고, 시공 후 열흘간은 급격한 난방·밀폐를 피하세요. 심하면 하자 접수가 가능합니다.';
   if(cbHas(t,'입주청소','청소언제')) return '입주 청소는 모든 공사·가구 설치가 끝난 뒤, 이삿짐 들이기 직전에 하는 게 가장 효율적이에요.';
@@ -14530,9 +14687,11 @@ function chatbotAnswer(q){
   return '음, 정확히 이해하지 못했어요. 이런 걸 물어보실 수 있어요:<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px">'+CHATBOT_TOPIC_NAMES.map(function(nm){ return '<button onclick="chatbotSend(\''+nm+'\')" style="border:1px solid var(--stone);background:#fff;border-radius:var(--radius-pill);padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit;color:var(--charcoal)">'+nm+'</button>'; }).join('')+'</div>'+agentBtn;
 }
 
-// ── 신규: 고급 로봇 챗봇 아이콘 (누가 봐도 챗봇 · 온라인 표시 · 은은한 펄스) ──
-function robotSVG(color,size){ size=size||28; return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="'+color+'" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="8" width="15" height="11" rx="3.5"/><path d="M12 4.7v3"/><circle cx="12" cy="3.5" r="1.15" fill="'+color+'" stroke="none"/><circle cx="9.3" cy="12.6" r="1.2" fill="'+color+'" stroke="none"/><circle cx="14.7" cy="12.6" r="1.2" fill="'+color+'" stroke="none"/><path d="M9.6 15.7c.9.7 3.9.7 4.8 0"/><path d="M4.5 12.5H3M21 12.5h-1.5"/></svg>'; }
-(function(){ var a=document.getElementById('chatbot-fab-icon'); if(a) a.innerHTML=robotSVG('#fff',30); var h=document.getElementById('chatbot-hdr-icon'); if(h) h.innerHTML=robotSVG(T.steelblue,22); })();
+// 재설계(사용자요청 — "아이콘도 세련되게" 제안 중 B안 채택): 눈·코·입이 있는 로봇 캐릭터는
+// 앱의 다른 얇은 라인 아이콘들과 결이 달라 캐릭터/이모지처럼 보인다는 문제 → 얼굴 없이
+// "실시간 응답 파형"만 추상적으로 표현한 라인 아이콘으로 교체(온라인 표시 점은 기존 그대로 유지).
+function chatbotMarkSVG(color,size){ size=size||28; return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="'+color+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="6"/><path d="M8 14v-3M12 15.5v-6M16 13v-2"/></svg>'; }
+(function(){ var a=document.getElementById('chatbot-fab-icon'); if(a) a.innerHTML=chatbotMarkSVG('#fff',30); var h=document.getElementById('chatbot-hdr-icon'); if(h) h.innerHTML=chatbotMarkSVG(T.steelblue,22); })();
 </script>
 </body>
 </html>
