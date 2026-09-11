@@ -1537,6 +1537,20 @@ async function queryTossPayment(paymentKey) {
   if (!response.ok) throw Object.assign(new Error((data && data.message) || '결제정보 조회에 실패했습니다'), { code: (data && data.code) || 'PAYMENT_PROVIDER_ERROR', status: 502 });
   return data;
 }
+// 신규(2026-09, 결제수단 실등록 연동): "카드 등록"은 결제 승인이 아니라 자동결제용 빌링키 발급 API.
+// 프론트에서 tossPayments.requestBillingAuth('CARD', ...)로 카드정보 자체는 토스의 보안 결제창에서만
+// 입력받고(우리 서버·화면은 카드번호를 절대 보지 않음), 그 결과로 받은 authKey만 서버로 전달받아
+// 이 API로 교환해야 진짜 billingKey가 발급된다(PCI-DSS 준수).
+async function issueTossBillingKey(authKey, customerKey) {
+  const response = await fetch('https://api.tosspayments.com/v1/billing/authorizations/issue', {
+    method: 'POST',
+    headers: { Authorization: tossAuthHeader(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ authKey, customerKey })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error((data && data.message) || '카드 등록에 실패했습니다'), { code: (data && data.code) || 'PAYMENT_PROVIDER_ERROR', status: response.status >= 400 && response.status < 600 ? response.status : 502 });
+  return data;
+}
 function syncVerifiedPayment(localPayment, providerPayment, rawEventType) {
   // 결함정리: 토스페이먼츠 Payment 객체는 포트원과 필드명이 다름(totalAmount 직접 필드, amount.total 아님)
   const providerAmount = Number(providerPayment.totalAmount);
@@ -1883,17 +1897,92 @@ app.put('/api/admin/inspections/:id/answer', adminAuthRequired(), (req, res) => 
 });
 
 // 결제 성공 콜백에서만 보고서 생성(되돌리기 잠금 — 미결제 상태에서는 절대 보고서 안 나옴)
-// ⚡MVP-SWITCH: 실서버 → 실제 PG 결제 API 호출 후 성공 콜백에서 아래 로직 실행
+// 결함정리(2026-09, 전수조사 발견 — 이 라우트가 blockInProduction으로 실서비스에서 아예 막혀있어
+// 결제 화면 진입 자체가 불가능했고, 프론트는 이 실패를 감추고 setTimeout으로 결제성공을 흉내내던
+// 심각한 가짜결제였음): 보유크레딧 우선차감 + 부족분만 토스페이먼츠로 실제 승인받도록 교체.
 // 결함정리(사용자요청 — 사진감리·전문가감리는 사람이 직접 검토해야 하므로, 결제완료시
 // 자동판정을 만들지 않고 "사진대기(paid)" 상태로만 전환. 실제 판정/답변은 사진 제출 후
 // 관리자(자체 전문인력)가 직접 작성한다.
-app.post('/api/inspections/:id/pay', blockInProduction, authRequired, (req, res) => {
+app.post('/api/inspections/:id/pay', authRequired, (req, res) => {
   const inspection = db.prepare('SELECT * FROM inspections WHERE id=?').get(req.params.id);
   if (!inspection) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
   if (req.user.role !== 'consumer' || !contractForMember(inspection.contract_id, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인의 감리 신청만 결제할 수 있습니다' } });
   if (inspection.status !== 'unpaid') return res.status(400).json({ success: false, error: { code: 'ALREADY_PAID', message: '이미 결제가 완료됐습니다' } });
-  db.prepare("UPDATE inspections SET status='paid', paid_at=datetime('now') WHERE id=?").run(req.params.id);
-  res.json({ success: true, data: { status: 'paid' } });
+  const user = db.prepare('SELECT cash_balance FROM users WHERE id=?').get(req.user.sub);
+  const balance = user ? user.cash_balance : 0;
+  const price = inspection.price;
+  // useCreditFull: 보유크레딧이 가격 이상일 때만 의미있는 선택지(크레딧 전액사용 vs 카드 등 다른수단 전액사용).
+  // 보유크레딧이 가격보다 적으면 그 크레딧은 항상 먼저 자동사용되고, 부족분만 결제된다(선택 여지 없음).
+  const useCreditFull = !!req.body.useCreditFull;
+  let creditUsed, remainder;
+  if (balance >= price) {
+    if (useCreditFull) { creditUsed = price; remainder = 0; }
+    else { creditUsed = 0; remainder = price; }
+  } else {
+    creditUsed = balance; remainder = price - balance;
+  }
+  if (remainder <= 0) {
+    db.transaction(() => {
+      if (creditUsed > 0) db.prepare('UPDATE users SET cash_balance = cash_balance - ? WHERE id=?').run(creditUsed, req.user.sub);
+      db.prepare("UPDATE inspections SET status='paid', paid_at=datetime('now'), credit_used=? WHERE id=?").run(creditUsed, req.params.id);
+    })();
+    return res.json({ success: true, data: { status: 'paid', creditUsed, remainderAmount: 0 } });
+  }
+  if (!process.env.TOSS_CLIENT_KEY) return res.status(503).json({ success: false, error: { code: 'PAYMENT_NOT_CONFIGURED', message: '결제 클라이언트 설정이 필요합니다' } });
+  const orderId = ('roomerinsp' + randomUUID().replace(/-/g, '')).slice(0, 40);
+  db.prepare('UPDATE inspections SET order_id=?, credit_used=? WHERE id=?').run(orderId, creditUsed, req.params.id);
+  res.json({ success: true, data: {
+    status: 'unpaid', creditUsed, remainderAmount: remainder,
+    orderId, clientKey: process.env.TOSS_CLIENT_KEY,
+    orderName: 'ROOMER ' + (INSPECT_PLANS[inspection.plan] ? INSPECT_PLANS[inspection.plan].label : inspection.plan) + ' 감리',
+    amount: remainder, currency: 'KRW'
+  } });
+});
+function syncVerifiedInspectionPayment(local, providerPayment) {
+  const remainder = local.price - (local.credit_used || 0);
+  const providerAmount = Number(providerPayment.totalAmount);
+  if (providerAmount !== remainder) throw Object.assign(new Error('결제 금액이 주문정보와 일치하지 않습니다'), { code: 'PAYMENT_AMOUNT_MISMATCH', status: 409 });
+  if (providerPayment.orderId !== local.order_id) throw Object.assign(new Error('주문번호가 일치하지 않습니다'), { code: 'PAYMENT_ORDER_MISMATCH', status: 409 });
+  const statusMap = { DONE: 'paid', CANCELED: 'cancelled', PARTIAL_CANCELED: 'partially_cancelled', WAITING_FOR_DEPOSIT: 'pending', ABORTED: 'failed', EXPIRED: 'failed' };
+  const nextStatus = statusMap[providerPayment.status] || 'ready';
+  if (nextStatus === 'paid' && local.status !== 'paid') {
+    const contract = db.prepare('SELECT * FROM contracts WHERE id=?').get(local.contract_id);
+    db.transaction(() => {
+      if (local.credit_used > 0 && contract) db.prepare('UPDATE users SET cash_balance = cash_balance - ? WHERE id=?').run(local.credit_used, contract.consumer_id);
+      db.prepare("UPDATE inspections SET status='paid', paid_at=datetime('now') WHERE id=?").run(local.id);
+    })();
+    if (contract) createNotification('partner', contract.partner_id, 'inspection_paid', '감리 결제가 완료되었습니다', (INSPECT_PLANS[local.plan] ? INSPECT_PLANS[local.plan].label : local.plan) + ' 결제가 완료됐습니다.', 'contract', contract.id);
+  }
+  return nextStatus;
+}
+app.post('/api/inspections/:id/pay/confirm', authRequired, async (req, res, next) => {
+  const inspection = db.prepare('SELECT * FROM inspections WHERE id=?').get(req.params.id);
+  if (!inspection) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
+  if (req.user.role !== 'consumer' || !contractForMember(inspection.contract_id, req.user)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인의 감리 신청만 결제할 수 있습니다' } });
+  if (!inspection.order_id) return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: '결제할 주문 정보가 없습니다' } });
+  if (inspection.status !== 'unpaid') return res.status(409).json({ success: false, error: { code: 'ALREADY_PAID', message: '이미 결제가 완료됐습니다' } });
+  const { paymentKey } = req.body;
+  if (!isNonEmptyString(paymentKey, 200)) return validationError(res, '결제 승인에 필요한 정보가 없습니다');
+  try {
+    const remainder = inspection.price - (inspection.credit_used || 0);
+    const verified = await confirmTossPayment(paymentKey, inspection.order_id, remainder);
+    const status = syncVerifiedInspectionPayment(inspection, verified);
+    // 결제 성공 리다이렉트 복귀(브라우저 완전 새로고침) 이후에는 프론트의 in-memory 감리 목록이
+    // 초기화되어 있으므로, 사진업로드 화면을 바로 이어갈 수 있도록 필요한 정보를 함께 내려준다.
+    res.json({ success: true, data: { status, id: inspection.id, plan: inspection.plan, price: inspection.price, creditUsed: inspection.credit_used || 0 } });
+  } catch (error) { next(error); }
+});
+// 토스 웹훅은 서명검증이 없어 본문을 신뢰하지 않고, 반드시 서버가 직접 재조회(GET)해서 확인한 값만 반영(위 결제 웹훅과 동일 원칙)
+app.post('/api/webhooks/toss/inspection-payment', async (req, res) => {
+  const paymentKey = String((req.body && req.body.data && req.body.data.paymentKey) || (req.body && req.body.paymentKey) || '');
+  if (!paymentKey) return res.status(200).json({ success: true, data: { ignored: true } });
+  try {
+    const verified = await queryTossPayment(paymentKey);
+    const local = db.prepare('SELECT * FROM inspections WHERE order_id=?').get(verified.orderId);
+    if (!local) return res.status(200).json({ success: true, data: { ignored: true } });
+    syncVerifiedInspectionPayment(local, verified);
+    res.json({ success: true });
+  } catch (error) { console.error('감리결제 웹훅 처리 실패:', error.message); res.status(200).json({ success: true, data: { error: true } }); }
 });
 
 // 소비자가 감리건에 시공사진을 업로드(사진감리/전문가감리 전용, 결제완료 후에만 가능)
@@ -2474,6 +2563,103 @@ app.post('/api/webhooks/toss/credit-topup', async (req, res) => {
   } catch (error) { console.error('크레딧충전 웹훅 처리 실패:', error.message); res.status(200).json({ success: true, data: { error: true } }); }
 });
 
+// ===== 5-1b. 소비자 포인트 충전(토스페이먼츠) =====
+// [배경] 결제기능 전수조사(2026-09)에서 소비자 "포인트 충전"이 서버 없이 setTimeout으로 성공을
+// 흉내내던 가짜결제였음이 발견됨 → 위 업체 크레딧 충전과 완전히 동일한 토스페이먼츠 승인 구조로 교체.
+function syncVerifiedPointTopup(local, providerPayment, rawEventType) {
+  const providerAmount = Number(providerPayment.totalAmount);
+  if (providerAmount !== local.amount) throw Object.assign(new Error('결제 금액이 주문정보와 일치하지 않습니다'), { code: 'PAYMENT_AMOUNT_MISMATCH', status: 409 });
+  if (providerPayment.orderId !== local.order_id) throw Object.assign(new Error('주문번호가 일치하지 않습니다'), { code: 'PAYMENT_ORDER_MISMATCH', status: 409 });
+  const statusMap = { DONE: 'paid', CANCELED: 'cancelled', PARTIAL_CANCELED: 'partially_cancelled', WAITING_FOR_DEPOSIT: 'pending', ABORTED: 'failed', EXPIRED: 'failed' };
+  const nextStatus = statusMap[providerPayment.status] || 'ready';
+  const wasPaid = local.status === 'paid';
+  db.transaction(() => {
+    db.prepare("UPDATE point_topups SET status=?, payment_key=?, paid_at=CASE WHEN ?='paid' THEN COALESCE(paid_at,datetime('now')) ELSE paid_at END WHERE id=?")
+      .run(nextStatus, providerPayment.paymentKey || local.payment_key || null, nextStatus, local.id);
+    if (nextStatus === 'paid' && !wasPaid) {
+      db.prepare('UPDATE users SET cash_balance = cash_balance + ? WHERE id=?').run(local.amount, local.user_id);
+      createNotification('consumer', local.user_id, 'point_topup_paid', '포인트가 충전되었습니다', local.amount.toLocaleString() + 'P가 충전되었습니다.', 'point_topup', local.id);
+    }
+  })();
+  return nextStatus;
+}
+app.post('/api/points/topup', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 포인트를 충전할 수 있습니다' } });
+  const { amount } = req.body;
+  if (!isPositiveAmount(amount) || amount < 10000 || amount > 10000000) return validationError(res, '충전 금액은 1만원 이상 1천만원 이하로 입력해주세요');
+  if (!process.env.TOSS_CLIENT_KEY) return res.status(503).json({ success: false, error: { code: 'PAYMENT_NOT_CONFIGURED', message: '결제 클라이언트 설정이 필요합니다' } });
+  const id = randomUUID();
+  const orderId = ('roomerpoint' + randomUUID().replace(/-/g, '')).slice(0, 40);
+  db.prepare('INSERT INTO point_topups (id, order_id, user_id, amount) VALUES (?,?,?,?)').run(id, orderId, req.user.sub, amount);
+  res.json({ success: true, data: { orderId, clientKey: process.env.TOSS_CLIENT_KEY, orderName: 'ROOMER 포인트 충전', amount, currency: 'KRW' } });
+});
+app.post('/api/points/topup/:orderId/confirm', authRequired, async (req, res, next) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 확인할 수 있습니다' } });
+  const local = db.prepare('SELECT * FROM point_topups WHERE order_id=?').get(req.params.orderId);
+  if (!local) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '충전 주문을 찾을 수 없습니다' } });
+  if (local.user_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인 주문만 확인할 수 있습니다' } });
+  const { paymentKey } = req.body;
+  if (!isNonEmptyString(paymentKey, 200)) return validationError(res, '결제 승인에 필요한 정보가 없습니다');
+  try {
+    const verified = await confirmTossPayment(paymentKey, local.order_id, local.amount);
+    const status = syncVerifiedPointTopup(local, verified, 'client_confirm');
+    const balance = db.prepare('SELECT cash_balance FROM users WHERE id=?').get(req.user.sub).cash_balance;
+    res.json({ success: true, data: { status, balance } });
+  } catch (error) { next(error); }
+});
+app.post('/api/webhooks/toss/point-topup', async (req, res) => {
+  const paymentKey = String((req.body && req.body.data && req.body.data.paymentKey) || (req.body && req.body.paymentKey) || '');
+  if (!paymentKey) return res.status(200).json({ success: true, data: { ignored: true } });
+  try {
+    const verified = await queryTossPayment(paymentKey);
+    const local = db.prepare('SELECT * FROM point_topups WHERE order_id=?').get(verified.orderId);
+    if (!local) return res.status(200).json({ success: true, data: { ignored: true } });
+    syncVerifiedPointTopup(local, verified, 'webhook');
+    res.json({ success: true });
+  } catch (error) { console.error('포인트충전 웹훅 처리 실패:', error.message); res.status(200).json({ success: true, data: { error: true } }); }
+});
+app.get('/api/points/topup/mine', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 조회할 수 있습니다' } });
+  const rows = db.prepare('SELECT id, order_id, amount, status, created_at, paid_at FROM point_topups WHERE user_id=? ORDER BY created_at DESC LIMIT 100').all(req.user.sub);
+  res.json({ success: true, data: rows });
+});
+
+// ===== 5-1c. 결제수단(카드) 등록 — 토스페이먼츠 빌링키 =====
+// [배경] 전수조사에서 "카드 등록"이 화면에서 카드번호를 직접 입력받아 처리하는 PCI-DSS 위반
+// 방식이었음이 발견됨 → 카드정보는 토스의 보안 결제창(requestBillingAuth)에서만 입력받고,
+// 우리 서버는 그 결과인 authKey를 빌링키로 교환하는 역할만 한다(카드번호 전체를 절대 보지 않음).
+app.post('/api/payment-methods/register', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 결제수단을 등록할 수 있습니다' } });
+  if (!process.env.TOSS_CLIENT_KEY) return res.status(503).json({ success: false, error: { code: 'PAYMENT_NOT_CONFIGURED', message: '결제 클라이언트 설정이 필요합니다' } });
+  const customerKey = 'cust' + randomUUID().replace(/-/g, '');
+  res.json({ success: true, data: { clientKey: process.env.TOSS_CLIENT_KEY, customerKey } });
+});
+app.post('/api/payment-methods/confirm', authRequired, async (req, res, next) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 등록할 수 있습니다' } });
+  const { authKey, customerKey } = req.body;
+  if (!isNonEmptyString(authKey, 200) || !isNonEmptyString(customerKey, 200)) return validationError(res, '카드 등록에 필요한 정보가 없습니다');
+  try {
+    const issued = await issueTossBillingKey(authKey, customerKey);
+    const card = issued.card || {};
+    // 토스가 이미 마스킹해서 내려주는 값만 저장(카드번호 전체는 응답에도, DB에도 존재하지 않음)
+    const id = randomUUID();
+    db.prepare('INSERT INTO payment_methods (id, user_id, billing_key, customer_key, card_last4, card_brand) VALUES (?,?,?,?,?,?)')
+      .run(id, req.user.sub, issued.billingKey, customerKey, card.number || null, card.issuerCode || card.company || null);
+    res.json({ success: true, data: { id, cardLast4: card.number || null, cardBrand: card.issuerCode || card.company || null } });
+  } catch (error) { next(error); }
+});
+app.get('/api/payment-methods', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 조회할 수 있습니다' } });
+  const rows = db.prepare('SELECT id, card_last4, card_brand, created_at FROM payment_methods WHERE user_id=? AND removed_at IS NULL ORDER BY created_at DESC').all(req.user.sub);
+  res.json({ success: true, data: rows });
+});
+app.delete('/api/payment-methods/:id', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 삭제할 수 있습니다' } });
+  const result = db.prepare("UPDATE payment_methods SET removed_at=datetime('now') WHERE id=? AND user_id=? AND removed_at IS NULL").run(req.params.id, req.user.sub);
+  if (!result.changes) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '등록된 결제수단을 찾을 수 없습니다' } });
+  res.json({ success: true });
+});
+
 // ===== 5-2. 등급 승급 심사 =====
 // (프론트 window.TIER_FEE·TIER_ORDER와 반드시 동일하게 유지할 것 — 위 TIER_FEE 상수와 같은 원칙)
 const TIER_ORDER = ['부분공사가능업체', '인증사업자', '면허 파트너'];
@@ -2980,13 +3166,12 @@ app.get('/api/settlements/export', authRequired, (req, res) => {
 });
 
 // ===== 11. 캐시 적립 =====
-app.post('/api/cash/credit', blockInProduction, authRequired, (req, res) => {
-  const { amount, reason } = req.body;
-  if(!isPositiveAmount(amount) || amount<=0) return validationError(res, '적립 금액은 0보다 커야 합니다');
-  db.prepare('UPDATE users SET cash_balance = cash_balance + ? WHERE id=?').run(amount, req.user.sub);
-  const user = db.prepare('SELECT cash_balance FROM users WHERE id=?').get(req.user.sub);
-  res.json({ success:true, data:{ balance:user.cash_balance, credited:amount, reason: reason||null } });
-});
+// 결함정리(2026-09, 전수조사 발견 — 삭제): 이 라우트는 증빙 없이 클라이언트가 부른 금액만큼
+// 무조건 적립해주는 자기신고형 API였다(blockInProduction으로 실서비스에서는 막혀있었음). 이 라우트의
+// 유일한 호출부였던 "완공 리뷰 작성 시 캐시 적립" 기능 자체를 사용자 요청으로 완전히 삭제했으므로
+// (openReview/renderReview/submitReview 등, 실제로는 어디서도 진입할 수 없던 죽은 화면이었음)
+// 이 라우트도 함께 제거한다. 소비자 포인트 충전은 위 5-1b(POST /api/points/topup)의 실제 토스페이먼츠
+// 결제로만 이루어진다.
 
 // ===== 12. 업체 출금 =====
 app.post('/api/withdrawals', authRequired, (req, res) => {
