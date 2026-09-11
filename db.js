@@ -532,6 +532,24 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_recipient ON push_subscriptions(recipient_role, recipient_id);
+
+-- 신규(2026-09, 전수조사 발견 — 운영콘솔 "이벤트 관리"): 지금까지 이벤트를 만들어도 브라우저 메모리
+-- (window.ADMIN_EVENTS)에만 있어서 새로고침하면 사라졌던 문제. 실제로 저장되도록 테이블 추가.
+-- 참여자·전환 수는 아직 실제 추적 로직이 없어 0으로 시작하며(가짜 숫자를 지어내지 않음), 화면에는
+-- 그 사실을 정직하게 안내한다.
+CREATE TABLE IF NOT EXISTS admin_events (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  start_date TEXT,
+  end_date TEXT,
+  target TEXT DEFAULT 'all',
+  benefit TEXT,
+  copy TEXT,
+  status TEXT DEFAULT 'active',
+  participants INTEGER DEFAULT 0,
+  conversions INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
 `);
 db.exec('CREATE INDEX IF NOT EXISTS idx_search_queries_query_created ON search_queries(query, created_at)');
 
