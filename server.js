@@ -2045,6 +2045,18 @@ app.post('/api/rooms/:roomId/messages', authRequired, (req, res) => {
     .run(id, req.params.roomId, req.user.role, req.user.sub, isImageMessage ? (text || '사진') : text, clientMessageId||null, isImageMessage ? 'image' : 'text', isImageMessage ? attachmentId : null);
   const saved = db.prepare('SELECT * FROM chat_messages WHERE id=?').get(id);
   broadcastNewMessage(req.params.roomId, saved);
+  // 결함정리(사용자요청 — 메신저 신뢰성 점검 중 발견한 핵심 결함): 지금까지 일반 채팅 메시지(사용자가
+  // 직접 입력하는 대화)는 WebSocket으로 그 방을 "지금 실시간으로 보고 있는" 상대에게만 전달되고,
+  // 상대가 채팅화면을 벗어나거나(다른 화면 이동), 앱을 백그라운드로 내리거나, 완전히 종료한 경우에는
+  // 알림이 전혀 가지 않았음(견적/계약/결제 등 시스템 이벤트와 달리 이 경로에만 createNotification()
+  // 호출이 빠져있었음). "업체가 답장하면 바로 알려드릴게요" 알림 배너의 약속과 실제 동작이 어긋나던
+  // 부분을 수정: 상대가 지금 이 방을 실시간으로 보고 있지 않을 때만 알림(+실제 푸시)을 생성한다
+  // (이미 화면으로 보고 있는 상대에게 중복 푸시를 보내지 않기 위함).
+  const recipient = otherRoomParticipant(room, req.user.role);
+  if (recipient && recipient.id && !isRoomRecipientConnected(req.params.roomId, recipient.role, recipient.id)) {
+    const preview = isImageMessage ? '사진을 보냈습니다' : String(text).slice(0, 80);
+    createNotification(recipient.role, recipient.id, 'chat_message', '새 메시지가 도착했습니다', preview, 'chat_room', req.params.roomId);
+  }
   res.json({ success: true, data: saved });
 });
 
@@ -3433,6 +3445,17 @@ function broadcastNewMessage(roomId, message) {
   for (const client of set) {
     if (client.readyState === client.OPEN) { try { client.send(payload); } catch (e) {} }
   }
+}
+// 신규(사용자요청 — 메신저 신뢰성 점검 중 발견한 결함 수정): 상대방이 지금 이 방을 실시간으로
+// 보고 있는 중(WebSocket으로 이 roomId를 구독 중)인지 확인. 이미 화면으로 실시간 수신하고 있는
+// 상대에게 굳이 중복 푸시를 보내지 않기 위한 판단 용도.
+function isRoomRecipientConnected(roomId, recipientRole, recipientId) {
+  const set = roomSubscribers.get(roomId);
+  if (!set || set.size === 0) return false;
+  for (const client of set) {
+    if (client.readyState === client.OPEN && client.user && client.user.role === recipientRole && String(client.user.sub) === String(recipientId)) return true;
+  }
+  return false;
 }
 
 // 결함정리(사용자요청 — 보안강화: WebSocket 최초 연결시점과 30초 하트비트 시점 모두에서
