@@ -16,8 +16,20 @@ const objectStorage = require('./storage');
 const db = require('./db');
 const swaggerUi = require('swagger-ui-express');
 const QRCode = require('qrcode');
+const webpush = require('web-push');
 const openapiPath = path.join(__dirname,'openapi.json');
 const openapiSpec = fs.existsSync(openapiPath) ? JSON.parse(fs.readFileSync(openapiPath,'utf8')) : { openapi:'3.0.0', info:{ title:'ROOMER API', version:'1.0.0' }, paths:{} };
+
+// 신규(사용자요청 — 푸시알림 인프라 완성): VAPID 키가 Render 환경변수에 설정된 경우에만 실제로
+// 활성화되고, 없으면 조용히 비활성 상태로 남아 서버 부팅이나 다른 기능에 영향을 주지 않는다.
+const PUSH_ENABLED = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+if (PUSH_ENABLED) {
+  webpush.setVapidDetails(
+    process.env.VAPID_SUBJECT || 'mailto:roomer0829@naver.com',
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+  );
+}
 
 const app = express();
 // ===== 1-3(팀장 지시): 보안 정적점검 반영 =====
@@ -63,6 +75,14 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { dotfiles: 
 // 되는데 서빙은 옛 임시 폴더를 봐서 이미지가 깨지는 불일치가 생긴다.
 const LOCAL_STORE_PUBLIC_DIR = path.join(process.env.LOCAL_STORAGE_DIR || path.join(__dirname, 'uploads', 'private-store'), 'public');
 app.use('/storage-local/public', express.static(LOCAL_STORE_PUBLIC_DIR, { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
+// 신규(사용자요청 — 푸시알림 인프라 완성): 서비스워커(sw.js)는 반드시 origin 루트 경로에서
+// 서빙되어야 전체 사이트를 제어할 수 있음(scope 규칙). 알림 아이콘도 함께 공개 정적 제공.
+app.use(express.static(path.join(__dirname, 'public'), { dotfiles: 'deny', maxAge: '1h' }));
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.sendFile(path.join(__dirname, 'sw.js'));
+});
 
 // 결함수정: 관리자 로그인에 무차별대입(brute-force) 방지가 전혀 없었음 → IP당 15분에 10회로 제한
 const adminLoginLimiter = rateLimit({
@@ -1449,7 +1469,34 @@ function createNotification(recipientRole, recipientId, type, title, body, targe
   const id = randomUUID();
   db.prepare(`INSERT INTO notifications (id,recipient_role,recipient_id,type,title,body,target_type,target_id)
     VALUES (?,?,?,?,?,?,?,?)`).run(id,recipientRole,recipientId,type,title,body||null,targetType||null,targetId||null);
+  // 신규(사용자요청 — 푸시알림 인프라 완성): 알림이 DB에 생성되는 이 단일 지점에서 그대로
+  // 실제 웹푸시도 함께 발송한다(fire-and-forget — 기존 19곳의 호출부는 전혀 손대지 않아도 됨).
+  // VAPID 키가 설정 안 돼있으면(PUSH_ENABLED=false) 바로 조용히 아무 일도 하지 않는다.
+  sendPushToRecipient(recipientRole, recipientId, title, body, targetType, targetId).catch(()=>{});
   return id;
+}
+
+async function sendPushToRecipient(recipientRole, recipientId, title, body, targetType, targetId) {
+  if (!PUSH_ENABLED) return;
+  let subs;
+  try {
+    subs = db.prepare(`SELECT * FROM push_subscriptions WHERE recipient_role=? AND recipient_id=?`).all(recipientRole, recipientId);
+  } catch (e) { return; }
+  if (!subs || !subs.length) return;
+  const payload = JSON.stringify({ title: title || '루머 ROOMER', body: body || '', url: '/app' });
+  await Promise.all(subs.map(async (sub) => {
+    try {
+      await webpush.sendNotification({
+        endpoint: sub.endpoint,
+        keys: { p256dh: sub.p256dh, auth: sub.auth }
+      }, payload);
+    } catch (err) {
+      // 구독이 만료/취소된 경우(브라우저가 알림 권한을 껐거나 재설치 등) 해당 구독만 정리.
+      if (err && (err.statusCode === 404 || err.statusCode === 410)) {
+        try { db.prepare(`DELETE FROM push_subscriptions WHERE id=?`).run(sub.id); } catch(e){}
+      }
+    }
+  }));
 }
 // 결함정리(사용자요청 — PG사를 포트원 경유가 아닌 토스페이먼츠 자체 API로 직접 연동하기로 확정):
 // 아래 결제 관련 함수·API 전체를 포트원 V2 구조에서 토스페이먼츠 코어 API 구조로 교체.
@@ -2994,8 +3041,33 @@ app.get('/api/public/policy/identity-verification-required', (req, res) => {
 // 민감정보(키 값 자체)는 노출하지 않고, "설정 여부(true/false)"만 공개
 app.get('/api/public/config', (req, res) => {
   res.json({ success:true, data: {
-    smsOtpEnabled: !!(process.env.ALIGO_API_KEY && process.env.ALIGO_USER_ID && process.env.ALIGO_SENDER)
+    smsOtpEnabled: !!(process.env.ALIGO_API_KEY && process.env.ALIGO_USER_ID && process.env.ALIGO_SENDER),
+    // 신규(사용자요청 — 푸시알림 인프라 완성): 공개해도 안전한 "공개키"만 노출(개인키는 서버에만 존재).
+    // VAPID 키가 아직 설정 안 된 경우 null → 프론트가 구독을 시도하지 않고 조용히 넘어감.
+    vapidPublicKey: PUSH_ENABLED ? process.env.VAPID_PUBLIC_KEY : null
   } });
+});
+
+// 신규(사용자요청 — 푸시알림 인프라 완성): 브라우저 pushManager.subscribe() 결과(endpoint+keys)를
+// 로그인된 사용자(소비자/업체 공통)에 연결해 저장. 같은 endpoint로 다시 구독하면 갱신(UPSERT)한다.
+app.post('/api/push/subscriptions', authRequired, (req, res) => {
+  const sub = req.body && req.body.subscription ? req.body.subscription : req.body;
+  if (!sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
+    return res.status(400).json({ success:false, error:{ code:'INVALID_SUBSCRIPTION', message:'구독 정보가 올바르지 않습니다' } });
+  }
+  try {
+    const existing = db.prepare('SELECT id FROM push_subscriptions WHERE endpoint=?').get(sub.endpoint);
+    if (existing) {
+      db.prepare('UPDATE push_subscriptions SET recipient_role=?, recipient_id=?, p256dh=?, auth=? WHERE id=?')
+        .run(req.user.role, req.user.sub, sub.keys.p256dh, sub.keys.auth, existing.id);
+    } else {
+      db.prepare(`INSERT INTO push_subscriptions (id,recipient_role,recipient_id,endpoint,p256dh,auth)
+        VALUES (?,?,?,?,?,?)`).run(randomUUID(), req.user.role, req.user.sub, sub.endpoint, sub.keys.p256dh, sub.keys.auth);
+    }
+    res.json({ success:true });
+  } catch (e) {
+    res.status(500).json({ success:false, error:{ code:'SUBSCRIPTION_SAVE_FAILED', message:'구독 저장에 실패했습니다' } });
+  }
 });
 
 // ===== 15. QR코드 생성 =====
