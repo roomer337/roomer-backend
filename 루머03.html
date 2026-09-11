@@ -10,7 +10,7 @@
 :root{
   /* 재설계(사용자요청): 블랙/화이트/시멘트 모던톤 → 오늘의집풍 웜블루+따뜻한 톤으로 완전 전환 */
   --charcoal:#2C4A63; --ivory:#FAF8F5; --stone:#EDE9E3; --slate:#8C8478;
-  --terracotta:#E08A5B; --brass:#D9A15C; --steelblue:#4A7BA6; --warmblue-light:#EAF1F7;
+  --terracotta:#E08A5B; --brass:#D9A15C; --steelblue:#a4A7BA6; --warmblue-light:#EAF1F7;
   --success:#2E7D4F; --danger:#C8483A; --warning:#D9762B; --warning-bg:#FFF7ED;
   --radius-input:10px; --radius-button:14px; --radius-card:18px; --radius-pill:24px;
 }
@@ -13092,6 +13092,17 @@ function setTopupAmount(v){ window._topupTarget = v; document.getElementById('to
 function openCreditTopup(){ openTopupModal('partner'); }
 function openPointTopup(){ openTopupModal('consumer'); }
 function openTopupModal(context){
+  // 결함정리(사용자요청 — 인앱결제 정책 검토 결과 반영): 광고 크레딧은 앱 안에서만 쓰이는
+  // 순수 디지털 기능(광고 노출 확대)이라, 설치형 앱(iOS/Android 패키지) 안에서 토스로 직접
+  // 결제받으면 애플·구글 인앱결제(StoreKit/Play Billing) 정책 위반 소지가 있음. 아직 인앱결제
+  // 연동 전이므로, 앱 안에서는 이 충전 진입 자체를 막고 웹 버전으로 안내한다(크레딧 잔액 확인·
+  // 광고 신청 자체는 앱에서도 그대로 가능 — 충전 "결제" 화면 진입만 막는 것).
+  // 소비자 포인트 충전(context==='consumer')은 아직 실제 결제가 연결되지 않은 시뮬레이션이라
+  // 이번 조치 대상이 아니지만, 나중에 실제 결제를 붙일 때 동일한 검토가 필요함.
+  if(context==='partner' && window._isNativeApp){
+    alert('광고 크레딧 충전은 아직 앱에서 지원하지 않아요.\n\n웹 브라우저에서 roomer-backend.onrender.com/app 으로 접속하셔서 충전해주세요. 충전된 크레딧은 앱에서도 그대로 사용하실 수 있어요.');
+    return;
+  }
   window._topupContext = context;
   document.getElementById('topup-title').textContent = context==='consumer' ? '포인트 충전' : '크레딧 충전';
   document.getElementById('credit-topup-overlay').style.display = 'flex';
