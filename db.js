@@ -489,6 +489,21 @@ CREATE TABLE IF NOT EXISTS search_queries (
   user_id TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+-- 신규(사용자요청 — 푸시알림 인프라 완성): 지금까지 클라이언트 구독 코드만 있고 저장할 곳이
+-- 없어 /api/push/subscriptions가 404였던 문제. 한 사용자가 여러 기기에서 구독할 수 있으므로
+-- endpoint(구독 고유 식별자) 단위로 저장하고, recipient_role+recipient_id로 createNotification()이
+-- 실제 발송 대상을 찾는다.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id TEXT PRIMARY KEY,
+  recipient_role TEXT NOT NULL,
+  recipient_id TEXT NOT NULL,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_recipient ON push_subscriptions(recipient_role, recipient_id);
 `);
 db.exec('CREATE INDEX IF NOT EXISTS idx_search_queries_query_created ON search_queries(query, created_at)');
 
