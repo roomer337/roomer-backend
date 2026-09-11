@@ -10,7 +10,7 @@
 :root{
   /* 재설계(사용자요청): 블랙/화이트/시멘트 모던톤 → 오늘의집풍 웜블루+따뜻한 톤으로 완전 전환 */
   --charcoal:#2C4A63; --ivory:#FAF8F5; --stone:#EDE9E3; --slate:#8C8478;
-  --terracotta:#E08A5B; --brass:#D9A15C; --steelblue:#a4A7BA6; --warmblue-light:#EAF1F7;
+  --terracotta:#E08A5B; --brass:#D9A15C; --steelblue:#4A7BA6; --warmblue-light:#EAF1F7;
   --success:#2E7D4F; --danger:#C8483A; --warning:#D9762B; --warning-bg:#FFF7ED;
   --radius-input:10px; --radius-button:14px; --radius-card:18px; --radius-pill:24px;
 }
@@ -12404,15 +12404,34 @@ function partnerWithdrawConfirm(){
 }
 function confirmPartnerWithdraw(){
   if(!requireRoomerRole('partner','사업자 탈퇴는 업체 계정에서만 할 수 있습니다.')) return;
-  // TODO(실서비스): 서버에 실제 탈퇴 처리 API 호출 필요(계약·정산 등 법적 보관의무 데이터는 즉시삭제 대상에서 제외)
-  if(typeof resetChatRuntimeForAccountChange==='function') resetChatRuntimeForAccountChange();
-  window.currentUserLoggedIn = false; window.currentAccountMode = 'consumer';
-  if(typeof clearAuthToken==='function') clearAuthToken();
-  openMeasSheet(
-    '<div style="font-size:17.5px;font-weight:800;margin-bottom:8px;text-align:center">탈퇴가 완료됐어요</div>'+
-    '<div class="caption" style="text-align:center;margin-bottom:18px;line-height:1.6">모든 데이터가 삭제되고 로그아웃되었습니다.</div>'+
-    '<button class="btn btn-primary" onclick="closeMeasSheet(); exitToRoleGate();">확인</button>'
-  );
+  // 결함정리(사용자요청 — 메신저 신뢰성 점검 연장선에서 발견한 중대 결함): 이 버튼이 지금까지
+  // 실제로는 서버에 아무 요청도 보내지 않고 "탈퇴 완료" 화면만 보여주고 있었음(TODO로 남은 채 방치돼서,
+  // 실제로는 계정·개인정보가 서버에 그대로 남아있는데 사용자에게는 "삭제됐다"고 거짓 안내를 하는 셈이었음).
+  // 서버에는 이미 완전히 동작하는 실제 탈퇴 API(DELETE /api/partners/me — 사업자명·연락처·인증서류·
+  // ci_hash 등 개인식별정보를 실제로 익명화 처리)가 있으므로 이제 그 API를 실제로 호출한다.
+  // 애플 심사 필수요건(5.1.1(v) 앱 내 계정삭제)이자 개인정보보호법상 실제 삭제 의무이기도 해서
+  // 반드시 진짜로 동작해야 하는 부분.
+  function finishWithdraw(){
+    if(typeof resetChatRuntimeForAccountChange==='function') resetChatRuntimeForAccountChange();
+    window.currentUserLoggedIn = false; window.currentAccountMode = 'consumer';
+    if(typeof clearAuthToken==='function') clearAuthToken();
+    openMeasSheet(
+      '<div style="font-size:17.5px;font-weight:800;margin-bottom:8px;text-align:center">탈퇴가 완료됐어요</div>'+
+      '<div class="caption" style="text-align:center;margin-bottom:18px;line-height:1.6">모든 데이터가 삭제되고 로그아웃되었습니다.</div>'+
+      '<button class="btn btn-primary" onclick="closeMeasSheet(); exitToRoleGate();">확인</button>'
+    );
+  }
+  if(window.MVP.live){
+    apiFetch('/api/partners/me', {method:'DELETE'}).then(finishWithdraw).catch(function(e){
+      openMeasSheet(
+        '<div style="font-size:17.5px;font-weight:800;margin-bottom:8px;text-align:center;color:var(--danger)">탈퇴 처리에 실패했어요</div>'+
+        '<div class="caption" style="text-align:center;margin-bottom:18px;line-height:1.6">'+e.message+'</div>'+
+        '<button class="btn btn-outline" onclick="closeMeasSheet()">확인</button>'
+      );
+    });
+  } else {
+    finishWithdraw();
+  }
 }
 
 // 재설계(사용자요청): confirm()/alert()가 미리보기 환경에서 차단될 위험이 있어, 다른 곳과 동일한 앱 내 바텀시트 패턴으로 교체
@@ -12427,17 +12446,38 @@ function mydataDelete(){
 }
 function confirmMydataDelete(){
   if(!requireRoomerRole('consumer','회원 탈퇴는 소비자 계정에서만 할 수 있습니다.')) return;
-  // TODO(실서비스): 서버에 실제 탈퇴 처리 API 호출 필요(계약·정산 등 법적 보관의무 데이터는 즉시삭제 대상에서 제외하고 별도 파기절차 필요)
-  window.userProfile = {
-    userId:null, displayName:'', answers:[], savedCards:[], socialProvider:'카카오',
-    providerUserId:null, email:'', kakaoProfileStatus:'none', kakaoProfileSource:null
-  };
-  window.currentUserLoggedIn = false; window.currentAccountMode = 'consumer';
-  openMeasSheet(
-    '<div style="font-size:17.5px;font-weight:800;margin-bottom:8px;text-align:center">탈퇴가 완료됐어요</div>'+
-    '<div class="caption" style="text-align:center;margin-bottom:18px;line-height:1.6">모든 데이터가 삭제되고 로그아웃되었습니다.</div>'+
-    '<button class="btn btn-primary" onclick="closeMeasSheet(); goBackToFeed();">확인</button>'
-  );
+  // 결함정리(사용자요청 — 메신저 신뢰성 점검 연장선에서 발견한 중대 결함): 이 버튼이 지금까지
+  // 실제로는 서버에 아무 요청도 보내지 않고 "탈퇴 완료" 화면만 보여주고 있었음(TODO로 남은 채 방치돼서,
+  // 실제로는 계정·개인정보가 서버에 그대로 남아있는데 사용자에게는 "삭제됐다"고 거짓 안내를 하는 셈이었음).
+  // 서버에는 이미 완전히 동작하는 실제 탈퇴 API(DELETE /api/users/me — 닉네임·이메일·전화·지역 등
+  // 개인식별정보를 실제로 익명화 처리)가 있으므로 이제 그 API를 실제로 호출한다.
+  // 애플 심사 필수요건(5.1.1(v) 앱 내 계정삭제)이자 개인정보보호법상 실제 삭제 의무이기도 해서
+  // 반드시 진짜로 동작해야 하는 부분.
+  function finishWithdraw(){
+    if(typeof resetChatRuntimeForAccountChange==='function') resetChatRuntimeForAccountChange();
+    window.userProfile = {
+      userId:null, displayName:'', answers:[], savedCards:[], socialProvider:'카카오',
+      providerUserId:null, email:'', kakaoProfileStatus:'none', kakaoProfileSource:null
+    };
+    window.currentUserLoggedIn = false; window.currentAccountMode = 'consumer';
+    if(typeof clearAuthToken==='function') clearAuthToken();
+    openMeasSheet(
+      '<div style="font-size:17.5px;font-weight:800;margin-bottom:8px;text-align:center">탈퇴가 완료됐어요</div>'+
+      '<div class="caption" style="text-align:center;margin-bottom:18px;line-height:1.6">모든 데이터가 삭제되고 로그아웃되었습니다.</div>'+
+      '<button class="btn btn-primary" onclick="closeMeasSheet(); goBackToFeed();">확인</button>'
+    );
+  }
+  if(window.MVP.live){
+    apiFetch('/api/users/me', {method:'DELETE'}).then(finishWithdraw).catch(function(e){
+      openMeasSheet(
+        '<div style="font-size:17.5px;font-weight:800;margin-bottom:8px;text-align:center;color:var(--danger)">탈퇴 처리에 실패했어요</div>'+
+        '<div class="caption" style="text-align:center;margin-bottom:18px;line-height:1.6">'+e.message+'</div>'+
+        '<button class="btn btn-outline" onclick="closeMeasSheet()">확인</button>'
+      );
+    });
+  } else {
+    finishWithdraw();
+  }
 }
 /* ===== 신규: 내 정보 (회원 전용) — userProfile 기반 동적 렌더링 ===== */
 // 결함수정(사용자 지적 — PC(900px 이상)에서는 하단탭바 자체가 안 보이는 설계라, 안읽은 메시지가
