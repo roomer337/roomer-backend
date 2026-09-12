@@ -1403,7 +1403,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
            요청하기" 등)에서 이미 쓰는 sticky 하단바 패턴을 그대로 재사용. 목록이 몇 줄이든 버튼은 항상
            화면에 보인다. 하단 고정바에 가려지지 않도록 region-picker 자체에 여유 패딩을 둔다. -->
       <div id="region-picker" style="display:none;flex-direction:column;margin-top:13px;padding-top:13px;padding-bottom:76px;border-top:1px solid var(--stone)">
-        <input id="region-search" oninput="filterRegionSearch(this.value)" placeholder="구·군 이름으로 검색 (예: 강남)" style="width:100%;padding:8px 10px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:8px;flex-shrink:0">
+        <input id="region-search" oninput="filterRegionSearch(this.value)" placeholder="구·군 이름으로 검색 (예: 강남)" style="width:100%;padding:8px 10px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:20px;font-family:inherit;margin-bottom:8px;flex-shrink:0">
         <!-- 재설계(사용자요청 — 레퍼런스 앱(강남언니 지역필터) 참고): 텍스트 카운트 대신 선택한 지역을
              하나씩 제거 가능한 칩으로 나열. 선택이 없으면 이 줄 자체가 빈 채로 남는다(레퍼런스와 동일).
              재설계: 체크 결과를 스크롤 없이 바로 보여주기 위해 목록보다 위, 검색창 바로 아래로 이동. -->
@@ -2230,6 +2230,25 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div style="margin-top:16px"><button class="btn btn-outline" onclick="closeToReturn()">닫기</button></div>
   </div>
   <nav class="tabbar" id="tabbar-chatlist"></nav>
+</div>
+
+<!-- ============================================================ -->
+<!-- 신규(사용자요청 — 파트너 견적요청 소비자 구분): 견적 요청함.
+     파트너에게 견적을 요청한 여러 소비자를 한 화면에서 구분해 보여주고,
+     선택한 소비자의 room으로 정확히 진입한 뒤 견적서 작성 화면(08)으로 넘어간다.
+     대시보드 빠른실행 "견적서 작성"·하단탭 "견적"이 currentRoomId를 신뢰하지 않고
+     이 화면을 거치도록 해서, 대기중인 요청이 여러 건일 때 엉뚱한 소비자에게
+     견적이 발송되는 것을 막는다. -->
+<!-- ============================================================ -->
+<div class="scr" id="s-quote-inbox">
+  <header class="header"><div id="hdr-quote-inbox" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
+  <div class="content">
+    <div class="h1" style="margin:24px 0 6px">견적 요청함</div>
+    <div class="caption" style="margin-bottom:16px">소비자별로 들어온 견적 요청이에요. 이름을 선택하면 그 소비자의 대화방으로 정확히 들어가요.</div>
+    <div id="quote-inbox-items"></div>
+    <div style="margin-top:16px"><button class="btn btn-outline" onclick="closeToReturn()">닫기</button></div>
+  </div>
+  <nav class="tabbar" id="tabbar-quote-inbox"></nav>
 </div>
 
 <!-- ============================================================ -->
@@ -6116,6 +6135,7 @@ renderStdHeader('hdr-calc', "closeToReturn()");
 renderStdHeader('hdr-ai-audit', "closeToReturn()");
 renderStdHeader('hdr-calc-pick-partner', "closeToReturn()");
 renderStdHeader('hdr-chatlist', "closeToReturn()");
+renderStdHeader('hdr-quote-inbox', "closeToReturn()");
 renderStdHeader('hdr-mydata', "closeToReturn()");
 renderStdHeader('hdr-consumer-alert-list', "closeToReturn()");
 renderStdHeader('hdr-consumer-withdraw', "closeToReturn()");
@@ -6170,6 +6190,11 @@ function go(id){
   // 신규(사용자요청 — 헤더 재설계): 화면 전환마다 헤더의 "로그인/가입" ↔ "마이페이지" 버튼을 최신 로그인상태로 갱신
   // (로그인상태가 바뀌는 지점이 여러곳에 흩어져 있어, 매번 개별 갱신하는 대신 go() 진입시마다 항상 최신화)
   if(typeof updateHeaderAuthButton==='function') updateHeaderAuthButton();
+  // 결함수정(사용자 실제 발견 — "장바구니 팝업이 사라지지 않아"): 광고 장바구니 FAB이 body
+  // 최상위에 고정 배치돼있어서 "어디서든 보이게" 만든 건 의도대로였지만, 정작 소비자 모드
+  // 화면(예: 견적 요청 작성)으로 넘어가도 파트너 전용 버튼이 그대로 남아 다른 화면을 가려버렸다.
+  // go() 진입마다 다시 평가해서, 파트너 계정이 아니면 무조건 숨긴다(담긴 내역 자체는 그대로 유지).
+  if(typeof updateAdCartFab==='function') updateAdCartFab();
   document.querySelectorAll('.scr').forEach(function(s){ s.classList.remove('on'); });
   document.getElementById('s-'+id).classList.add('on');
   // 메인 히어로는 한 개만 유지하고 랜딩(s-00)과 로그인 후 메인(s-07)에서 공동 사용한다.
@@ -6297,6 +6322,7 @@ function go(id){
     if(typeof startRoomPoll==='function') startRoomPoll();
   }
   if(id === 'chatlist' && typeof renderChatlist === 'function'){ window._realRoomsCache = null; renderChatlist(); }
+  if(id === 'quote-inbox' && typeof renderQuoteInbox === 'function'){ window._realRoomsCache = null; renderQuoteInbox(); }
   // 신규(사용자요청): "내 지역 시공사례 찾기" 안내문구+버튼 삭제 후, local-search 화면 진입시
   // 어느 경로로 오든(헤더 클릭·카테고리 클릭·사이드메뉴 등) 항상 지역선택 체크박스가 자동으로 열리도록
   if(id === 'local-search' && typeof openRegionPicker === 'function'){ openRegionPicker(); }
@@ -11814,6 +11840,93 @@ function renderRealChatlist(chatListEl, rooms){
 renderChatlist();
 buildTabbar('tabbar-chatlist', true, 'chat');
 
+/* ===== 신규(사용자요청 — 파트너가 여러 소비자의 견적요청을 구분 관리): 견적 요청함 =====
+   기존엔 대시보드 "견적서 작성"·하단탭 "견적"이 currentRoomId가 뭐든 상관없이 곧바로
+   화면 08로 진입해서, 대기 중인 견적요청이 여러 건이면 partner가 의도한 소비자가 아닌
+   "마지막으로 열려있던 room"에 견적서를 보낼 위험이 있었다(사용자 실제 문제제기).
+   이제는 대기중인 요청이 정확히 1건일 때만 곧장 08로 들어가고, 2건 이상이면 반드시
+   이 목록에서 소비자를 직접 선택하게 한다. */
+var QUOTE_INBOX_STATUS = {
+  requested: { label:'견적 대기중', color:'var(--terracotta)' },
+  quoted: { label:'견적 발송됨', color:'var(--steelblue)' },
+  accepted: { label:'계약 확정', color:'var(--success)' },
+  rejected: { label:'거절됨', color:'var(--slate)' }
+};
+function renderQuoteInbox(){
+  var el = document.getElementById('quote-inbox-items'); if(!el) return;
+  if(!window.MVP.live){ el.innerHTML = emptyStateBox('견적 요청함은 실서버 모드에서 확인할 수 있어요.'); return; }
+  if(window._realRoomsCache === null){
+    el.innerHTML = '<div class="caption" style="text-align:center;padding:40px 0">불러오는 중...</div>';
+    apiFetch('/api/rooms/mine').then(function(rooms){ window._realRoomsCache = rooms; renderQuoteInbox(); })
+      .catch(function(){ window._realRoomsCache = []; renderQuoteInbox(); });
+    return;
+  }
+  var rows = (window._realRoomsCache||[]).filter(function(r){ return !!r.requestId; });
+  if(!rows.length){ el.innerHTML = emptyStateBox('아직 들어온 견적 요청이 없어요.'); return; }
+  var order = { requested:0, quoted:1, accepted:2, rejected:3 };
+  rows.sort(function(a,b){
+    var oa = order.hasOwnProperty(a.requestStatus) ? order[a.requestStatus] : 9;
+    var ob = order.hasOwnProperty(b.requestStatus) ? order[b.requestStatus] : 9;
+    if(oa !== ob) return oa - ob;
+    return (b.lastTime||'').localeCompare(a.lastTime||'');
+  });
+  el.innerHTML = '';
+  rows.forEach(function(room){
+    var statusMeta = QUOTE_INBOX_STATUS[room.requestStatus] || { label: room.requestStatus||'-', color:'var(--slate)' };
+    var projectParts = [];
+    if(room.projectAddress) projectParts.push(room.projectAddress);
+    if(room.projectSpaceType) projectParts.push(room.projectSpaceType);
+    if(room.projectPyeong) projectParts.push(room.projectPyeong+'평');
+    var safeName = escapeConsumerIdentityHtml(room.displayName || '소비자 회원');
+    var safeProject = escapeConsumerIdentityHtml(projectParts.join(' · '));
+    var row = document.createElement('button');
+    row.type = 'button';
+    row.style.cssText = 'width:100%;text-align:left;display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid var(--stone);cursor:pointer;background:none;border-left:none;border-right:none;border-top:none;font-family:inherit';
+    row.innerHTML = '<div style="width:44px;height:44px;border-radius:50%;background:var(--brass);flex-shrink:0"></div>'
+      + '<div style="flex:1;min-width:0">'
+      + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px"><span style="font-size:16px;font-weight:700;color:var(--charcoal)">'+safeName+'</span><span style="font-size:11px;font-weight:700;color:'+statusMeta.color+';white-space:nowrap">● '+statusMeta.label+'</span></div>'
+      + (safeProject ? '<div class="caption" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+safeProject+'</div>' : '')
+      + '</div>'
+      + '<div class="caption" style="flex-shrink:0">'+((room.lastTime||'').slice(5,16))+'</div>';
+    row.onclick = function(){ openQuoteInboxRoom(room); };
+    el.appendChild(row);
+  });
+}
+function openQuoteInboxRoom(room){
+  var partnerIdentity = getPartnerProfileState();
+  var activated = activateRoom(room.id, room.displayName, partnerIdentity.name||'', {
+    consumerId: room.consumerId || room.consumer_id || null,
+    partnerId: partnerIdentity.id || room.partnerId || room.partner_id || null,
+    isCurrentPartnerRoom: true,
+    requestId: room.requestId || null
+  });
+  if(!activated){ alert('현재 계정으로 이 채팅방에 들어갈 수 없습니다. 목록을 다시 불러와 주세요.'); return; }
+  hydrateRoomServerIdsFromPayload(room, room.id);
+  // hydrateRoomServerIdsFromPayload는 quoteId 필드명이 달라(quoteId/quote_id) latestQuoteId를
+  // 못 읽으므로 여기서 명시적으로 채워준다 — "추가 견적서 발행"이 이 room에 이미 보낸 견적이
+  // 있음을 곧바로 알 수 있어야 하기 때문
+  if(room.latestQuoteId) setRoomServerId('quoteId', room.latestQuoteId);
+  loadRoomChatLog(room.id);
+  // 이미 견적을 보낸 요청이면 대화창으로, 아직 안 보냈으면 곧장 견적서 작성 화면으로
+  if(room.latestQuoteId){ go('chat'); } else { go('08'); }
+}
+// 대시보드 "견적서 작성"·하단탭 "견적"의 공용 진입점.
+// 대기중(requested) 요청이 정확히 1건이면 바로 그 소비자 room으로 들어가 08을 열고,
+// 0건이거나 2건 이상이면 견적 요청함 목록에서 직접 고르게 한다.
+function openPartnerQuoteEntry(){
+  setReturnTo('partner-home');
+  if(!window.MVP.live){ go('08'); return; }
+  function proceed(rooms){
+    var pending = rooms.filter(function(r){ return r.requestId && r.requestStatus==='requested'; });
+    if(pending.length === 1){ openQuoteInboxRoom(pending[0]); return; }
+    renderQuoteInbox();
+    go('quote-inbox');
+  }
+  if(window._realRoomsCache !== null && window._realRoomsCache !== undefined){ proceed(window._realRoomsCache); return; }
+  apiFetch('/api/rooms/mine').then(function(rooms){ window._realRoomsCache = rooms; proceed(rooms); })
+    .catch(function(){ window._realRoomsCache = []; renderQuoteInbox(); go('quote-inbox'); });
+}
+
 /* ===== 신규: 메신저 채팅창 (명세 6개 기능 정밀반영) ===== */
 // 신규(메신저 실체화 3단계): 역할에 따라 "상대방"이 누구인지 정확히 표시(전엔 항상 업체명만 표시되던 문제)
 function renderChatHeader(){
@@ -12803,9 +12916,27 @@ function wonMan(n){ return (n<0?'−':'')+Math.abs(Math.round(n/10000)).toLocale
 function chatSys(t){ CHAT_LOG.push({who:'system', text: t}); renderChat(); }
 function measNow(){ var d=new Date(); return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); }
 function measLog(actor, action){ window.measJob.log=window.measJob.log||[]; window.measJob.log.push({t:measNow(), actor:actor, action:action}); }
+// 결함수정(사용자 실제 발견 — "실측 진행 이력" 팝업이 "undefined undefined undefined"만 표시):
+// 프로토타입 모드는 measLog()가 {t,actor,action} 모양으로 직접 쌓지만, 실서버 모드는
+// applyMeasServerData()가 서버의 measurement_events 원본({actor_role,event_type,summary,created_at})을
+// 그대로 log에 옮겨담기 때문에 필드명이 완전히 달라서 전부 undefined로 찍혔다.
+// 두 모양을 모두 이해해서 사람이 읽을 수 있는 값으로 변환한다.
+var MEAS_EVENT_TYPE_FALLBACK_LABEL = {
+  slots_proposed:'업체가 실측 가능 일정을 제안했습니다', slot_selected:'소비자가 실측 일정을 선택했습니다',
+  reschedule_requested:'실측 일정 재조율이 요청됐습니다', noshow_reported:'노쇼가 신고됐습니다',
+  measurement_completed:'업체가 실측결과를 등록했습니다', final_quote_sent:'최종견적 단계가 시작됐습니다',
+  meeting_updated:'미팅 상태가 변경됐습니다', quote_finalized:'업체가 최종 견적을 확정했습니다',
+  confirmation_updated:'최종 견적 확인항목이 변경됐습니다', contract_confirmed:'최종 계약금액이 확인됐습니다'
+};
+function measLogEntryView(e){
+  var actorLabel = e.actor || (e.actor_role==='partner'?'업체':e.actor_role==='consumer'?'소비자':(e.actor_role||''));
+  var timeLabel = e.t || (e.created_at ? String(e.created_at).slice(11,16) : '');
+  var actionLabel = e.action || e.summary || MEAS_EVENT_TYPE_FALLBACK_LABEL[e.event_type] || '상태가 변경됐습니다';
+  return { t:timeLabel, actor:actorLabel, action:actionLabel };
+}
 function openLogSheet(){
   var lg=window.measJob.log||[];
-  var rows=lg.length? lg.map(function(e){ return '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--ivory);font-size:14.5px"><span style="color:var(--slate);width:42px;flex-shrink:0">'+e.t+'</span><span style="font-weight:700;width:44px;flex-shrink:0;color:'+(e.actor==='업체'?'var(--steelblue)':'var(--terracotta)')+'">'+e.actor+'</span><span style="color:var(--charcoal)">'+e.action+'</span></div>'; }).join('') : '<div class="caption" style="color:var(--slate)">아직 이력이 없어요.</div>';
+  var rows=lg.length? lg.map(function(raw){ var e=measLogEntryView(raw); return '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--ivory);font-size:14.5px"><span style="color:var(--slate);width:42px;flex-shrink:0">'+e.t+'</span><span style="font-weight:700;width:44px;flex-shrink:0;color:'+(e.actor==='업체'?'var(--steelblue)':'var(--terracotta)')+'">'+e.actor+'</span><span style="color:var(--charcoal)">'+e.action+'</span></div>'; }).join('') : '<div class="caption" style="color:var(--slate)">아직 이력이 없어요.</div>';
   openMeasSheet('<div style="font-size:17.5px;font-weight:800;margin-bottom:4px">실측 진행 이력</div><div class="caption" style="margin-bottom:12px">모든 액션이 시각·행위자와 함께 기록됩니다. (실서비스에선 감사추적으로 저장)</div>'+rows+'<button class="btn btn-outline" style="margin-top:14px" onclick="closeMeasSheet()">닫기</button>');
 }
 async function measToggleCheck(k){ if(!requireRoomerRole('consumer','최종 확인 체크는 소비자 계정에서만 할 수 있습니다.')) return; window.measJob.confirmChecks=window.measJob.confirmChecks||{photo:false,adjust:false}; var checked=!window.measJob.confirmChecks[k]; if(window.MVP.live){try{await liveMeasAction('/confirmation',{method:'PUT',body:JSON.stringify({key:k,checked:checked})},'최종 확인항목 변경');return;}catch(e){return;}} window.measJob.confirmChecks[k]=checked; saveMeasJob(); renderChat(); }
@@ -12870,8 +13001,25 @@ async function measConfirmFinal(){
     // 신규(2단계 프론트연동 - 상태추적 갭 해결): 여기가 실제 "계약확정" 시점 → currentContractId를 채우면
     // 이후 분쟁신고/AI감리신청/하자보수접수 3곳이 자동으로 완전 연결됨
     // 확정 총액을 서버 계약 대금일정(10/30/30/잔여 30%)으로 분할해 합계가 정확히 일치하도록 전송
-    var finalAmount = (window.contractAmounts && window.contractAmounts.consumer) || window.total08 || 0;
     try{
+      // 결함수정(전수조사 실제 시뮬레이션 테스트로 발견): 업체가 실측 후 견적서를 확정(수정본 발송)하면
+      // 서버엔 새 버전의 견적서가 생기는데, 소비자 화면이 견적서 화면(08)을 다시 열지 않은 채로 곧장
+      // 메신저 카드의 "최종 계약금액 확인"을 누르면 로컬에 캐시된 quoteId가 예전 버전에 머물러 있어
+      // "최신 견적서만 처리할 수 있습니다"(NOT_LATEST_QUOTE) 오류로 계약 확정이 영구히 막혔었다.
+      // → 확정 직전 요청ID 기준으로 최신 견적서를 다시 조회해 quoteId를 항상 최신값으로 맞춘다.
+      var requestId=getCurrentRoomServerId('requestId');
+      if(requestId){
+        try{
+          var rows=await apiFetch('/api/quote-requests/'+encodeURIComponent(requestId)+'/quotes');
+          var latestRow=(rows||[]).slice().sort(function(a,b){return (b.version||0)-(a.version||0);})[0];
+          if(latestRow){ activeQuoteId=latestRow.id; setRoomServerId('quoteId', activeQuoteId); }
+        }catch(e){ /* 최신 견적서 재조회 실패 시 기존 캐시값으로 계속 진행 */ }
+      }
+      // 결함수정: 계약금액은 화면에 표시되던 로컬 추정치(window.total08 등)가 아니라
+      // 실제로 확정 처리될 견적서의 서버 총액(total_amount)을 그대로 사용해 금액 불일치를 방지한다.
+      var latestQuoteDetail=null;
+      try{ latestQuoteDetail=await apiFetch('/api/quotes/'+encodeURIComponent(activeQuoteId)); }catch(e){ /* 조회 실패 시 아래 폴백 사용 */ }
+      var finalAmount = (latestQuoteDetail && latestQuoteDetail.total_amount) || (window.contractAmounts && window.contractAmounts.consumer) || window.total08 || 0;
       var depositAmount=Math.floor(finalAmount*0.1),downAmount=Math.floor(finalAmount*0.3),middleAmount=Math.floor(finalAmount*0.3),balanceAmount=finalAmount-depositAmount-downAmount-middleAmount;
       await apiFetch('/api/quotes/'+encodeURIComponent(activeQuoteId)+'/accept',{method:'POST',body:'{}'});
       var data = await apiFetch('/api/contracts', {method:'POST', body: JSON.stringify({ quoteId: activeQuoteId, deposit:depositAmount, down:downAmount, middle:middleAmount, final:balanceAmount })});
@@ -13071,7 +13219,7 @@ function renderQuoteRecipient08(){
     + '</div>'
     + (window.quoteHistoryOpen08 ? '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--ivory)">'+historyHtml+'</div>' : '');
 }
-function sendAddQuote(){
+async function sendAddQuote(){
   if(!requireRoomerRole('partner','추가 견적서 발송은 업체 계정에서만 할 수 있습니다.')) return;
   // 결함수정(사용자 요청): 추가 견적서가 채팅 문구만 남고 금액·항목이 전혀 기록되지 않던 문제
   // → 실제 입력값을 모아서 SENT_QUOTES에 type:'additional'로 기록(견적 기록 조회에 포함되도록)
@@ -13082,6 +13230,35 @@ function sendAddQuote(){
     var price = inputs[1] ? (parseInt(inputs[1].value.replace(/[^0-9]/g,''))||0) : 0;
     if(name || price){ items.push({name:name||'추가 항목', price:price}); total += price; }
   });
+  if(!items.length){ alert('추가 항목을 1개 이상 입력해주세요.'); return; }
+  // 결함수정(사용자요청 — 실서버 미반영): 이전엔 live 모드에서도 서버 호출 없이 화면 문구만 바뀌어서,
+  // 새로고침하면 추가 견적서가 통째로 사라지고 소비자에게도 실제로 전달되지 않던 문제.
+  // 이 화면은 항상 이미 활성화된 room(채팅 퀵메뉴 "추가 견적서 발행")을 통해서만 들어오므로
+  // currentRoomId는 이미 신뢰할 수 있고, 그 room에 연결된 최신 견적서(quoteId)에 수정본을 붙인다.
+  if(window.MVP.live){
+    var parentQuoteId = getCurrentRoomServerId('quoteId');
+    // 결함수정: quoteId가 이번 세션에서 아직 채워진 적 없어도(예: 앱을 새로고침하고 채팅
+    // 퀵메뉴로 바로 들어온 경우) requestId만 있으면 서버에서 최신 견적을 다시 조회해 채운다.
+    // 이게 없으면 실제로는 이미 견적을 보낸 요청인데도 "먼저 발송하라"며 막아버리게 됨.
+    if(!parentQuoteId){
+      var reqIdForAddQuote = getCurrentRoomServerId('requestId');
+      if(reqIdForAddQuote){
+        try{
+          var quoteRows = await apiFetch('/api/quote-requests/'+encodeURIComponent(reqIdForAddQuote)+'/quotes');
+          var latestExisting = (quoteRows||[]).slice().sort(function(a,b){ return (b.version||0)-(a.version||0); })[0];
+          if(latestExisting){ parentQuoteId = latestExisting.id; setRoomServerId('quoteId', parentQuoteId); }
+        }catch(e){ /* 조회 실패해도 아래 안내로 자연스럽게 이어짐 */ }
+      }
+    }
+    if(!parentQuoteId){ alert('먼저 최초 가견적서를 발송해야 추가 견적서를 보낼 수 있습니다.'); return; }
+    try{
+      var data = await apiFetch('/api/quotes/'+encodeURIComponent(parentQuoteId)+'/revisions', {method:'POST', body: JSON.stringify({
+        items: items.map(function(it){ return {name:it.name, price:it.price}; })
+      })});
+      setRoomServerId('quoteId', data.id);
+      hydrateRoomServerIdsFromPayload(data, window.currentRoomId);
+    }catch(e){ reportLiveActionFailure('추가 견적서 발송', e); return; }
+  }
   window.SENT_QUOTES = window.SENT_QUOTES || [];
   window.SENT_QUOTES.push({ type:'additional', total: total, items: items, at:(typeof measNow==='function'?measNow():'') });
   CHAT_LOG.push({who:'system', text: icon('fileText',T.steelblue,13)+' 추가 견적서가 발송됐어요 · '+total.toLocaleString()+'원 (AI 검증 통과)'});
@@ -13605,10 +13782,51 @@ function loadServerNotifications(){
   if(!window.MVP.live||!window.currentUserLoggedIn)return Promise.resolve([]);
   return apiFetch('/api/notifications/mine',{method:'GET',noRetry:true}).then(function(data){
     var payload=data&&data.items?data:{items:Array.isArray(data)?data:[]};
-    var mapped=(payload.items||[]).map(function(n){return {id:n.id,type:n.title||n.type,message:n.body||'',severity:(n.type==='dispute_filed'||n.type==='defect_filed')?'danger':'warn',target:null,read:!!n.read_at,at:n.created_at||''};});
+    // 결함수정(사용자요청 — 견적/메신저 알림 딥링크 끊김): 이전엔 target을 항상 null로 고정해서
+    // 알림을 눌러도 아무 데도 못 갔다(특히 "새 견적요청" 알림 — 정작 여러 소비자를 구분해야 하는
+    // 그 알림이 무반응이었음). 서버가 이미 내려주는 target_type/target_id를 그대로 실어보내고,
+    // 클릭 시점(openConsumerAlert/openPartnerAlert)에 room을 찾아 활성화한 뒤 이동하도록 분리.
+    var mapped=(payload.items||[]).map(function(n){return {id:n.id,type:n.title||n.type,message:n.body||'',severity:(n.type==='dispute_filed'||n.type==='defect_filed')?'danger':'warn',target:null,targetType:n.target_type||null,targetId:n.target_id||null,read:!!n.read_at,at:n.created_at||''};});
     if(window.currentAccountMode==='partner')window.PARTNER_ALERTS=mapped;else window.CONSUMER_ALERTS=mapped;
     updateConsumerAlertBadge();if(typeof updatePartnerTabBadges==='function')updatePartnerTabBadges();return mapped;
   }).catch(function(){return [];});
+}
+// 신규(사용자요청 — 알림에서 "어느 소비자/업체"의 방인지 구분해서 진입): 알림의 target_type/target_id로
+// /api/rooms/mine 캐시에서 정확히 그 room을 찾아 activateRoom 한 뒤, 이동할 화면 id를 콜백으로 넘긴다.
+// room을 특정할 수 없는 알림 유형은 채팅목록으로 안전하게 폴백한다(아무 반응 없는 것보다 낫다).
+var NOTIF_ROOM_SCOPED_TYPES = { chat_message:1, room:1, quote_request:1, quote:1 };
+function resolveAndActivateRoomForNotification(alert, cb){
+  if(!alert || !alert.targetType || !NOTIF_ROOM_SCOPED_TYPES[alert.targetType] || !window.MVP.live){ cb(alert && alert.target || null); return; }
+  function pickRoom(rooms){
+    rooms = rooms || [];
+    var room = null;
+    if(alert.targetType==='chat_message' || alert.targetType==='room'){
+      room = rooms.filter(function(r){ return r.id===alert.targetId; })[0];
+    } else if(alert.targetType==='quote_request'){
+      room = rooms.filter(function(r){ return r.requestId===alert.targetId; })[0];
+    } else if(alert.targetType==='quote'){
+      room = rooms.filter(function(r){ return r.latestQuoteId===alert.targetId; })[0];
+    }
+    if(!room){ cb('chatlist'); return; }
+    var consumerIdentity = getConsumerIdentity(), partnerIdentity = getPartnerProfileState();
+    var consumerName = isPartner() ? room.displayName : (room.consumerName || consumerIdentity.displayName);
+    var partnerName = isPartner() ? (room.partnerName || partnerIdentity.name || '') : room.displayName;
+    var activated = activateRoom(room.id, consumerName, partnerName, {
+      consumerId: isPartner() ? (room.consumerId || room.consumer_id || null) : consumerIdentity.userId,
+      partnerId: isPartner() ? (partnerIdentity.id || room.partnerId || room.partner_id || null) : (room.partnerId || room.partner_id || null),
+      isCurrentConsumerRoom: !isPartner(),
+      isCurrentPartnerRoom: isPartner(),
+      requestId: room.requestId || null
+    });
+    if(!activated){ cb('chatlist'); return; }
+    hydrateRoomServerIdsFromPayload(room, room.id);
+    loadRoomChatLog(room.id);
+    // 견적요청 알림(파트너 수신)은 아직 견적을 안 보냈으면 곧장 작성화면(08)으로
+    if(alert.targetType==='quote_request' && isPartner() && !room.latestQuoteId){ cb('08'); return; }
+    cb('chat');
+  }
+  if(window._realRoomsCache){ pickRoom(window._realRoomsCache); return; }
+  apiFetch('/api/rooms/mine').then(function(rooms){ window._realRoomsCache=rooms; pickRoom(rooms); }).catch(function(){ cb('chatlist'); });
 }
 function updateConsumerAlertBadge(){
   var iconEl = document.getElementById('bell-icon-consumer');
@@ -13645,7 +13863,7 @@ function openConsumerAlert(id){
   var a = (window.CONSUMER_ALERTS||[]).filter(function(x){return x.id===id;})[0]; if(!a) return;
   a.read = true; renderConsumerAlertList(); updateConsumerAlertBadge();
   if(window.MVP.live)apiFetch('/api/notifications/'+encodeURIComponent(id)+'/read',{method:'PUT',body:'{}',noRetry:true}).catch(function(){});
-  if(a.target){ go(a.target); }
+  resolveAndActivateRoomForNotification(a, function(dest){ if(dest) go(dest); });
 }
 
 function renderPartnerAlertList(){
@@ -13664,10 +13882,11 @@ function openPartnerAlert(id){
   var a = (window.PARTNER_ALERTS||[]).filter(function(x){return x.id===id;})[0]; if(!a) return;
   a.read = true; renderPartnerAlertList();
   if(window.MVP.live)apiFetch('/api/notifications/'+encodeURIComponent(id)+'/read',{method:'PUT',body:'{}',noRetry:true}).catch(function(){});
-  if(a.target){ go(a.target); }
+  resolveAndActivateRoomForNotification(a, function(dest){ if(dest) go(dest); });
 }
 buildTabbar('tabbar-partner-alert-list', true, null);
 buildTabbar('tabbar-consumer-alert-list', true, null);
+buildTabbar('tabbar-quote-inbox', true, null);
 // 결함수정+신규: 카톡처럼 알림·메신저 탭에 안읽음 배지 표시
 function updatePartnerTabBadges(){
   // 결함수정(사용자 지적 — 헤더 메신저 배지 추가하며 발견): unread 계산이 존재하지 않는
@@ -14402,7 +14621,11 @@ function adCartTotal(){ return window._adCart.reduce(function(s,it){ return s+it
 function updateAdCartFab(){
   var n = window._adCart.length;
   var el = document.getElementById('ad-cart-fab');
-  if(!n){ if(el) el.style.display = 'none'; return; }
+  // 결함수정(사용자 실제 발견 — 파트너 광고 장바구니 버튼이 소비자 화면까지 따라와서 안 사라짐):
+  // 광고 슬롯 장바구니는 파트너 전용 기능이므로, 담긴 게 있어도 현재 계정 모드가 파트너가
+  // 아니면(예: 같은 브라우저에서 소비자 화면을 보는 중) 항상 숨긴다. 담긴 내역 자체는
+  // window._adCart에 그대로 남아있으므로 다시 파트너 모드로 돌아오면 그대로 이어서 보인다.
+  if(!n || (typeof isPartner==='function' && !isPartner())){ if(el) el.style.display = 'none'; return; }
   if(!el){
     el = document.createElement('button');
     el.id = 'ad-cart-fab';
@@ -15663,7 +15886,7 @@ renderDefectForm(); renderDefectList();
 document.getElementById('lb-quickaction').textContent = '빠른 실행';
 // 확장 규약: 새 빠른실행 추가시 이 배열에 [아이콘명, 색, 배경틴트, 라벨, 함수] 한 줄만 추가하면 그리드에 자동 렌더(HTML 수정 불필요)
 const PARTNER_QUICKACTIONS = [
-  ['fileText', T.steelblue, '#4460790d', '견적서 작성', function(){ setReturnTo('partner-home'); go('08'); }],
+  ['fileText', T.steelblue, '#4460790d', '견적서 작성', function(){ openPartnerQuoteEntry(); }],
   ['bookmark', T.steelblue, '#4460790d', '메신저 확인', function(){ setReturnTo('partner-home'); go('chatlist'); }],
   ['shieldCheck', T.success, '#3C6F510d', '수수료 납부', function(){ setReturnTo('partner-home'); renderFeePay(); go('feepay'); }],
   ['fileText', T.success, '#3C6F510d', '내 정산 내역', function(){ setReturnTo('partner-home'); renderSettlement(); go('settlement'); }],
@@ -15696,7 +15919,7 @@ TABS_PARTNER.forEach(function(t){
   btn.onclick = function(){
     if(t[3]==='home'){ go('partner-home'); return; }
     if(t[3]==='alerts'){ renderPartnerAlertList(); go('partner-alert-list'); return; }
-    if(t[3]==='quote'){ setReturnTo('partner-home'); go('08'); return; }
+    if(t[3]==='quote'){ openPartnerQuoteEntry(); return; }
     if(t[3]==='chat'){ setReturnTo('partner-home'); go('chatlist'); return; }
     // 결함정리(사용자요청 — 3단계: 하단탭 변경): "내 정보" 탭(→마이페이지) 삭제, "광고하기"로 교체
     // (마이페이지 메뉴는 이미 대시보드에 통합되어 있어 별도 탭 불필요)
