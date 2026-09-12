@@ -136,10 +136,12 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 .hero-slide{position:relative;width:100%;border-radius:var(--radius-card);overflow:hidden;margin:20px auto 0;aspect-ratio:4/3;max-width:420px;background:var(--charcoal)}
 /* 결함수정(사용자 실제 발견 — region-ad-box는 hero-slide와 별개 요소라 이전 비율수정이 반영 안 됐음):
    지역선택 화면 광고캐러셀도 동일 원리(aspect-ratio+max-width)로 화면크기에 비례해서 커지도록 수정 */
-/* 재설계(사용자요청 — 지역선택 화면 세로공간 확보): 정사각형에 가까운 카드형(2.35:1) 대신
-   PC·모바일 공통으로 얇은 가로배너(리더보드 광고) 형태로 축소. 높이만 뷰포트 폭에 비례해 살짝
-   커지도록(clamp) 하고 폭은 항상 100%를 채운다 — 지역선택 패널이 화면에 들어올 공간을 벌어준다. */
-.region-ad-box{width:100%;max-width:none;aspect-ratio:auto;height:clamp(60px,15vw,92px);margin-left:auto;margin-right:auto}
+/* 결함수정(사용자요청 — 2026-09, 광고시스템 개편): 위 clamp(60px,15vw,92px) 높이는 지역선택 화면
+   세로공간을 아끼려고 임의로 정한 값이라 실제 aspect-ratio가 화면폭 390px 기준 약 6.5:1까지 눌려서,
+   광고 콘텐츠 위저드가 파트너에게 보여주는 "16:7" 미리보기(renderAdContentPreview3Spot)와 전혀 다른
+   비율로 잘려 보였다("광고면 폭이 좁게 보인다"는 지적의 원인) — 위저드가 약속한 16:7 그대로 쓰도록
+   맞추되, 세로공간이 너무 커지지 않도록 max-width로 절대크기를 제한한다(히어로 슬라이드와 동일 원리). */
+.region-ad-box{width:100%;max-width:480px;aspect-ratio:16/7;height:auto;margin-left:auto;margin-right:auto}
 .hero-slide .slide-img{position:absolute;inset:0;display:none;background-size:cover;background-position:center}
 .hero-slide .slide-img.on{display:block}
 .hero-disclaimer{position:absolute;left:16px;bottom:14px;color:rgba(255,255,255,.75);font-size:12.5px}
@@ -170,8 +172,8 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 @media (min-width:900px){
   #s-00 .content,#s-07 .content{max-width:1200px}
   .hero-flex .hero-slide{aspect-ratio:16/7;max-width:none;flex:1 1 0}
-  /* PC에서도 지역선택 광고는 얇은 가로배너 유지(위 기본 clamp 규칙을 그대로 씀) — 상세페이지 히어로와는 별개 */
-  .region-ad-box{height:clamp(64px,7vw,88px)}
+  /* PC에서는 배너를 조금 더 키워서 보여준다(비율은 모바일과 동일한 16:7 유지) — 상세페이지 히어로와는 별개 */
+  .region-ad-box{max-width:640px}
 }
 
 /* ===== 가로 스크롤 섹션(완공사례 등) ===== */
@@ -1831,6 +1833,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
       <span id="project-photos-placeholder">탭하여 사진 선택</span>
       <input type="file" id="project-photos-input" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0">
     </label>
+    <div class="caption" style="margin:-10px 0 16px;font-size:11.5px;line-height:1.5">사진 아래 "대표사진으로" 버튼을 누르면, 이 프로젝트가 승인됐을 때 그 사진이 업체상세페이지 대표사진에도 함께 반영돼요.</div>
     <div class="caption" style="margin-bottom:6px;font-weight:700;color:var(--charcoal)">설명</div>
     <textarea id="project-desc" rows="4" placeholder="예) 좁은 욕실을 넓어 보이게 재배치하고, 자쿠지 대신 반신욕 욕조를 시공했습니다." style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;resize:vertical;margin-bottom:20px"></textarea>
     <button class="btn btn-primary" onclick="submitPortfolioProject()">등록 완료</button>
@@ -2395,15 +2398,26 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   <div class="content" style="background:linear-gradient(180deg,#FFFFFF,transparent 200px)">
     <!-- 재설계(사용자요청 — 업체 마이페이지 통합 1단계): 인사말+사업자정보+등급+수수료를 하나의 카드로 통합 -->
     <div id="partner-greeting-card" style="margin:24px 0 20px;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:20px"></div>
-    <div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:18px;margin-bottom:20px">
-      <div style="font-size:16px;font-weight:800;color:var(--charcoal);margin-bottom:5px">활동지역 관리</div>
-      <div class="caption" style="margin-bottom:12px">첫 번째 지역이 대표 활동지역이며, 최대 5곳까지 등록할 수 있어요.</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:7px"><select id="mypage-region-sido" onchange="onMypageRegionSidoChange()"></select><select id="mypage-region-gu" onchange="onMypageRegionGuChange()"></select></div>
-      <!-- 신규(사용자요청 — 파트너 활동지역도 소비자 지역선택과 동일하게 읍/면/동까지 선택 가능하도록):
-           선택사항 — 비워두면 기존처럼 구/군 전체로 등록됨 -->
-      <div style="display:grid;grid-template-columns:1fr auto;gap:7px"><select id="mypage-region-dong"></select><button type="button" class="btn btn-outline" style="width:auto;padding:8px 13px" onclick="addMypageServiceRegion()">추가</button></div>
-      <div id="mypage-service-region-chips" style="display:flex;gap:7px;flex-wrap:wrap;margin-top:12px"></div>
-      <div id="mypage-region-status" class="caption" style="margin-top:9px"></div>
+    <!-- 재설계(사용자요청 — "활동지역 관리" 박스가 셀렉트 2~3개만 딱딱하게 나열돼 있어 딱딱해 보인다는
+         지적): 흰 배경+테두리 상자 대신 부드러운 아이보리 톤 카드로 바꾸고, 셀렉트들은 별도의 둥근
+         "입력 트레이"에 담아 시각적으로 구분하고, 등록된 지역 칩은 핀 아이콘+더 넉넉한 패딩의 알약형으로
+         바꿔서 딱딱한 폼이 아니라 "내 활동지역 목록"처럼 보이게 했다. 기능(select·추가·삭제·대표지정·
+         저장)은 전부 그대로 유지. -->
+    <div style="background:linear-gradient(160deg,var(--ivory),#fff);border:1px solid var(--stone);border-radius:18px;padding:20px;margin-bottom:20px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <span id="mypage-region-title-icon" style="display:flex;width:26px;height:26px;border-radius:50%;background:var(--steelblue);align-items:center;justify-content:center;flex-shrink:0"></span>
+        <div style="font-size:16px;font-weight:800;color:var(--charcoal)">내 활동지역</div>
+      </div>
+      <div class="caption" style="margin-bottom:14px;line-height:1.6">첫 번째 지역이 대표 활동지역이 되고, 최대 5곳까지 편하게 등록해두세요.</div>
+      <div id="mypage-service-region-chips" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
+      <div style="background:#fff;border:1px solid var(--stone);border-radius:14px;padding:14px">
+        <div class="caption" style="font-weight:700;margin-bottom:8px">+ 새 활동지역 추가</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:7px"><select id="mypage-region-sido" onchange="onMypageRegionSidoChange()"></select><select id="mypage-region-gu" onchange="onMypageRegionGuChange()"></select></div>
+        <!-- 신규(사용자요청 — 파트너 활동지역도 소비자 지역선택과 동일하게 읍/면/동까지 선택 가능하도록):
+             선택사항 — 비워두면 기존처럼 구/군 전체로 등록됨 -->
+        <div style="display:grid;grid-template-columns:1fr auto;gap:7px"><select id="mypage-region-dong"></select><button type="button" class="btn btn-outline" style="width:auto;padding:8px 13px" onclick="addMypageServiceRegion()">추가</button></div>
+      </div>
+      <div id="mypage-region-status" class="caption" style="margin-top:10px"></div>
       <button type="button" class="btn btn-primary" style="margin-top:12px" onclick="saveMypageServiceRegions()">활동지역 저장</button>
     </div>
     <div id="partner-meas-progress" onclick="go('chat')" style="display:none;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px;margin-bottom:20px;cursor:pointer"></div>
@@ -2898,16 +2912,43 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   <header class="header"><div id="hdr-ad-apply" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
   <div class="content" style="">
     <div class="h1" style="margin:8px 0 4px">광고자리 예약</div>
-    <div class="caption" style="margin-bottom:16px;line-height:1.6">지역을 고르고, 달력에서 원하는 날짜를 선택하세요. 하루 <b>9,900원</b>, 지역당 6자리이며 관리자 심사 없이 예약일부터 바로 노출돼요. 오늘 결제하면 <b>내일부터</b> 예약할 수 있어요.</div>
+    <div class="caption" style="margin-bottom:10px;line-height:1.6">지역을 고르고, 달력에서 원하는 날짜를 선택하세요. 하루 <b>9,900원</b>, 지역당 6자리이며 관리자 심사 없이 예약일부터 바로 노출돼요. 오늘 결제하면 <b>내일부터</b> 예약할 수 있어요.</div>
+    <button type="button" onclick="openAdSlotGuide()" style="background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-pill);padding:7px 13px;font-size:12.5px;font-weight:700;color:var(--charcoal);margin-bottom:16px;cursor:pointer;font-family:inherit">이 자리가 어디에 보이나요? 그림으로 보기</button>
     <div class="caption" style="font-weight:700;margin-bottom:6px">노출 지역</div>
     <div id="ad-booking-region-picker" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div>
+    <!-- 신규(사용자요청 — 달력에서 시작일·종료일을 직접 두 번 탭하는 방식이 번거롭다는 지적):
+         시작일만 탭하면 자주 쓰는 기간(3/7/14/30일) 버튼으로 종료일을 한 번에 확정할 수 있게 함.
+         달력에서 직접 종료일을 탭하는 기존 방식도 그대로 남겨둬서 둘 중 편한 쪽을 쓰면 된다. -->
+    <div id="ad-booking-quick-duration" style="display:none;margin-bottom:14px"></div>
     <div id="ad-booking-calendar-wrap">
       <div class="caption" style="font-weight:700;margin-bottom:6px">날짜 선택</div>
       <div id="ad-booking-calendar" style="margin-bottom:14px"></div>
     </div>
     <div id="ad-booking-price-box" style="background:var(--ivory);border-radius:var(--radius-input);padding:13px 15px;margin-bottom:16px;font-size:14px;line-height:1.8"></div>
-    <button class="btn btn-primary" id="ad-booking-submit-btn" onclick="confirmAdBooking()" disabled>이 날짜로 예약·결제하기</button>
+    <!-- 재설계(사용자요청 — 장바구니 방식 결제): 자리를 하나씩 즉시결제하던 방식 대신, 여러 자리를
+         담아뒀다가 한 번에 결제한다. 담을 때마다 날짜선택만 초기화되고 지역은 유지되어 같은 지역에
+         다른 기간을 이어서 담기 편하다. -->
+    <button class="btn btn-primary" id="ad-booking-submit-btn" onclick="addAdBookingToCart()" disabled>장바구니에 담기</button>
+    <div id="ad-booking-cart-bar" onclick="renderAdCart(); go('ad-cart')" style="display:none;margin-top:10px;background:var(--charcoal);border-radius:var(--radius-card);padding:13px 15px;align-items:center;justify-content:space-between;cursor:pointer">
+      <div style="color:#fff;font-size:13.5px"><b id="ad-booking-cart-count"></b> · <span id="ad-booking-cart-total"></span></div>
+      <div style="color:#fff;font-weight:700;font-size:13.5px">장바구니 보기 ›</div>
+    </div>
     <div id="ad-booking-note" class="caption" style="text-align:center;margin-top:10px"></div>
+  </div>
+</div>
+
+<!-- 신규(사용자요청 — 광고자리 장바구니 방식 결제): 여러 지역·기간을 담아뒀다가 한 번에 결제하는 화면.
+     장바구니는 서버에 저장하지 않는 임시상태(브라우저를 벗어나면 사라져도 됨)로 충분하다고 확인받음. -->
+<div class="scr" id="s-ad-cart">
+  <header class="header"><div id="hdr-ad-cart" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
+  <div class="content" style="">
+    <div class="h1" style="margin:8px 0 4px">장바구니</div>
+    <div class="caption" style="margin-bottom:16px;line-height:1.6">담아둔 광고자리를 확인하고 한 번에 결제하세요. 결제 후에는 각 자리에 사진·문구를 따로 등록하면 돼요.</div>
+    <div id="ad-cart-items" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px"></div>
+    <div id="ad-cart-summary" style="background:var(--ivory);border-radius:var(--radius-input);padding:13px 15px;margin-bottom:16px;font-size:14px;line-height:1.8"></div>
+    <button class="btn btn-primary" id="ad-cart-checkout-btn" onclick="checkoutAdCart()">전체 결제하기</button>
+    <button class="btn btn-outline" style="margin-top:8px" onclick="go('ad-apply')">자리 더 담으러 가기</button>
+    <div id="ad-cart-note" class="caption" style="text-align:center;margin-top:10px"></div>
   </div>
 </div>
 
@@ -2918,7 +2959,8 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   <header class="header"><div id="hdr-ad-content" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
   <div class="content" style="">
     <div class="h1" style="margin:8px 0 4px">광고 내용 등록</div>
-    <div class="caption" style="margin-bottom:16px;line-height:1.6">사진과 한 줄 문구만 넣으면 나머지 디자인은 자동으로 3곳에 똑같이 적용돼요. 예약 시작 전날 밤 12시까지는 언제든 다시 수정할 수 있어요.</div>
+    <div class="caption" style="margin-bottom:10px;line-height:1.6">사진과 한 줄 문구만 넣으면 나머지 디자인은 자동으로 3곳에 똑같이 적용돼요. 예약 시작 전날 밤 12시까지는 언제든 다시 수정할 수 있어요.</div>
+    <button type="button" onclick="openAdSlotGuide()" style="background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-pill);padding:7px 13px;font-size:12.5px;font-weight:700;color:var(--charcoal);margin-bottom:16px;cursor:pointer;font-family:inherit">이 자리가 어디에 보이나요? 그림으로 보기</button>
     <div id="ad-content-summary" style="background:var(--ivory);border-radius:var(--radius-input);padding:13px 15px;margin-bottom:18px;font-size:13.5px;line-height:1.7"></div>
 
     <div class="caption" style="font-weight:700;margin-bottom:6px">대표 사진 <span style="color:var(--terracotta)">*필수</span></div>
@@ -6083,6 +6125,7 @@ renderStdHeader('hdr-ai-inspection', "closeToReturn()");
 renderStdHeader('hdr-inspection-pay', "closeToReturn()");
 renderStdHeader('hdr-referral', "closeToReturn()");
 renderStdHeader('hdr-ad-apply', "closeToReturn()");
+renderStdHeader('hdr-ad-cart', "go('ad-apply')");
 renderStdHeader('hdr-ad-content', "closeToReturn()");
 renderStdHeader('hdr-partner-alert-list', "closeToReturn()");
 renderStdHeader('hdr-partner-withdraw', "closeToReturn()");
@@ -6167,6 +6210,7 @@ function go(id){
   if(id === 'admin-ads' && typeof renderAdminAds==='function'){ renderAdminAds(); }
   if(id === 'my-ads' && typeof renderMyAds==='function'){ renderMyAds(); }
   if(id === 'ad-apply' && typeof renderAdApply==='function'){ renderAdApply(); }
+  if(id === 'ad-cart' && typeof renderAdCart==='function'){ renderAdCart(); }
   if(id === 'ad-content' && typeof renderAdContentWizard==='function'){ renderAdContentWizard(); }
   // 신규(사용자요청): 면허 파트너 등급 확정자에게만 면허사본 업로드란 노출
   if(id === 'p-doc'){
@@ -6465,10 +6509,27 @@ function makeMypageServiceRegionPrimary(index){
   if(!Array.isArray(window.partnerSelectedRegions)||index<=0||index>=window.partnerSelectedRegions.length)return;
   var selected=window.partnerSelectedRegions.splice(index,1)[0];window.partnerSelectedRegions.unshift(selected);renderMypageServiceRegions();
 }
+// 재설계(사용자요청 — 딱딱한 알약형 텍스트칩 → 핀 아이콘이 붙은 편안한 카드형 행으로 변경): 대표
+// 활동지역은 옅은 스틸블루 배경 카드+"대표" 뱃지로 눈에 띄게, 나머지는 아이보리 카드로 부드럽게 표시.
 function renderMypageServiceRegions(){
   var box=document.getElementById('mypage-service-region-chips'),status=document.getElementById('mypage-region-status');if(!box)return;
   var regions=Array.isArray(window.partnerSelectedRegions)?window.partnerSelectedRegions:[];
-  box.innerHTML=regions.map(function(region,index){return '<span style="display:inline-flex;align-items:center;gap:5px;border:1px solid '+(index===0?'var(--steelblue)':'var(--stone)')+';border-radius:var(--radius-pill);padding:6px 9px;font-size:12.5px;font-weight:700">'+(index===0?'<b style="color:var(--steelblue)">대표</b> ':'')+escapeConsumerIdentityHtml(region)+(index>0?' <button type="button" onclick="makeMypageServiceRegionPrimary('+index+')" style="border:0;background:none;color:var(--steelblue);cursor:pointer">대표지정</button>':'')+' <button type="button" aria-label="삭제" onclick="removeMypageServiceRegion('+index+')" style="border:0;background:none;color:var(--slate);cursor:pointer">×</button></span>';}).join('');
+  if(!regions.length){
+    box.innerHTML='<div class="caption" style="width:100%;text-align:center;padding:14px 0;background:#fff;border:1px dashed var(--stone);border-radius:12px">아직 등록된 활동지역이 없어요. 아래에서 추가해보세요.</div>';
+  } else {
+    box.innerHTML=regions.map(function(region,index){
+      var primary = index===0;
+      return '<div style="display:flex;align-items:center;gap:8px;width:100%;background:'+(primary?'linear-gradient(135deg,var(--steelblue),#3d6a8a)':'#fff')+';border:1px solid '+(primary?'transparent':'var(--stone)')+';border-radius:14px;padding:10px 12px">'
+        + '<span style="display:flex;flex-shrink:0;width:26px;height:26px;border-radius:50%;align-items:center;justify-content:center;background:'+(primary?'rgba(255,255,255,.22)':'var(--ivory)')+'">'+icon('pin',primary?'#fff':'var(--steelblue)',13)+'</span>'
+        + '<div style="flex:1;min-width:0">'
+          + (primary?'<span style="display:inline-block;background:rgba(255,255,255,.22);color:#fff;font-size:10px;font-weight:800;padding:2px 7px;border-radius:var(--radius-pill);margin-bottom:2px">대표 활동지역</span><br>':'')
+          + '<span style="font-size:13.5px;font-weight:700;color:'+(primary?'#fff':'var(--charcoal)')+'">'+escapeConsumerIdentityHtml(region)+'</span>'
+        + '</div>'
+        + (primary?'':'<button type="button" onclick="makeMypageServiceRegionPrimary('+index+')" style="flex-shrink:0;border:1px solid var(--stone);background:#fff;color:var(--steelblue);font-size:11.5px;font-weight:700;padding:5px 9px;border-radius:var(--radius-pill);cursor:pointer;font-family:inherit">대표로</button>')
+        + '<button type="button" aria-label="삭제" onclick="removeMypageServiceRegion('+index+')" style="flex-shrink:0;border:0;background:'+(primary?'rgba(255,255,255,.18)':'var(--ivory)')+';color:'+(primary?'#fff':'var(--slate)')+';width:24px;height:24px;border-radius:50%;cursor:pointer;font-size:14px;line-height:1">×</button>'
+      + '</div>';
+    }).join('');
+  }
   if(status)status.textContent=regions.length+'/5개 등록';
 }
 async function saveMypageServiceRegions(){
@@ -6886,6 +6947,8 @@ function renderRoomerDownloadQr(targetId){
 }
 (function(){
   var curlocIc = document.getElementById('btn-curloc-icon'); if(curlocIc) curlocIc.innerHTML = icon('pin','#fff',16);
+  // 신규(사용자요청 — 마이페이지 "활동지역 관리" 박스 디자인 재설계): 제목 옆 핀 아이콘 뱃지
+  var regionTitleIc = document.getElementById('mypage-region-title-icon'); if(regionTitleIc) regionTitleIc.innerHTML = icon('pin','#fff',14);
   // 재설계(사용자요청 — 이모지 제거): 📊 이모지 대신 기존 아이콘 시스템(eye)으로 교체
   var realtimeIc = document.getElementById('admin-realtime-btn-icon'); if(realtimeIc) realtimeIc.innerHTML = icon('eye','#fff',16);
   var ic = document.getElementById('ic-appdl'); if(ic) ic.innerHTML = icon('sparkle','#fff',26);
@@ -7754,7 +7817,7 @@ function renderRegionAd(){
   ensureActiveAdsLoaded(function(activeAds){
     var ads = activeAds.slice();
     if(!ads.length){
-      ads = ['우리 동네 고객과 만나세요','실제 시공 포트폴리오를 소개하세요','지역 기반 파트너로 함께하세요','업체 소개부터 견적 상담까지','ROOMER와 함께 시작하세요'].map(function(message){
+      ads = ['우리 동네 고객과 만나세요','실제 시공 포트폴리오를 소개하세요','지역 기반 파트너로 함께하세요','업체 소개부터 견적 상담까지','지금 광고하면 내일부터 바로 노출돼요','ROOMER와 함께 시작하세요'].map(function(message){
         return {houseAd:true, partnerName:'ROOMER 파트너 모집', region:message};
       });
     }
@@ -9215,6 +9278,9 @@ document.getElementById('btn-next3').addEventListener('click', function(){
 window.PARTNER_PROJECTS = window.PARTNER_PROJECTS || [];
 window._projectPhotos = window._projectPhotos || [];
 window._projectPhotoFiles = window._projectPhotoFiles || [];
+// 신규(사용자요청 — 포트폴리오→상세페이지 반영): 사진마다 "상세페이지 대표사진으로도 쓰기" 체크 상태를
+// _projectPhotos/_projectPhotoFiles와 같은 순서로 나란히 들고 있다가, 등록 시 서버로 함께 보낸다.
+window._projectPhotoUseAsProfile = window._projectPhotoUseAsProfile || [];
 function validatePortfolioPhotoFile(file){
   var allowed=['image/jpeg','image/png','image/webp'];
   if(!file||allowed.indexOf(String(file.type||'').toLowerCase())===-1) return 'JPG, PNG, WebP 이미지만 올릴 수 있어요.';
@@ -9231,7 +9297,7 @@ function addPortfolioPhotoFiles(fileList){
   var remaining=accepted.length;
   accepted.forEach(function(file){
     var reader=new FileReader();
-    reader.onload=function(ev){ window._projectPhotoFiles.push(file); window._projectPhotos.push(ev.target.result); remaining--; if(remaining<=0) renderProjectPhotosPreview(); };
+    reader.onload=function(ev){ window._projectPhotoFiles.push(file); window._projectPhotos.push(ev.target.result); window._projectPhotoUseAsProfile.push(false); remaining--; if(remaining<=0) renderProjectPhotosPreview(); };
     reader.onerror=function(){ remaining--; alert(file.name+' 미리보기를 읽지 못했습니다.'); if(remaining<=0) renderProjectPhotosPreview(); };
     reader.readAsDataURL(file);
   });
@@ -9239,6 +9305,13 @@ function addPortfolioPhotoFiles(fileList){
 document.getElementById('project-photos-input').addEventListener('change', function(e){
   addPortfolioPhotoFiles(e.target.files);
 });
+// 신규(사용자요청 — 포트폴리오→상세페이지 반영): 사진 썸네일마다 "대표사진" 체크칩을 얹어서, 관리자
+// 승인 시 상세페이지 히어로에도 함께 쓰일 사진을 그 자리에서 바로 고를 수 있게 한다.
+function toggleProjectPhotoProfileFlag(i){
+  if(i<0||i>=window._projectPhotoUseAsProfile.length) return;
+  window._projectPhotoUseAsProfile[i] = !window._projectPhotoUseAsProfile[i];
+  renderProjectPhotosPreview();
+}
 function renderProjectPhotosPreview(){
   var box = document.getElementById('project-photos-box');
   if(!window._projectPhotos.length){
@@ -9246,8 +9319,12 @@ function renderProjectPhotosPreview(){
     document.getElementById('project-photos-input-reset').addEventListener('change', function(e){ addPortfolioPhotoFiles(e.target.files); });
     return;
   }
-  box.innerHTML = window._projectPhotos.map(function(src){
-    return '<div style="width:64px;height:64px;border-radius:8px;overflow:hidden;flex-shrink:0"><img src="'+src+'" style="width:100%;height:100%;object-fit:cover"></div>';
+  box.innerHTML = window._projectPhotos.map(function(src,i){
+    var checked = !!window._projectPhotoUseAsProfile[i];
+    return '<div style="width:64px;height:64px;border-radius:8px;overflow:hidden;flex-shrink:0;position:relative">'
+      + '<img src="'+src+'" style="width:100%;height:100%;object-fit:cover">'
+      + '<button type="button" onclick="toggleProjectPhotoProfileFlag('+i+')" style="position:absolute;left:2px;bottom:2px;right:2px;border:0;border-radius:5px;padding:2px 3px;font-size:8.5px;font-weight:800;cursor:pointer;background:'+(checked?'var(--steelblue)':'rgba(255,255,255,.88)')+';color:'+(checked?'#fff':'var(--slate)')+'">'+(checked?'✓ 대표사진':'대표사진으로')+'</button>'
+    + '</div>';
   }).join('') + '<label style="width:64px;height:64px;border:1.5px dashed var(--stone);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;position:relative">+<input type="file" id="project-photos-input-add" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0"></label>';
   document.getElementById('project-photos-input-add').addEventListener('change', function(e){
     addPortfolioPhotoFiles(e.target.files);
@@ -9256,7 +9333,7 @@ function renderProjectPhotosPreview(){
 function commitPortfolioProject(title,desc,photos,serverRecord){
   var safeTitle=safePortfolioText(title,100), safeDesc=safePortfolioText(desc,1000), safePhotos=(photos||[]).filter(Boolean);
   window.PARTNER_PROJECTS.unshift({id:serverRecord&&(serverRecord.id||serverRecord.portfolioId),title:safeTitle,photos:safePhotos.slice(),desc:safeDesc,at:(typeof measNow==='function'?measNow():''),verificationStatus:'pending'});
-  window._projectPhotos=[]; window._projectPhotoFiles=[];
+  window._projectPhotos=[]; window._projectPhotoFiles=[]; window._projectPhotoUseAsProfile=[];
   document.getElementById('project-title').value=''; document.getElementById('project-desc').value=''; go('up-done');
 }
 function submitPortfolioProject(){
@@ -9268,6 +9345,8 @@ function submitPortfolioProject(){
   if(!window._projectPhotoFiles.length){ alert('업로드할 원본 사진을 다시 선택해주세요.'); return; }
   var form=new FormData(); form.append('title',title); form.append('description',desc);
   window._projectPhotoFiles.forEach(function(file){ form.append('photos',file,file.name); });
+  // 신규(사용자요청 — 포트폴리오→상세페이지 반영): photos와 같은 순서의 boolean 배열로 대표사진 체크값 전달
+  form.append('useAsProfilePhoto', JSON.stringify(window._projectPhotoUseAsProfile.slice(0,window._projectPhotoFiles.length)));
   apiFetch('/api/partners/me/portfolio',{method:'POST',body:form}).then(function(data){
     var record=(data&&(data.portfolio||data.project||data.data))||data||{};
     var urls=(record.photos||record.photoUrls||record.photo_urls||[]).map(safePortfolioImageUrl).filter(Boolean);
@@ -13950,6 +14029,13 @@ function renderMyAds(){
     if(a.status==='pending_content' || a.status==='scheduled'){
       actionBtn = '<button type="button" onclick=\'openAdContentEditor('+JSON.stringify(a)+')\' style="margin-top:8px;background:var(--charcoal);color:#fff;border:none;font-size:12px;font-weight:700;padding:7px 12px;border-radius:var(--radius-pill);cursor:pointer;font-family:inherit">'+(a.status==='pending_content'?'내용 등록하기':'내용 수정하기')+'</button>';
     }
+    // 신규(사용자요청 — 노출 시작일을 기다리지 않고 바로 확인): 내용 등록을 마친 광고(scheduled·active)는
+    // 시작일 전이라도 실제 소비자가 보는 3곳 화면(첫화면 히어로·우리지역 대표업체·지역추천업체)을
+    // 그대로 미리 볼 수 있다. 새 데이터를 지어내지 않고 이 예약(a)을 그대로 그 화면들의 실제 렌더
+    // 함수에 주입해서 보여주므로, "미리보기"가 아니라 실제로 노출됐을 때와 똑같은 화면이다.
+    if((a.status==='scheduled' || a.status==='active') && a.tagline){
+      actionBtn += '<button type="button" onclick=\'previewAdReservation('+JSON.stringify(a)+')\' style="margin-top:8px;margin-left:6px;background:var(--ivory);color:var(--charcoal);border:1px solid var(--stone);font-size:12px;font-weight:700;padding:7px 12px;border-radius:var(--radius-pill);cursor:pointer;font-family:inherit">실제화면 미리보기</button>';
+    }
     var thumb = a.imageUrl ? '<div style="width:52px;height:52px;border-radius:8px;background:url(\''+a.imageUrl+'\') center/cover;flex-shrink:0"></div>' : '';
     return '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px;margin-bottom:8px;display:flex;gap:12px">'
       + thumb
@@ -13963,6 +14049,83 @@ function renderMyAds(){
       + '</div>'
     + '</div>';
   }).join('');
+}
+// 신규(사용자요청 — "등록 후 미리보기를 보고싶고, 실제 반영됐을 때 이미지도 보고싶다" / 노출 시작일을
+// 기다리지 않고 바로 '실제 노출'처럼 보고싶다는 확인): 광고 데이터를 새로 지어내는 별도 미리보기 화면을
+// 만드는 대신, 소비자가 실제로 보는 3곳(첫화면 히어로 배지·우리지역 대표업체 그리드·지역추천업체 배너)의
+// "진짜" 렌더 함수(renderHeroAdBadge/renderHeroSubAds/renderRegionAd)가 전부 ensureActiveAdsLoaded()가
+// 채워주는 window._activeAdsCache 하나만 바라본다는 점을 이용한다. 이 캐시를 정확히 내 예약(a) 하나로
+// 강제로 채워두면, 서버의 실제 노출조건(오늘이 시작일~종료일 사이)과 무관하게 화면은 "실제로 그 날짜가
+// 됐을 때"와 완전히 동일한 모습을 그대로 보여준다 — 소비자에게는 절대 영향 없음(그 소비자 세션의
+// window._activeAdsCache만 바뀌는 것이고, 서버 데이터/다른 사용자 화면은 전혀 건드리지 않음).
+window._adPreview = null;
+function previewAdReservation(a){
+  if(!a || !a.tagline){ alert('내용 등록을 먼저 마쳐야 미리보기를 볼 수 있어요.'); return; }
+  // 결함방지: GET /api/ads/mine(내 예약 목록)은 partners 테이블과 join하지 않아 partnerName이
+  // 비어있다(반면 실제 소비자가 보는 GET /api/ads/active는 join해서 항상 채워서 내려줌). 그대로
+  // 주입하면 "우리지역 대표업체" 카드에 업체명이 빈칸으로 보여 실제 노출과 달라지므로, 미리보기
+  // 대상은 어차피 항상 "내 광고"이니 내 업체명으로 채워서 실제와 동일하게 맞춘다.
+  a = Object.assign({}, a, { partnerName: a.partnerName || myPartnerName() });
+  var parts = String(a.region||'').trim().split(/\s+/);
+  window._adPreview = {
+    prevActiveRegion: window.ACTIVE_REGION, prevSelectedRegion: window.selectedRegion, prevSelectedRegionList: window.selectedRegionList,
+    prevActiveAdsRegion: window._activeAdsRegion, prevActiveAdsCache: window._activeAdsCache, prevHeroSlideIdx: window.currentHeroSlideIdx,
+    returnScreen: currentScreenId()
+  };
+  if(parts.length>=2) window.ACTIVE_REGION = {sido:parts[0], sigungu:parts.slice(1).join(' '), code:a.region, source:'ad-preview', label:a.region};
+  window.selectedRegion = a.region; window.selectedRegionList = [a.region];
+  // ensureActiveAdsLoaded()는 currentAdRegion()과 window._activeAdsRegion이 같으면 서버를 다시
+  // 조회하지 않고 이 캐시를 그대로 콜백에 넘긴다 — 그래서 실제 API를 호출하지 않고도(=다른 사용자
+  // 화면에 아무 영향 없이) 진짜 렌더 함수들이 이 예약 하나만 있는 것처럼 그려준다.
+  window._activeAdsRegion = a.region;
+  window._activeAdsCache = [a];
+  go('00');
+  if(typeof a.heroSlideIndex === 'number' && typeof window.goToHeroSlide === 'function') window.goToHeroSlide(a.heroSlideIndex);
+  showAdPreviewBanner(a);
+}
+function goAdPreviewRegionTop(){
+  go('local-search');
+  // local-search 진입시 항상 자동으로 열리는 지역선택 시트는 미리보기 중엔 필요 없으니(이미 강제로
+  // 지역을 고정해둔 상태) 곧바로 닫아서 배너 뒤로 화면이 가려지지 않게 한다.
+  var rp = document.getElementById('region-picker'); if(rp) rp.style.display='none';
+  var ab = document.getElementById('region-picker-actionbar'); if(ab) ab.style.display='none';
+}
+function goAdPreviewHome(){
+  go('00');
+  if(window._activeAdsCache && window._activeAdsCache[0] && typeof window._activeAdsCache[0].heroSlideIndex==='number' && typeof window.goToHeroSlide==='function'){
+    window.goToHeroSlide(window._activeAdsCache[0].heroSlideIndex);
+  }
+}
+function showAdPreviewBanner(a){
+  var el = document.getElementById('ad-preview-banner');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'ad-preview-banner';
+    el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;background:var(--charcoal);color:#fff;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:8px;box-shadow:0 -4px 16px rgba(0,0,0,.25);font-family:inherit';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = '<div style="min-width:0">'
+    + '<div style="font-size:11.5px;font-weight:800;color:var(--warning)">미리보기 모드 · 실제 노출과 완전히 동일한 화면이에요</div>'
+    + '<div style="font-size:12.5px;color:#fff;opacity:.85;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeConsumerIdentityHtml(a.region)+' · "'+escapeConsumerIdentityHtml(a.tagline||'')+'"</div>'
+  + '</div>'
+  + '<div style="display:flex;gap:6px;flex-shrink:0">'
+    + '<button type="button" onclick="goAdPreviewHome()" style="background:rgba(255,255,255,.14);border:none;color:#fff;font-size:11.5px;font-weight:700;padding:8px 10px;border-radius:var(--radius-pill);cursor:pointer;font-family:inherit;white-space:nowrap">첫화면</button>'
+    + '<button type="button" onclick="goAdPreviewRegionTop()" style="background:rgba(255,255,255,.14);border:none;color:#fff;font-size:11.5px;font-weight:700;padding:8px 10px;border-radius:var(--radius-pill);cursor:pointer;font-family:inherit;white-space:nowrap">지역배너</button>'
+    + '<button type="button" onclick="exitAdPreview()" style="background:var(--terracotta);border:none;color:#fff;font-size:11.5px;font-weight:800;padding:8px 12px;border-radius:var(--radius-pill);cursor:pointer;font-family:inherit;white-space:nowrap">미리보기 종료</button>'
+  + '</div>';
+  el.style.display = 'flex';
+}
+function exitAdPreview(){
+  var el = document.getElementById('ad-preview-banner'); if(el) el.style.display = 'none';
+  var prev = window._adPreview;
+  window.ACTIVE_REGION = prev ? prev.prevActiveRegion : null;
+  window.selectedRegion = prev ? prev.prevSelectedRegion : null;
+  window.selectedRegionList = prev ? (prev.prevSelectedRegionList||[]) : [];
+  window._activeAdsRegion = prev ? prev.prevActiveAdsRegion : undefined;
+  window._activeAdsCache = prev ? (prev.prevActiveAdsCache||[]) : [];
+  window.currentHeroSlideIdx = prev ? prev.prevHeroSlideIdx : 0;
+  window._adPreview = null;
+  go('my-ads');
 }
 // 재설계(사용자요청 — 2026-09): 광고자리 예약 1단계(지역+달력). 파트너의 등록된 활동지역(읍면동까지
 // 등록했어도 실제 매칭·판매 단위는 소비자 지역필터와 동일하게 "시도 시군구"까지만) 중에서 고른다.
@@ -13991,6 +14154,49 @@ function openAdApply(){
   window._adBooking = { region: partnerAdRegionOptions()[0] || null, start:null, end:null, calendar:[], pricePerDay:9900, capacity:6 };
   go('ad-apply');
   if(window._adBooking.region) loadAdAvailability(); else renderAdApply();
+}
+// 복원(사용자요청 — 광고시스템 개편 전에 있던 "광고자리가 실제로 어디에 보이나요" 안내 그림을 새
+// 3곳 구조(우리동네 추천디자인업체·우리지역 대표업체·지역추천업체)에 맞춰 다시 넣어달라는 요청):
+// 텍스트 설명만으로는 파트너가 감을 잡기 어려워하니, 휴대폰 목업 SVG로 실제 화면상 위치를 한눈에 보여준다.
+// 기존 하단시트(meas-sheet)를 그대로 재사용해서 새 UI를 따로 만들지 않는다.
+function getAdSlotGuideSVG(){
+  return '<svg width="150" height="300" viewBox="0 0 150 300" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block;margin:0 auto">'
+    + '<rect x="4" y="4" width="142" height="292" rx="18" stroke="var(--charcoal)" stroke-width="3" fill="#fff"/>'
+    + '<rect x="16" y="18" width="118" height="10" rx="3" fill="var(--stone)"/>'
+    + '<rect x="16" y="36" width="118" height="70" rx="8" fill="var(--steelblue)" fill-opacity="0.85"/>'
+    + '<text x="75" y="76" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">①</text>'
+    + '<rect x="16" y="114" width="35" height="35" rx="6" fill="var(--terracotta)" fill-opacity="0.85"/>'
+    + '<rect x="57.5" y="114" width="35" height="35" rx="6" fill="var(--terracotta)" fill-opacity="0.85"/>'
+    + '<rect x="99" y="114" width="35" height="35" rx="6" fill="var(--terracotta)" fill-opacity="0.85"/>'
+    + '<text x="75" y="136" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">②</text>'
+    + '<rect x="16" y="159" width="118" height="26" rx="6" fill="var(--warning)" fill-opacity="0.9"/>'
+    + '<text x="75" y="176" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">③</text>'
+    + '<rect x="16" y="197" width="118" height="8" rx="3" fill="var(--stone)"/>'
+    + '<rect x="16" y="211" width="80" height="8" rx="3" fill="var(--stone)"/>'
+    + '<rect x="16" y="232" width="55" height="55" rx="6" fill="var(--stone)"/>'
+    + '<rect x="79" y="232" width="55" height="55" rx="6" fill="var(--stone)"/>'
+    + '</svg>';
+}
+function openAdSlotGuide(){
+  var rows = [
+    ['①', AD_PLACEMENT_LABEL.hero, 'var(--steelblue)', '첫화면 맨 위 히어로 영상 캐러셀(6장) 중 내 자리에 배정된 슬라이드에 배지+문구로 노출돼요'],
+    ['②', AD_PLACEMENT_LABEL.heroSub, 'var(--terracotta)', '히어로 바로 아래 카드 그리드(지역당 6칸)에 대표사진·업체명·키워드로 노출돼요'],
+    ['③', AD_PLACEMENT_LABEL.regionTop, 'var(--warning)', '지역 검색화면 상단 가로배너에 사진+한줄문구로 노출돼요']
+  ];
+  openMeasSheet(
+    '<div style="font-size:17.5px;font-weight:800;margin-bottom:4px;text-align:center">광고 한 번, 3곳에 동시노출</div>'+
+    '<div class="caption" style="text-align:center;margin-bottom:16px">예약 하나로 아래 3곳에 똑같은 사진·문구가 자동으로 걸려요</div>'+
+    getAdSlotGuideSVG() +
+    '<div style="margin-top:16px;display:flex;flex-direction:column;gap:10px">'+
+    rows.map(function(r){
+      return '<div style="display:flex;gap:10px;align-items:flex-start">'
+        + '<span style="flex-shrink:0;width:22px;height:22px;border-radius:50%;background:'+r[2]+';color:#fff;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center">'+r[0]+'</span>'
+        + '<div><div style="font-size:14px;font-weight:700;color:var(--charcoal)">'+r[1]+'</div><div class="caption" style="margin-top:2px">'+r[3]+'</div></div>'
+      + '</div>';
+    }).join('') +
+    '</div>'+
+    '<button class="btn btn-primary" style="margin-top:18px" onclick="closeMeasSheet()">확인했어요</button>'
+  );
 }
 function pickAdBookingRegion(region){
   window._adBooking.region = region; window._adBooking.start = null; window._adBooking.end = null;
@@ -14026,6 +14232,31 @@ function pickAdBookingDay(dateStr, available){
   else { b.end = dateStr; }
   renderAdApply();
 }
+// 신규(사용자요청 — 달력에서 종료일까지 일일이 스크롤해서 찾아 탭하는 게 번거롭다는 지적): 시작일이
+// 정해진 상태에서 자주 쓰는 기간(일수)을 고르면 종료일을 자동 계산해서 바로 확정한다. 그 사이에
+// 마감(자리 없음)인 날짜가 끼어있으면, 끊기지 않고 이어지는 마지막 가능일까지만 잡고 안내문구를 보여준다
+// (기간 전체가 매진이라 하루도 못 잡으면 종료일을 비워두고 이유를 알려준다).
+function pickAdBookingDuration(days){
+  var b = window._adBooking; if(!b || !b.start || !b.calendar.length) return;
+  var byDate = {}; b.calendar.forEach(function(d){ byDate[d.date] = d.available; });
+  var cur = new Date(b.start+'T00:00:00');
+  var lastOk = null, shortened = false;
+  for(var i=0;i<days;i++){
+    var ds = cur.toISOString().slice(0,10);
+    var avail = byDate[ds];
+    if(avail === undefined || avail <= 0){ shortened = (i>0); break; }
+    lastOk = ds;
+    cur.setDate(cur.getDate()+1);
+  }
+  var note = document.getElementById('ad-booking-note');
+  if(!lastOk){
+    if(note) note.innerHTML = '<span style="color:var(--terracotta)">선택한 시작일부터는 이미 마감이라 이 기간을 잡을 수 없어요. 달력에서 다른 날짜를 선택해주세요.</span>';
+    return;
+  }
+  b.end = lastOk;
+  renderAdApply();
+  if(shortened && note) note.innerHTML = '<span style="color:var(--warning)">선택하신 기간 중간에 마감된 날짜가 있어 '+b.start+' ~ '+b.end+'까지만 예약돼요.</span>';
+}
 function renderAdApply(){
   var b = window._adBooking; if(!b) return;
   var regionWrap = document.getElementById('ad-booking-region-picker');
@@ -14037,6 +14268,23 @@ function renderAdApply(){
       regionWrap.innerHTML = opts.map(function(r){
         return '<button type="button" class="chip'+(b.region===r?' active':'')+'" onclick="pickAdBookingRegion(\''+r.replace(/'/g,"\\'")+'\')">'+escapeConsumerIdentityHtml(r)+'</button>';
       }).join('');
+    }
+  }
+  // 신규(사용자요청): 시작일이 정해지면 자주 쓰는 기간 버튼을 보여줘서, 달력에서 종료일을 직접
+  // 찾아 탭하지 않고도 한 번에 기간을 확정할 수 있게 한다.
+  var quickEl = document.getElementById('ad-booking-quick-duration');
+  if(quickEl){
+    if(b.start){
+      var presets = [3,7,14,30];
+      quickEl.style.display = 'block';
+      quickEl.innerHTML = '<div class="caption" style="margin-bottom:6px">시작일: <b>'+b.start+'</b> · 기간을 빠르게 선택하세요</div>'
+        + '<div style="display:flex;flex-wrap:wrap;gap:7px">'
+        + presets.map(function(n){ return '<button type="button" class="chip" onclick="pickAdBookingDuration('+n+')">'+n+'일</button>'; }).join('')
+        + '<button type="button" class="chip" onclick="window._adBooking.start=null;window._adBooking.end=null;renderAdApply();">다시 선택</button>'
+        + '</div>'
+        + '<div class="caption" style="margin-top:6px;font-size:11.5px">또는 달력에서 종료일을 직접 눌러도 돼요.</div>';
+    } else {
+      quickEl.style.display = 'none'; quickEl.innerHTML = '';
     }
   }
   var calEl = document.getElementById('ad-booking-calendar');
@@ -14075,16 +14323,121 @@ function renderAdApply(){
       var days = Math.round((new Date(b.end+'T00:00:00')-new Date(b.start+'T00:00:00'))/86400000)+1;
       var cost = days*b.pricePerDay;
       var bal = myCreditBalance();
+      var cartSoFar = adCartTotal();
       priceBox.innerHTML = '선택 기간: <b>'+b.start+' ~ '+b.end+'</b> ('+days+'일)<br>예상 비용: <b>'+cost.toLocaleString()+'크레딧</b> (일 '+b.pricePerDay.toLocaleString()+'원)<br>내 잔액: '+bal.toLocaleString()+'크레딧'
-        + (bal<cost ? '<br><span style="color:var(--warning);font-weight:700">'+(cost-bal).toLocaleString()+'크레딧 부족해요</span>' : '');
+        + (cartSoFar>0 ? '<br><span class="caption">장바구니에 이미 '+cartSoFar.toLocaleString()+'크레딧 담겨있어요.</span>' : '')
+        + (bal<cost+cartSoFar ? '<br><span style="color:var(--warning);font-weight:700">'+(cost+cartSoFar-bal).toLocaleString()+'크레딧 부족해요</span>' : '');
       if(submitBtn) submitBtn.disabled = false;
     } else {
       priceBox.innerHTML = b.start ? ('종료일을 선택해주세요. (시작일: '+b.start+')') : '달력에서 시작일을 선택해주세요.';
       if(submitBtn) submitBtn.disabled = true;
     }
   }
+  updateAdCartBar();
+}
+// 재설계(사용자요청 — 장바구니 방식 결제): 자리를 하나씩 즉시결제하지 않고 여러 개를 담아뒀다가
+// 한 번에 결제한다. 장바구니는 서버에 저장하지 않는 세션 임시상태(브라우저를 벗어나면 사라져도
+// 충분하다고 사용자에게 확인받음)로, window._adCart 배열에만 존재한다. 실제 자리 차감("실반영")은
+// 결제 시점에 서버(POST /api/ads/reservations/batch, db.transaction으로 원자적 처리)에서만 일어나며,
+// 담는 시점에는 아무 것도 예약되지 않는다 — 그래서 같은 지역·겹치는 기간을 중복으로 담는 것만
+// 클라이언트에서 미리 막아주고, 실제 잔여석 검증은 결제 시 서버가 최종적으로 한다.
+window._adCart = window._adCart || [];
+function adCartTotal(){ return window._adCart.reduce(function(s,it){ return s+it.cost; }, 0); }
+function updateAdCartBar(){
+  var bar = document.getElementById('ad-booking-cart-bar'); if(!bar) return;
+  var n = window._adCart.length;
+  if(n>0){
+    bar.style.display = 'flex';
+    var countEl = document.getElementById('ad-booking-cart-count'); if(countEl) countEl.textContent = n+'개 자리 담김';
+    var totalEl = document.getElementById('ad-booking-cart-total'); if(totalEl) totalEl.textContent = adCartTotal().toLocaleString()+'크레딧';
+  } else {
+    bar.style.display = 'none';
+  }
+}
+function addAdBookingToCart(){
+  var b = window._adBooking; if(!b || !b.start || !b.end) return;
+  var note = document.getElementById('ad-booking-note');
+  var days = Math.round((new Date(b.end+'T00:00:00')-new Date(b.start+'T00:00:00'))/86400000)+1;
+  var cost = days*b.pricePerDay;
+  if(myCreditBalance() < adCartTotal()+cost){
+    if(note) note.innerHTML = '<span style="color:var(--terracotta)">장바구니에 담긴 금액을 합치면 잔액이 부족해요. 크레딧을 충전해주세요.</span>';
+    return;
+  }
+  var overlap = window._adCart.some(function(it){
+    return it.region===b.region && !(b.end<it.startDate || b.start>it.endDate);
+  });
+  if(overlap){
+    if(note) note.innerHTML = '<span style="color:var(--terracotta)">같은 지역에 겹치는 기간이 이미 장바구니에 담겨있어요. 장바구니에서 확인해주세요.</span>';
+    return;
+  }
+  window._adCart.push({ region: b.region, startDate: b.start, endDate: b.end, days: days, cost: cost });
+  b.start = null; b.end = null;
+  renderAdApply();
+  if(note) note.innerHTML = '<span style="color:var(--success)">장바구니에 담았어요. 이어서 다른 날짜를 담거나, 장바구니에서 한 번에 결제하세요.</span>';
+}
+function removeAdCartItem(i){
+  window._adCart.splice(i,1);
+  renderAdCart();
+}
+function renderAdCart(){
+  var itemsEl = document.getElementById('ad-cart-items');
+  var summaryEl = document.getElementById('ad-cart-summary');
+  var noteEl = document.getElementById('ad-cart-note');
+  var checkoutBtn = document.getElementById('ad-cart-checkout-btn');
+  if(noteEl) noteEl.innerHTML = '';
+  if(!itemsEl || !summaryEl) return;
+  if(!window._adCart.length){
+    itemsEl.innerHTML = '<div class="caption" style="text-align:center;padding:20px 0">담아둔 광고자리가 없어요. 광고자리 예약 화면에서 원하는 지역·기간을 담아주세요.</div>';
+    summaryEl.innerHTML = '';
+    if(checkoutBtn) checkoutBtn.disabled = true;
+    return;
+  }
+  itemsEl.innerHTML = window._adCart.map(function(it,i){
+    return '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:13px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px">'
+      + '<div style="min-width:0">'
+        + '<div style="font-size:14px;font-weight:700;color:var(--charcoal)">'+escapeConsumerIdentityHtml(it.region)+'</div>'
+        + '<div style="font-size:12.5px;color:var(--slate);margin-top:2px">'+it.startDate+' ~ '+it.endDate+' ('+it.days+'일) · '+it.cost.toLocaleString()+'크레딧</div>'
+      + '</div>'
+      + '<button type="button" onclick="removeAdCartItem('+i+')" style="flex-shrink:0;background:none;border:1px solid var(--stone);border-radius:var(--radius-pill);padding:6px 11px;font-size:12px;font-weight:700;color:var(--slate);cursor:pointer;font-family:inherit">삭제</button>'
+    + '</div>';
+  }).join('');
+  var total = adCartTotal();
+  var bal = myCreditBalance();
+  summaryEl.innerHTML = '담긴 자리: <b>'+window._adCart.length+'개</b><br>합계: <b>'+total.toLocaleString()+'크레딧</b><br>내 잔액: '+bal.toLocaleString()+'크레딧'
+    + (bal<total ? '<br><span style="color:var(--warning);font-weight:700">'+(total-bal).toLocaleString()+'크레딧 부족해요</span>' : '');
+  if(checkoutBtn) checkoutBtn.disabled = false;
+}
+// POST /api/ads/reservations/batch — 장바구니에 담긴 자리를 한 번에 결제·확정. 서버가
+// db.transaction으로 항목마다 잔여석을 다시 조회(실반영)해서 확정하므로, 이 중 하나라도
+// 매진·잔액부족이면 전체가 그대로 롤백되고 장바구니는 그대로 남는다(사용자가 조정 후 재시도).
+function checkoutAdCart(){
+  var noteEl = document.getElementById('ad-cart-note');
+  var btn = document.getElementById('ad-cart-checkout-btn');
+  if(!window._adCart.length) return;
+  var total = adCartTotal();
+  if(myCreditBalance() < total){ openCreditTopup(); return; }
+  if(btn){ btn.disabled = true; btn.textContent = '결제 중...'; }
+  var items = window._adCart.map(function(it){ return { region: it.region, startDate: it.startDate, endDate: it.endDate }; });
+  if(!window.MVP.live){
+    window._adCart = [];
+    go('my-ads');
+    return;
+  }
+  apiFetch('/api/ads/reservations/batch', {method:'POST', body: JSON.stringify({ items: items })})
+    .then(function(data){
+      window._adCart = [];
+      window._myAdsCache = null;
+      loadPartnerProfileFromServer().catch(function(){});
+      go('my-ads');
+    })
+    .catch(function(e){
+      if(btn){ btn.disabled = false; btn.textContent = '전체 결제하기'; }
+      if(noteEl) noteEl.innerHTML = '<span style="color:var(--terracotta)">'+e.message+'</span>';
+    });
 }
 // POST /api/ads/reservations — 예약·결제 확정 후 바로 내용등록 단계(s-ad-content)로 이동
+// (구방식 — 장바구니 도입 후 화면에서는 더 이상 직접 호출하지 않지만, 배치가 아닌 단건 예약이
+//  필요해지는 경우를 대비해 남겨둔다)
 function confirmAdBooking(){
   var b = window._adBooking; if(!b || !b.start || !b.end) return;
   var note = document.getElementById('ad-booking-note');
