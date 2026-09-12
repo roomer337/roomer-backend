@@ -196,8 +196,11 @@ function authRequired(req, res, next) {
     // 신규(2차 심층검증 중 발견): 탈퇴한 회원의 토큰이 만료 전까지 계속 유효했던 보안 문제 수정
     // → 매 요청마다 탈퇴 여부를 확인해서, 탈퇴한 회원은 토큰이 남아있어도 즉시 차단
     if (req.user.role === 'consumer') {
-      const u = db.prepare('SELECT withdrawn_at FROM users WHERE id=?').get(req.user.sub);
+      const u = db.prepare('SELECT withdrawn_at, suspended_at FROM users WHERE id=?').get(req.user.sub);
       if (!u || u.withdrawn_at) return res.status(401).json({ success: false, error: { code: 'ACCOUNT_WITHDRAWN', message: '탈퇴한 계정입니다' } });
+      // 신규(2026-09, 사용자요청 — 소비자 회원관리): 파트너와 동일하게, 관리자가 정지시킨 소비자도
+      // 토큰이 남아있어도 즉시 차단
+      if (u.suspended_at) return res.status(403).json({ success: false, error: { code: 'ACCOUNT_SUSPENDED', message: '이용 제한된 계정입니다. 고객센터로 문의해주세요.' } });
     }
     // 신규(2026-09, 관리자 콘솔 실연동 — 어뷰징 일시정지): 정지된 업체는 토큰이 남아있어도
     // 즉시 차단(위 탈퇴회원 차단과 동일한 원칙). rejected/pending은 기존처럼 개별 API에서 판단하므로 건드리지 않음.
@@ -952,6 +955,89 @@ app.get('/api/partners/search', (req, res) => {
   res.json({ success: true, data: partners });
 });
 
+// 신규(사용자요청 — 지역기반 서비스: 위치공유 시 근처 업체/지역광고 노출):
+// 카카오 로컬 API가 돌려주는 공식 행정구역명("서울특별시" 등)을, 파트너 활동지역·광고 region
+// 필드가 실제로 쓰는 앱 내부 축약형("서울")으로 맞춰준다. 이 매핑이 없으면 좌표로 구한 지역명과
+// DB에 저장된 지역코드("서울 강남구")가 절대 일치하지 않아 필터링 자체가 항상 0건이 된다.
+const KAKAO_SIDO_TO_APP_SIDO = {
+  '서울특별시': '서울', '부산광역시': '부산', '대구광역시': '대구', '인천광역시': '인천',
+  '광주광역시': '광주', '대전광역시': '대전', '울산광역시': '울산', '세종특별자치시': '세종',
+  '경기도': '경기', '강원도': '강원', '강원특별자치도': '강원', '충청북도': '충북', '충청남도': '충남',
+  '전라북도': '전북', '전북특별자치도': '전북', '전라남도': '전남', '경상북도': '경북', '경상남도': '경남',
+  '제주특별자치도': '제주', '제주도': '제주'
+};
+function normalizeAppSido(kakaoSido) {
+  return KAKAO_SIDO_TO_APP_SIDO[kakaoSido] || kakaoSido;
+}
+// 실제 카카오 로컬 API(coord2regioncode) 호출. KAKAO_REST_API_KEY가 없으면 아예 호출하지 않고
+// 에러를 던진다 — 키 없이 임의의 지역을 지어내지 않는다(허수 데이터 금지 원칙).
+async function kakaoReverseGeocode(lat, lng) {
+  const apiKey = process.env.KAKAO_REST_API_KEY;
+  if (!apiKey) { const e = new Error('카카오 API 키가 설정되지 않았습니다'); e.code = 'GEO_NOT_CONFIGURED'; throw e; }
+  const url = `https://dapi.kakao.com/v2/local/geo/coord2regioncode.json?x=${lng}&y=${lat}`;
+  const kakaoRes = await fetch(url, { headers: { Authorization: `KakaoAK ${apiKey}` } });
+  if (!kakaoRes.ok) { const e = new Error('카카오 위치 조회에 실패했습니다'); e.code = 'GEO_LOOKUP_FAILED'; throw e; }
+  const body = await kakaoRes.json();
+  // region_type 'H'(행정동) 우선, 없으면 첫 결과로 대체
+  const region = (body.documents || []).find(d => d.region_type === 'H') || (body.documents || [])[0];
+  if (!region) { const e = new Error('해당 좌표의 지역 정보를 찾을 수 없습니다'); e.code = 'GEO_NO_RESULT'; throw e; }
+  const sido = normalizeAppSido(region.region_1depth_name);
+  const sigungu = region.region_2depth_name;
+  const dong = region.region_3depth_name || null;
+  return { sido, sigungu, dong, regionCode: (sido + ' ' + sigungu).trim() };
+}
+// 신규(테스트 전용 — 실제 카카오 API 호출 없이 결정론적 값 반환): 이 샌드박스는 카카오 서버로
+// 나가는 외부망 자체가 막혀 있고 실제 API 키도 없어, 카카오 좌표변환 "그 자체"는 이 환경에서
+// 검증이 불가능하다(정직하게 기록). 대신 GEO_TEST_MODE=true일 때만 활성화되는 이 스텁으로
+// 좌표변환 앞뒤의 나머지 로직(입력검증·지역코드 정규화·회원프로필 저장·하위 필터링 연동)은
+// 전부 실제로 돌려서 검증한다. 운영 환경에서는 이 환경변수를 절대 설정하지 않는다.
+const GEO_TEST_FIXTURES = [
+  { lat: 37.4979, lng: 127.0276, sido: '서울', sigungu: '강남구', dong: '역삼동' },
+  { lat: 37.3595, lng: 127.1052, sido: '경기', sigungu: '성남시', dong: '정자동' }
+];
+function geoTestModeStub(lat, lng) {
+  let best = GEO_TEST_FIXTURES[0], bestDist = Infinity;
+  for (const f of GEO_TEST_FIXTURES) {
+    const d = Math.pow(f.lat - lat, 2) + Math.pow(f.lng - lng, 2);
+    if (d < bestDist) { bestDist = d; best = f; }
+  }
+  return { sido: best.sido, sigungu: best.sigungu, dong: best.dong, regionCode: best.sido + ' ' + best.sigungu };
+}
+app.get('/api/geo/reverse', async (req, res) => {
+  const lat = parseFloat(req.query.lat), lng = parseFloat(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return validationError(res, '좌표(lat, lng)가 올바르지 않습니다');
+  if (lat < 33 || lat > 39 || lng < 124 || lng > 132) return validationError(res, '대한민국 범위 밖의 좌표입니다');
+  try {
+    if (process.env.GEO_TEST_MODE === 'true') {
+      return res.json({ success: true, data: { ...geoTestModeStub(lat, lng), source: 'test-stub' } });
+    }
+    const region = await kakaoReverseGeocode(lat, lng);
+    return res.json({ success: true, data: { ...region, source: 'kakao' } });
+  } catch (e) {
+    const code = e.code || 'GEO_LOOKUP_FAILED';
+    const status = code === 'GEO_NOT_CONFIGURED' ? 503 : 502;
+    const message = code === 'GEO_NOT_CONFIGURED'
+      ? '위치를 지역으로 변환하는 기능이 아직 설정되지 않았습니다(관리자: KAKAO_REST_API_KEY 필요)'
+      : '현재 위치를 지역으로 변환하지 못했습니다. 지역을 직접 선택해주세요.';
+    return res.status(status).json({ success: false, error: { code, message } });
+  }
+});
+
+// 신규(사용자요청 — 지역기반 서비스): 소비자가 선택/감지한 "현재 활성 지역"을 프로필에 저장해서
+// 다음 방문 때 재로그인마다 위치를 다시 묻지 않도록 한다. region=null로 보내면 전국(선택 해제)으로 되돌린다.
+app.put('/api/users/me/region', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 이용할 수 있습니다' } });
+  const { region } = req.body || {};
+  if (region !== null && region !== undefined) {
+    if (!isNonEmptyString(region, 60) || region.trim().split(/\s+/).length < 2) {
+      return validationError(res, '지역 형식이 올바르지 않습니다(예: 서울 강남구)');
+    }
+  }
+  const normalized = (region === null || region === undefined) ? null : region.trim();
+  db.prepare('UPDATE users SET region=? WHERE id=?').run(normalized, req.user.sub);
+  res.json({ success: true, data: { region: normalized } });
+});
+
 // 결함수정(사용자요청 — "추천 검색어"가 실제 통계 없이 하드코딩값이었던 문제 발견 후 수정): 지금까지
 // 검색은 브라우저 안에서만 처리돼서 서버에 아무 기록도 안 남았다 — "가장 많이 검색된 단어"라는 게
 // 애초에 존재하지 않는 데이터였음. 프론트가 실제 검색을 실행할 때마다 이 API로 검색어를 남기고,
@@ -1128,7 +1214,163 @@ app.put('/api/admin/partners/:id/reject', adminAuthRequired(), (req, res) => {
 app.patch('/api/admin/partners/:id/unsuspend', adminAuthRequired(), (req, res) => {
   const result = db.prepare("UPDATE partners SET verify_status='approved' WHERE id=? AND verify_status='suspended'").run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '정지 상태인 업체를 찾을 수 없습니다' } });
+  logMemberAction('partner', req.params.id, 'unsuspend', null, req.admin.sub);
   res.json({ success: true, data: { message: '정지가 해제되었습니다' } });
+});
+
+// ===== 3-1-b. 회원관리: 소비자/파트너 전체 목록·검색·상태변경 (2026-09, 사용자요청) =====
+// 지금까지는 "신규 업체 등록"(승인대기), "승급 심사", "어뷰징 관리" 같은 개별 처리큐만 있고
+// 전체 소비자·파트너를 검색해서 한눈에 보는 회원 목록 화면이 없었음 — 이 구멍을 메운다.
+// (다른 사이트 조사 결과 반영: 상태변경엔 반드시 사유를 남기고, 처리자·시각과 함께 감사로그로 기록)
+function logMemberAction(targetType, targetId, action, reason, adminId) {
+  db.prepare(`INSERT INTO admin_member_actions (id, target_type, target_id, action, reason, admin_id) VALUES (?,?,?,?,?,?)`)
+    .run(randomUUID(), targetType, targetId, action, reason || null, adminId || null);
+}
+function memberStatusOfConsumer(u) {
+  if (u.withdrawn_at) return 'withdrawn';
+  if (u.suspended_at) return 'suspended';
+  return 'active';
+}
+function toCsv(rows, columns) {
+  const esc = v => { const s = (v == null ? '' : String(v)); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const header = columns.map(c => esc(c.label)).join(',');
+  const body = rows.map(r => columns.map(c => esc(c.get(r))).join(',')).join('\n');
+  return '﻿' + header + '\n' + body; // 엑셀 한글 깨짐 방지용 BOM
+}
+function filterConsumers(query) {
+  const { q, status } = query;
+  let rows = db.prepare('SELECT * FROM users ORDER BY created_at DESC').all();
+  if (q && isNonEmptyString(q, 100)) {
+    const needle = q.trim().toLowerCase();
+    rows = rows.filter(u => (u.nickname || '').toLowerCase().includes(needle) || (u.email || '').toLowerCase().includes(needle) || (u.phone || '').includes(needle));
+  }
+  if (status && status !== 'all') rows = rows.filter(u => memberStatusOfConsumer(u) === status);
+  return rows;
+}
+app.get('/api/admin/consumers', adminAuthRequired(), (req, res) => {
+  const rows = filterConsumers(req.query);
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const total = rows.length;
+  const list = rows.slice((page - 1) * limit, page * limit).map(u => ({
+    id: u.id, nickname: u.nickname, socialProvider: u.social_provider, maskedPhone: maskPhone(u.phone),
+    cashBalance: u.cash_balance, createdAt: u.created_at, status: memberStatusOfConsumer(u), suspendReason: u.suspend_reason
+  }));
+  res.json({ success: true, data: { list, total, page, limit } });
+});
+app.get('/api/admin/consumers/export.csv', adminAuthRequired(), (req, res) => {
+  const rows = filterConsumers(req.query);
+  const csv = toCsv(rows, [
+    { label: '닉네임', get: u => u.nickname },
+    { label: '가입경로', get: u => u.social_provider },
+    { label: '가입일', get: u => u.created_at },
+    { label: '캐시잔액', get: u => u.cash_balance },
+    { label: '상태', get: u => memberStatusOfConsumer(u) },
+    { label: '정지사유', get: u => u.suspend_reason }
+  ]);
+  res.set('Content-Type', 'text/csv; charset=utf-8');
+  res.set('Content-Disposition', 'attachment; filename="consumers.csv"');
+  res.send(csv);
+});
+app.get('/api/admin/consumers/:id', adminAuthRequired(), (req, res) => {
+  const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
+  if (!u) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '회원을 찾을 수 없습니다' } });
+  const quoteCount = db.prepare('SELECT COUNT(*) c FROM quote_requests WHERE user_id=?').get(u.id).c;
+  const contractCount = db.prepare('SELECT COUNT(*) c FROM contracts WHERE consumer_id=?').get(u.id).c;
+  const disputeCount = db.prepare('SELECT COUNT(*) c FROM disputes WHERE contract_id IN (SELECT id FROM contracts WHERE consumer_id=?)').get(u.id).c;
+  const actions = db.prepare('SELECT action, reason, created_at FROM admin_member_actions WHERE target_type=? AND target_id=? ORDER BY created_at DESC').all('consumer', u.id);
+  res.json({ success: true, data: {
+    id: u.id, nickname: u.nickname, socialProvider: u.social_provider, email: u.email, maskedPhone: maskPhone(u.phone),
+    region: u.region, cashBalance: u.cash_balance, createdAt: u.created_at, status: memberStatusOfConsumer(u),
+    suspendedAt: u.suspended_at, suspendReason: u.suspend_reason, withdrawnAt: u.withdrawn_at,
+    activity: { quoteRequests: quoteCount, contracts: contractCount, disputes: disputeCount },
+    actionHistory: actions
+  } });
+});
+app.put('/api/admin/consumers/:id/suspend', adminAuthRequired(), (req, res) => {
+  const { reason } = req.body;
+  if (!isNonEmptyString(reason, 500)) return validationError(res, '정지 사유를 입력해주세요');
+  const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
+  if (!u) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '회원을 찾을 수 없습니다' } });
+  if (u.withdrawn_at) return res.status(409).json({ success: false, error: { code: 'ALREADY_WITHDRAWN', message: '이미 탈퇴한 회원입니다' } });
+  db.prepare("UPDATE users SET suspended_at=datetime('now'), suspend_reason=? WHERE id=?").run(reason.trim(), u.id);
+  logMemberAction('consumer', u.id, 'suspend', reason.trim(), req.admin.sub);
+  createNotification('consumer', u.id, 'account_suspended', '이용이 제한되었습니다', reason.trim());
+  res.json({ success: true, data: { message: '정지 처리됐어요' } });
+});
+app.put('/api/admin/consumers/:id/unsuspend', adminAuthRequired(), (req, res) => {
+  const result = db.prepare("UPDATE users SET suspended_at=NULL, suspend_reason=NULL WHERE id=? AND suspended_at IS NOT NULL").run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '정지 상태인 회원을 찾을 수 없습니다' } });
+  logMemberAction('consumer', req.params.id, 'unsuspend', null, req.admin.sub);
+  createNotification('consumer', req.params.id, 'account_unsuspended', '이용 제한이 해제되었습니다', null);
+  res.json({ success: true, data: { message: '정지가 해제됐어요' } });
+});
+
+// ---- 파트너 회원관리: 전체 목록(모든 상태) — 기존 /pending(대기중만)과 별개로 검색·필터를 지원 ----
+function filterPartners(query) {
+  const { q, status, tier, region } = query;
+  let rows = db.prepare('SELECT * FROM partners ORDER BY created_at DESC').all();
+  if (q && isNonEmptyString(q, 100)) {
+    const needle = q.trim().toLowerCase();
+    rows = rows.filter(p => (p.business_name || '').toLowerCase().includes(needle) || (p.business_reg_number || '').includes(needle) || (p.phone || '').includes(needle));
+  }
+  if (status && status !== 'all') rows = rows.filter(p => p.verify_status === status);
+  if (tier && tier !== 'all') rows = rows.filter(p => p.tier === tier);
+  if (region && isNonEmptyString(region, 50)) rows = rows.filter(p => (p.region || '').includes(region));
+  return rows;
+}
+app.get('/api/admin/partners', adminAuthRequired(), (req, res) => {
+  const rows = filterPartners(req.query);
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const total = rows.length;
+  const list = rows.slice((page - 1) * limit, page * limit).map(p => ({
+    id: p.id, businessName: p.business_name, tier: p.tier, region: p.region, businessRegNumber: p.business_reg_number,
+    creditBalance: p.credit_balance, contractsCount: p.contracts_count, createdAt: p.approved_at || p.created_at, status: p.verify_status
+  }));
+  res.json({ success: true, data: { list, total, page, limit } });
+});
+app.get('/api/admin/partners/export.csv', adminAuthRequired(), (req, res) => {
+  const rows = filterPartners(req.query);
+  const csv = toCsv(rows, [
+    { label: '상호명', get: p => p.business_name },
+    { label: '등급', get: p => p.tier },
+    { label: '지역', get: p => p.region },
+    { label: '사업자번호', get: p => p.business_reg_number },
+    { label: '크레딧잔액', get: p => p.credit_balance },
+    { label: '계약건수', get: p => p.contracts_count },
+    { label: '가입일', get: p => p.approved_at || p.created_at },
+    { label: '상태', get: p => p.verify_status }
+  ]);
+  res.set('Content-Type', 'text/csv; charset=utf-8');
+  res.set('Content-Disposition', 'attachment; filename="partners.csv"');
+  res.send(csv);
+});
+app.get('/api/admin/partners/:id/detail', adminAuthRequired(), (req, res) => {
+  const p = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
+  if (!p) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
+  const contractCount = db.prepare('SELECT COUNT(*) c FROM contracts WHERE partner_id=?').get(p.id).c;
+  const settleCount = db.prepare('SELECT COUNT(*) c FROM settlements WHERE partner_id=?').get(p.id).c;
+  const disputeCount = db.prepare('SELECT COUNT(*) c FROM disputes WHERE contract_id IN (SELECT id FROM contracts WHERE partner_id=?)').get(p.id).c;
+  const portfolioCount = db.prepare("SELECT COUNT(*) c FROM portfolio_projects WHERE partner_id=? AND status='approved'").get(p.id).c;
+  const actions = db.prepare('SELECT action, reason, created_at FROM admin_member_actions WHERE target_type=? AND target_id=? ORDER BY created_at DESC').all('partner', p.id);
+  res.json({ success: true, data: {
+    id: p.id, businessName: p.business_name, tier: p.tier, region: p.region, businessRegNumber: p.business_reg_number,
+    ceoName: p.ceo_name, maskedPhone: maskPhone(p.phone), creditBalance: p.credit_balance, rating: p.rating,
+    contractsCount: p.contracts_count, reviewsCount: p.reviews_count, createdAt: p.approved_at || p.created_at,
+    status: p.verify_status, rejectReason: p.reject_reason,
+    activity: { contracts: contractCount, settlements: settleCount, disputes: disputeCount, approvedPortfolio: portfolioCount },
+    actionHistory: actions
+  } });
+});
+app.put('/api/admin/partners/:id/suspend', adminAuthRequired(), (req, res) => {
+  const { reason } = req.body;
+  if (!isNonEmptyString(reason, 500)) return validationError(res, '정지 사유를 입력해주세요');
+  const result = db.prepare("UPDATE partners SET verify_status='suspended' WHERE id=? AND verify_status='approved'").run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '정지 가능한(승인됨) 업체를 찾을 수 없습니다' } });
+  logMemberAction('partner', req.params.id, 'suspend', reason.trim(), req.admin.sub);
+  createNotification('partner', req.params.id, 'abuse_suspended', '계정이 일시 정지되었습니다', reason.trim());
+  res.json({ success: true, data: { message: '정지 처리됐어요' } });
 });
 
 // ===== 3-2. 포트폴리오(프로젝트 단위: 제목+여러사진+설명) =====
