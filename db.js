@@ -378,23 +378,36 @@ CREATE TABLE IF NOT EXISTS measurement_events (
 );
 CREATE INDEX IF NOT EXISTS idx_measurement_events_room ON measurement_events(room_id, created_at, id);
 
-CREATE TABLE IF NOT EXISTS ad_slots (
+-- 재설계(사용자요청 — 파트너 광고를 "관리자 승인" 방식에서 "지역당 6자리 달력 예약 + 정해진 틀
+-- 자동검증" 방식으로 전면 개편): 기존 ad_slots는 슬롯종류(히어로/히어로하단/지역상위노출)별로
+-- 따로 사고 따로 심사받는 구조였다. 이제는 폼 하나 = 예약 1건이며, 승인되면(=정해진 틀을 통과하면)
+-- 3곳에 동시노출된다. 슬롯종류 구분 자체가 없어졌고, 대신 "지역"이 공유자원이 되어 하루에 최대
+-- 6건까지만 동시에 예약될 수 있다(달력 예약제).
+CREATE TABLE IF NOT EXISTS ad_reservations (
   id TEXT PRIMARY KEY,
   partner_id TEXT REFERENCES partners(id),
-  slot_type TEXT,
-  region TEXT,
+  region TEXT NOT NULL,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  days INTEGER NOT NULL,
+  cost_credits INTEGER NOT NULL,
+  -- 아래 4개는 결제(예약) 직후 이어지는 "정해진 틀" 화면에서 채워짐. 다 채워지기 전(content_completed_at
+  -- IS NULL)에는 예약만 된 상태(pending_content)이며 3곳 어디에도 노출되지 않는다 — 관리자 검수가
+  -- 아니라 "필수 항목을 다 채웠는가"가 유일한 게이트(허수 데이터 금지 원칙: 채워지지 않은 광고를
+  -- 노출시키지 않는다).
+  image_url TEXT,
   tagline TEXT,
-  status TEXT DEFAULT 'pending',
-  cost_type TEXT,
-  cost_value INTEGER,
-  spent_credits INTEGER DEFAULT 0,
+  keywords TEXT,
+  content_completed_at TEXT,
+  -- 히어로자리(우리동네 추천디자인업체) 전용: 영상 슬라이드 6개 중 몇 번째에 배정됐는지(0~5).
+  -- 같은 지역에서 겹치는 기간의 예약끼리는 절대 같은 인덱스를 배정받지 않는다.
+  hero_slide_index INTEGER,
   impressions INTEGER DEFAULT 0,
   clicks INTEGER DEFAULT 0,
-  start_date TEXT,
-  end_date TEXT,
-  ai_precheck_result TEXT,
-  reject_reason TEXT
+  created_at TEXT DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_ad_reservations_region ON ad_reservations(region, start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_ad_reservations_partner ON ad_reservations(partner_id);
 
 CREATE TABLE IF NOT EXISTS credit_ledger (
   id TEXT PRIMARY KEY,
@@ -648,5 +661,29 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_credit_topups_partner ON credit_topups(p
 db.exec('CREATE INDEX IF NOT EXISTS idx_point_topups_user ON point_topups(user_id, created_at DESC)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_payment_methods_user ON payment_methods(user_id, removed_at)');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_inspections_order_id ON inspections(order_id) WHERE order_id IS NOT NULL');
+
+// 신규(2026-09, 사용자요청 — 소비자 회원관리): 지금까지 소비자는 "자진 탈퇴(withdrawn_at)"만 가능하고
+// 파트너처럼 관리자가 직접 정지시키는 기능이 없었음. partners.verify_status='suspended'와 동일한 개념을
+// users 테이블에도 추가(정지시각+사유). suspended_at이 있으면 정지 상태, withdrawn_at이 있으면 탈퇴 상태로 구분.
+ensureColumn('users', 'suspended_at', 'TEXT');
+ensureColumn('users', 'suspend_reason', 'TEXT');
+db.exec('CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_partners_approved_at ON partners(approved_at DESC)');
+
+// 신규(2026-09, 사용자요청 — 소비자/파트너 회원관리): 정지·정지해제 등 관리자의 회원 상태변경 조치를
+// 누가·언제·왜 했는지 남기는 감사로그. abuse_actions는 room_id가 필수라 재사용 불가(어뷰징 큐 전용) →
+// 회원관리 화면 전용으로 target_type(consumer/partner)+target_id 기반의 범용 테이블을 별도로 둔다.
+db.exec(`
+CREATE TABLE IF NOT EXISTS admin_member_actions (
+  id TEXT PRIMARY KEY,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  reason TEXT,
+  admin_id TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_admin_member_actions_target ON admin_member_actions(target_type, target_id, created_at DESC)');
 
 module.exports = db;
