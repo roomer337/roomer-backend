@@ -2915,6 +2915,10 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div class="caption" style="margin-bottom:10px;line-height:1.6">지역을 고르고, 달력에서 원하는 날짜를 선택하세요. 하루 <b>9,900원</b>, 지역당 6자리이며 관리자 심사 없이 예약일부터 바로 노출돼요. 오늘 결제하면 <b>내일부터</b> 예약할 수 있어요.</div>
     <button type="button" onclick="openAdSlotGuide()" style="background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-pill);padding:7px 13px;font-size:12.5px;font-weight:700;color:var(--charcoal);margin-bottom:16px;cursor:pointer;font-family:inherit">이 자리가 어디에 보이나요? 그림으로 보기</button>
     <div class="caption" style="font-weight:700;margin-bottom:6px">노출 지역</div>
+    <!-- 결함정리(사용자요청 — "구매 전에 노출지역을 고민하거나 바꾸거나 추가로 살 수 있게"): 예전엔
+         마이페이지에 등록해둔 활동지역만 칩으로 나와서, 활동지역이 1개뿐인 대부분의 파트너는 사실상
+         지역을 "바꿀" 방법이 없었다. 이제 등록된 활동지역은 빠른선택 칩으로 남기고, "+ 다른 지역
+         선택"으로 전국 어디든(REGION_DATA 전체) 광고 목적으로 새로 골라 살 수 있다. -->
     <div id="ad-booking-region-picker" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div>
     <!-- 신규(사용자요청 — 달력에서 시작일·종료일을 직접 두 번 탭하는 방식이 번거롭다는 지적):
          시작일만 탭하면 자주 쓰는 기간(3/7/14/30일) 버튼으로 종료일을 한 번에 확정할 수 있게 함.
@@ -2929,10 +2933,10 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
          담아뒀다가 한 번에 결제한다. 담을 때마다 날짜선택만 초기화되고 지역은 유지되어 같은 지역에
          다른 기간을 이어서 담기 편하다. -->
     <button class="btn btn-primary" id="ad-booking-submit-btn" onclick="addAdBookingToCart()" disabled>장바구니에 담기</button>
-    <div id="ad-booking-cart-bar" onclick="renderAdCart(); go('ad-cart')" style="display:none;margin-top:10px;background:var(--charcoal);border-radius:var(--radius-card);padding:13px 15px;align-items:center;justify-content:space-between;cursor:pointer">
-      <div style="color:#fff;font-size:13.5px"><b id="ad-booking-cart-count"></b> · <span id="ad-booking-cart-total"></span></div>
-      <div style="color:#fff;font-weight:700;font-size:13.5px">장바구니 보기 ›</div>
-    </div>
+    <!-- 결함정리(사용자요청 — "장바구니 들어가기 기능이 없다"): 이 화면 맨 아래에만 있던 장바구니
+         진입 막대는 달력이 길어지면 스크롤해야 보여서 놓치기 쉬웠다. 화면 어디서든(스크롤 위치·현재
+         화면과 무관하게) 항상 보이는 고정 버튼(updateAdCartFab()이 body에 직접 붙이는 #ad-cart-fab)
+         으로 대체 — 이 자리의 막대는 더 이상 쓰지 않는다. -->
     <div id="ad-booking-note" class="caption" style="text-align:center;margin-top:10px"></div>
   </div>
 </div>
@@ -14202,6 +14206,50 @@ function pickAdBookingRegion(region){
   window._adBooking.region = region; window._adBooking.start = null; window._adBooking.end = null;
   loadAdAvailability();
 }
+// 신규(사용자요청 — "광고 노출지역은 구매 전에 고민하고 변경하거나 추가로 구매할 수 있게"): 예전엔
+// 마이페이지에 등록해둔 활동지역만 빠른선택 칩으로 나와서, 활동지역이 1개뿐인(대부분의) 파트너는
+// 사실상 지역을 "바꿀" 방법이 없었다. 광고 노출지역은 애초에 실제 서비스지역과 별개 개념(서버도
+// region을 자유 문자열로만 다뤄서 등록된 활동지역인지 검사하지 않음)이므로, 파트너 가입·마이페이지에서
+// 이미 쓰던 것과 같은 시/도→시/군/구 드롭다운 패턴을 그대로 재사용해 전국 어디든 광고용으로 새로
+// 고를 수 있게 연다. 등록된 활동지역이 아닌 곳을 광고지역으로 사도 상관없다(사업 확장 목적).
+function openAdRegionPicker(){
+  openMeasSheet(
+    '<div style="font-size:17px;font-weight:800;margin-bottom:4px;text-align:center">광고 노출지역 선택</div>'
+    + '<div class="caption" style="text-align:center;margin-bottom:16px;line-height:1.5">마이페이지에 등록한 활동지역이 아니어도 괜찮아요. 사업을 넓히고 싶은 지역을 자유롭게 골라 광고할 수 있어요.</div>'
+    + '<div style="display:flex;gap:8px;margin-bottom:16px">'
+      + '<select id="ad-region-picker-sido" onchange="onAdRegionPickerSidoChange()" style="flex:1;min-width:0;padding:10px;border:1px solid var(--stone);border-radius:var(--radius-input);font-family:inherit;font-size:14px;background:#fff"></select>'
+      + '<select id="ad-region-picker-gu" style="flex:1;min-width:0;padding:10px;border:1px solid var(--stone);border-radius:var(--radius-input);font-family:inherit;font-size:14px;background:#fff"></select>'
+    + '</div>'
+    + '<button class="btn btn-primary" onclick="confirmAdRegionPicker()">이 지역으로 선택</button>'
+  );
+  var sidoEl = document.getElementById('ad-region-picker-sido');
+  if(!sidoEl) return;
+  var b = window._adBooking;
+  var parts = (b && b.region) ? b.region.trim().split(/\s+/) : [];
+  if(!sidoEl.options.length){
+    Object.keys(REGION_DATA).forEach(function(sido){ var opt=document.createElement('option'); opt.value=sido; opt.textContent=sido; sidoEl.appendChild(opt); });
+  }
+  if(parts[0] && REGION_DATA[parts[0]]) sidoEl.value = parts[0];
+  onAdRegionPickerSidoChange();
+  var guEl = document.getElementById('ad-region-picker-gu');
+  if(guEl && parts[1]){
+    var hasGu = Array.prototype.some.call(guEl.options, function(o){ return o.value===parts[1]; });
+    if(hasGu) guEl.value = parts[1];
+  }
+}
+function onAdRegionPickerSidoChange(){
+  var sidoEl = document.getElementById('ad-region-picker-sido'), guEl = document.getElementById('ad-region-picker-gu');
+  if(!sidoEl || !guEl) return;
+  guEl.innerHTML = '';
+  (REGION_DATA[sidoEl.value]||[]).forEach(function(gu){ var opt=document.createElement('option'); opt.value=gu; opt.textContent=gu; guEl.appendChild(opt); });
+}
+function confirmAdRegionPicker(){
+  var sidoEl = document.getElementById('ad-region-picker-sido'), guEl = document.getElementById('ad-region-picker-gu');
+  if(!sidoEl || !guEl || !sidoEl.value || !guEl.value) return;
+  var region = (sidoEl.value+' '+guEl.value).trim();
+  closeMeasSheet();
+  pickAdBookingRegion(region);
+}
 // GET /api/ads/availability — 앞으로 약 3개월(92일)치 달력에서 하루하루 6자리 중 몇 자리가 남았는지 조회
 function loadAdAvailability(){
   var b = window._adBooking; if(!b || !b.region) return;
@@ -14262,13 +14310,16 @@ function renderAdApply(){
   var regionWrap = document.getElementById('ad-booking-region-picker');
   if(regionWrap){
     var opts = partnerAdRegionOptions();
-    if(!opts.length){
-      regionWrap.innerHTML = '<div class="caption" style="color:var(--terracotta)">먼저 마이페이지에서 활동지역을 등록해주세요.</div>';
-    } else {
-      regionWrap.innerHTML = opts.map(function(r){
-        return '<button type="button" class="chip'+(b.region===r?' active':'')+'" onclick="pickAdBookingRegion(\''+r.replace(/'/g,"\\'")+'\')">'+escapeConsumerIdentityHtml(r)+'</button>';
-      }).join('');
+    var chips = opts.map(function(r){
+      return '<button type="button" class="chip'+(b.region===r?' active':'')+'" onclick="pickAdBookingRegion(\''+r.replace(/'/g,"\\'")+'\')">'+escapeConsumerIdentityHtml(r)+'</button>';
+    });
+    // 등록된 활동지역 칩 목록에는 없는 지역을("+ 다른 지역 선택"으로) 골랐을 때도 지금 선택된 지역이
+    // 눈에 보이도록, 목록 맨 앞에 읽기전용(선택불가) 표시 칩을 하나 끼워넣는다.
+    if(b.region && opts.indexOf(b.region)===-1){
+      chips.unshift('<button type="button" class="chip active" disabled style="opacity:1">'+escapeConsumerIdentityHtml(b.region)+'</button>');
     }
+    chips.push('<button type="button" class="chip" onclick="openAdRegionPicker()" style="border-style:dashed">+ 다른 지역 선택</button>');
+    regionWrap.innerHTML = chips.join('');
   }
   // 신규(사용자요청): 시작일이 정해지면 자주 쓰는 기간 버튼을 보여줘서, 달력에서 종료일을 직접
   // 찾아 탭하지 않고도 한 번에 기간을 확정할 수 있게 한다.
@@ -14333,7 +14384,7 @@ function renderAdApply(){
       if(submitBtn) submitBtn.disabled = true;
     }
   }
-  updateAdCartBar();
+  updateAdCartFab();
 }
 // 재설계(사용자요청 — 장바구니 방식 결제): 자리를 하나씩 즉시결제하지 않고 여러 개를 담아뒀다가
 // 한 번에 결제한다. 장바구니는 서버에 저장하지 않는 세션 임시상태(브라우저를 벗어나면 사라져도
@@ -14343,16 +14394,26 @@ function renderAdApply(){
 // 클라이언트에서 미리 막아주고, 실제 잔여석 검증은 결제 시 서버가 최종적으로 한다.
 window._adCart = window._adCart || [];
 function adCartTotal(){ return window._adCart.reduce(function(s,it){ return s+it.cost; }, 0); }
-function updateAdCartBar(){
-  var bar = document.getElementById('ad-booking-cart-bar'); if(!bar) return;
+// 결함정리(사용자요청 — "장바구니에 넣고 바로 결제가 가능하도록 장바구니 들어가기 기능이 없다"):
+// 예전엔 이 진입 버튼이 s-ad-apply 화면 안, 그것도 달력 아래(길면 스크롤해야 보임)에만 있어서
+// 담아놓고 다른 화면(광고관리·마이페이지 등)으로 이동하면 다시 들어갈 방법이 없었다. document.body에
+// 직접 붙이는 고정(position:fixed) 버튼으로 바꿔서, 담긴 자리가 있는 한 지금 어느 화면에 있든(스크롤
+// 위치와도 무관하게) 항상 눌러서 바로 장바구니로 들어가 결제할 수 있게 한다.
+function updateAdCartFab(){
   var n = window._adCart.length;
-  if(n>0){
-    bar.style.display = 'flex';
-    var countEl = document.getElementById('ad-booking-cart-count'); if(countEl) countEl.textContent = n+'개 자리 담김';
-    var totalEl = document.getElementById('ad-booking-cart-total'); if(totalEl) totalEl.textContent = adCartTotal().toLocaleString()+'크레딧';
-  } else {
-    bar.style.display = 'none';
+  var el = document.getElementById('ad-cart-fab');
+  if(!n){ if(el) el.style.display = 'none'; return; }
+  if(!el){
+    el = document.createElement('button');
+    el.id = 'ad-cart-fab';
+    el.type = 'button';
+    el.onclick = function(){ renderAdCart(); go('ad-cart'); };
+    el.style.cssText = 'position:fixed;right:16px;bottom:78px;z-index:9997;background:var(--charcoal);color:#fff;border:none;border-radius:var(--radius-pill);padding:12px 16px;display:flex;align-items:center;gap:8px;box-shadow:0 6px 18px rgba(20,32,41,.32);cursor:pointer;font-family:inherit;max-width:calc(100vw - 32px)';
+    document.body.appendChild(el);
   }
+  el.innerHTML = '<span style="display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:var(--terracotta);color:#fff;font-size:11px;font-weight:800;flex-shrink:0">'+n+'</span>'
+    + '<span style="font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">장바구니 결제하기 · '+adCartTotal().toLocaleString()+'크레딧</span>';
+  el.style.display = 'flex';
 }
 function addAdBookingToCart(){
   var b = window._adBooking; if(!b || !b.start || !b.end) return;
@@ -14373,11 +14434,13 @@ function addAdBookingToCart(){
   window._adCart.push({ region: b.region, startDate: b.start, endDate: b.end, days: days, cost: cost });
   b.start = null; b.end = null;
   renderAdApply();
-  if(note) note.innerHTML = '<span style="color:var(--success)">장바구니에 담았어요. 이어서 다른 날짜를 담거나, 장바구니에서 한 번에 결제하세요.</span>';
+  updateAdCartFab();
+  if(note) note.innerHTML = '<span style="color:var(--success)">장바구니에 담았어요. 이어서 다른 날짜·지역을 담거나, 오른쪽 아래 장바구니 버튼으로 바로 결제하세요.</span>';
 }
 function removeAdCartItem(i){
   window._adCart.splice(i,1);
   renderAdCart();
+  updateAdCartFab();
 }
 function renderAdCart(){
   var itemsEl = document.getElementById('ad-cart-items');
@@ -14420,12 +14483,14 @@ function checkoutAdCart(){
   var items = window._adCart.map(function(it){ return { region: it.region, startDate: it.startDate, endDate: it.endDate }; });
   if(!window.MVP.live){
     window._adCart = [];
+    updateAdCartFab();
     go('my-ads');
     return;
   }
   apiFetch('/api/ads/reservations/batch', {method:'POST', body: JSON.stringify({ items: items })})
     .then(function(data){
       window._adCart = [];
+      updateAdCartFab();
       window._myAdsCache = null;
       loadPartnerProfileFromServer().catch(function(){});
       go('my-ads');
