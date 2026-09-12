@@ -324,5 +324,25 @@ async function waitReady(){for(let i=0;i<30;i++){try{const r=await fetch(`http:/
   check('파트너가입 E2E: 반려후 verify_status=rejected',r.json.data.verify_status==='rejected',JSON.stringify(r.json.data).slice(0,80));
   r=await api('PUT',`/api/admin/partners/${e2ePartnerId}/reject`,{reason:'악의적시도'},u1);check('파트너가입 E2E: 관리자아닌사용자 반려차단',r.status===403||r.status===401,r.status);
   db2.close();
+
+  // ---- 신규: 지역기반 서비스 — 좌표→지역 변환(GET /api/geo/reverse), 활성지역 저장(PUT /api/users/me/region) ----
+  // 이 서버는 GEO_TEST_MODE/KAKAO_REST_API_KEY 둘 다 설정하지 않은 채로 떠 있다(운영에서 카카오 키를
+  // 아직 안 넣은 상태와 동일) — 이 상태에서 가짜 지역을 지어내지 않고 정직하게 503으로 막히는지,
+  // 그리고 입력값 검증이 카카오 호출 전에 먼저 걸러지는지를 검증한다. 실제 카카오 API 자체는
+  // 이 샌드박스의 외부망 차단·키 미보유로 호출 자체가 불가능해 NOT TESTABLE로 남긴다(정직하게 기록).
+  r=await api('GET','/api/geo/reverse?lat=abc&lng=127');check('지역변환: 좌표 형식이 아니면 400',r.status===400,r.status);
+  r=await api('GET','/api/geo/reverse?lat=60&lng=127');check('지역변환: 대한민국 범위 밖 좌표는 400',r.status===400,r.status);
+  // u1은 앞선 WebSocket 탈퇴 시나리오에서 이미 탈퇴 처리됐으므로, 이 구간은 새 소비자 계정으로 검증한다.
+  const dbGeo=new Database(dbPath);
+  dbGeo.exec(`INSERT INTO users(id,social_provider,social_id,nickname) VALUES ('u_geo1','qa','u_geo1','지역테스트소비자');`);
+  dbGeo.close();
+  const uGeo1=token('u_geo1','consumer');
+  r=await api('PUT','/api/users/me/region',{region:'서울 강남구'},uGeo1);check('활성지역 저장 성공',r.status===200&&r.json.data.region==='서울 강남구',r);
+  r=await api('GET','/api/users/me',null,uGeo1);check('저장한 활성지역이 프로필에 반영됨',r.status===200&&r.json.data.region==='서울 강남구',r);
+  r=await api('PUT','/api/users/me/region',{region:'강남구'},uGeo1);check('활성지역 형식(시도+시군구) 미충족시 차단',r.status===400,r.status);
+  r=await api('PUT','/api/users/me/region',{region:null},uGeo1);check('활성지역 해제(null) 성공',r.status===200&&r.json.data.region===null,r);
+  r=await api('GET','/api/users/me',null,uGeo1);check('활성지역 해제가 프로필에 반영됨',r.status===200&&r.json.data.region===null,r);
+  r=await api('PUT','/api/users/me/region',{region:'서울 강남구'},p1);check('파트너 계정은 활성지역 저장 불가(소비자 전용)',r.status===403,r.status);
+
   console.log(JSON.stringify({passed:results.length,failed:0,results},null,2));
 }catch(error){console.error(JSON.stringify({passed:results.filter(x=>x.pass).length,failed:1,error:error.message,results},null,2));process.exitCode=1;}finally{server.kill('SIGTERM');for(const suffix of ['', '-wal','-shm']){try{fs.unlinkSync(dbPath+suffix);}catch(_){}}}})();
