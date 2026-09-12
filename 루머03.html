@@ -1403,7 +1403,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
            요청하기" 등)에서 이미 쓰는 sticky 하단바 패턴을 그대로 재사용. 목록이 몇 줄이든 버튼은 항상
            화면에 보인다. 하단 고정바에 가려지지 않도록 region-picker 자체에 여유 패딩을 둔다. -->
       <div id="region-picker" style="display:none;flex-direction:column;margin-top:13px;padding-top:13px;padding-bottom:76px;border-top:1px solid var(--stone)">
-        <input id="region-search" oninput="filterRegionSearch(this.value)" placeholder="구·군 이름으로 검색 (예: 강남)" style="width:100%;padding:8px 10px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:8px;flex-shrink:0">
+        <input id="region-search" oninput="filterRegionSearch(this.value)" placeholder="구·군 이름으로 검색 (예: 강남)" style="width:100%;padding:11px 12px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:17px;font-family:inherit;margin-bottom:8px;flex-shrink:0">
         <!-- 재설계(사용자요청 — 레퍼런스 앱(강남언니 지역필터) 참고): 텍스트 카운트 대신 선택한 지역을
              하나씩 제거 가능한 칩으로 나열. 선택이 없으면 이 줄 자체가 빈 채로 남는다(레퍼런스와 동일).
              재설계: 체크 결과를 스크롤 없이 바로 보여주기 위해 목록보다 위, 검색창 바로 아래로 이동. -->
@@ -1411,9 +1411,9 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
         <!-- 재설계(사용자요청 — 레퍼런스 앱 참고): 좌측 시/도 고정탭 + 우측 구/군 체크박스(다중선택) 2단 레이아웃 -->
         <!-- 재설계(사용자요청 — 화면 높이 맞춤): 이 2열 영역만 내부 스크롤하고, 높이는 JS(fitRegionPickerColumns)가
              실제 뷰포트 여유공간을 측정해서 지정한다. inline height는 JS 실행 전 잠깐 보일 기본값(폴백)일 뿐. -->
-        <div id="region-picker-columns" style="display:flex;border:1px solid var(--stone);border-radius:var(--radius-card);overflow:hidden;height:224px;flex-shrink:0">
-          <div id="region-sido-tabs" style="width:68px;flex-shrink:0;background:var(--ivory);overflow-y:auto"></div>
-          <div id="region-gu-checklist" style="flex:1;overflow-y:auto;padding:5px 11px"></div>
+        <div id="region-picker-columns" style="display:flex;border:1px solid var(--stone);border-radius:var(--radius-card);overflow:hidden;height:280px;flex-shrink:0">
+          <div id="region-sido-tabs" style="width:82px;flex-shrink:0;background:var(--ivory);overflow-y:auto"></div>
+          <div id="region-gu-checklist" style="flex:1;overflow-y:auto;padding:6px 14px"></div>
         </div>
       </div>
       <!-- 재설계: sticky 하단 액션바(초기화/필터 선택 완료) — region-picker가 열려있는 동안만 표시.
@@ -6786,7 +6786,7 @@ function fitRegionPickerColumns(){
   var viewportH = window.innerHeight || document.documentElement.clientHeight;
   var top = cols.getBoundingClientRect().top;
   var available = viewportH - top - reserveBelow;
-  available = Math.max(180, Math.min(available, 520)); // 너무 낮거나(스크롤 무의미) 너무 높아지지(초대형화면) 않게
+  available = Math.max(220, Math.min(available, 560)); // 너무 낮거나(스크롤 무의미) 너무 높아지지(초대형화면) 않게 — 글씨·행 크기 확대에 맞춰 하한선도 함께 상향
   cols.style.height = available + 'px';
 }
 (function(){
@@ -6804,7 +6804,7 @@ function renderSidoTabs(){
   Object.keys(REGION_DATA).forEach(function(sido){
     var tab=document.createElement('div');
     tab.textContent=sido; tab.dataset.sido=sido;
-    tab.style.cssText='padding:11px 5px;text-align:center;font-size:11px;font-weight:600;cursor:pointer;color:var(--charcoal)';
+    tab.style.cssText='padding:14px 6px;text-align:center;font-size:15px;font-weight:600;cursor:pointer;color:var(--charcoal)';
     tab.onclick=function(){ selectSidoTab(sido); };
     el.appendChild(tab);
   });
@@ -6829,8 +6829,8 @@ function buildGuCheckboxRow(label, key, isAll){
   var wrap=document.createElement('div');
   var row=document.createElement('div');
   var checked = window._selectedGuSet.has(key);
-  row.style.cssText='display:flex;align-items:center;gap:8px;padding:9px 3px;cursor:pointer;font-size:11.5px;font-weight:'+(isAll?'800':'500')+';color:var(--charcoal);'+(isAll?'border-bottom:1px solid var(--stone);margin-bottom:3px':'');
-  row.innerHTML='<span style="width:16px;height:16px;border-radius:4px;border:2px solid '+(checked?'var(--terracotta)':'var(--stone)')+';background:'+(checked?'var(--terracotta)':'#fff')+';display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(checked?icon('check','#fff',10):'')+'</span><span style="flex:1">'+label+'</span>';
+  row.style.cssText='display:flex;align-items:center;gap:10px;padding:13px 4px;cursor:pointer;font-size:15.5px;font-weight:'+(isAll?'800':'500')+';color:var(--charcoal);'+(isAll?'border-bottom:1px solid var(--stone);margin-bottom:3px':'');
+  row.innerHTML='<span style="width:20px;height:20px;border-radius:5px;border:2px solid '+(checked?'var(--terracotta)':'var(--stone)')+';background:'+(checked?'var(--terracotta)':'#fff')+';display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(checked?icon('check','#fff',13):'')+'</span><span style="flex:1">'+label+'</span>';
   row.onclick=function(){
     if(window._selectedGuSet.has(key)) window._selectedGuSet.delete(key); else window._selectedGuSet.add(key);
     renderGuCheckboxes(window._currentPickerSido);
@@ -6849,7 +6849,7 @@ function buildGuCheckboxRow(label, key, isAll){
       var moreBtn=document.createElement('button');
       moreBtn.type='button';
       moreBtn.textContent = dongCount>0 ? ('읍면동 '+dongCount+'곳 ›') : '읍면동 ›';
-      moreBtn.style.cssText='background:none;border:none;cursor:pointer;font-size:10.5px;font-weight:600;color:'+(dongCount>0?'var(--steelblue)':'var(--slate)')+';padding:4px 2px;flex-shrink:0;white-space:nowrap';
+      moreBtn.style.cssText='background:none;border:none;cursor:pointer;font-size:13.5px;font-weight:600;color:'+(dongCount>0?'var(--steelblue)':'var(--slate)')+';padding:6px 3px;flex-shrink:0;white-space:nowrap';
       moreBtn.onclick=function(e){ e.stopPropagation(); openDongPicker(rSido, rCity); };
       row.appendChild(moreBtn);
     }
