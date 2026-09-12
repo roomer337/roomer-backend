@@ -1384,8 +1384,17 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
         <span id="btn-curloc-icon" style="display:flex"></span>현재 위치로 찾기
       </button>
       <div id="region-status" style="display:none;margin-top:12px;font-size:14.5px;line-height:1.6"></div>
-      <div id="region-picker" style="display:none;flex-direction:column;margin-top:16px;padding-top:16px;border-top:1px solid var(--stone)">
-        <input id="region-search" oninput="filterRegionSearch(this.value)" placeholder="구·군 이름으로 검색 (예: 강남)" style="width:100%;padding:10px 12px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:12px;flex-shrink:0">
+      <!-- 재설계(사용자요청 — 지역선택 화면이 세로로 길어 버튼을 보려면 스크롤해야 하는 불편함 개선):
+           ① 선택 칩을 목록 "아래"가 아니라 검색창 바로 아래(목록 위)로 옮겨 체크 즉시 스크롤 없이 피드백,
+           ② "초기화/필터 선택 완료" 버튼을 화면 하단 고정(sticky) 바로 분리 — 다른 화면(업체 상세 "견적
+           요청하기" 등)에서 이미 쓰는 sticky 하단바 패턴을 그대로 재사용. 목록이 몇 줄이든 버튼은 항상
+           화면에 보인다. 하단 고정바에 가려지지 않도록 region-picker 자체에 여유 패딩을 둔다. -->
+      <div id="region-picker" style="display:none;flex-direction:column;margin-top:16px;padding-top:16px;padding-bottom:76px;border-top:1px solid var(--stone)">
+        <input id="region-search" oninput="filterRegionSearch(this.value)" placeholder="구·군 이름으로 검색 (예: 강남)" style="width:100%;padding:10px 12px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:10px;flex-shrink:0">
+        <!-- 재설계(사용자요청 — 레퍼런스 앱(강남언니 지역필터) 참고): 텍스트 카운트 대신 선택한 지역을
+             하나씩 제거 가능한 칩으로 나열. 선택이 없으면 이 줄 자체가 빈 채로 남는다(레퍼런스와 동일).
+             재설계: 체크 결과를 스크롤 없이 바로 보여주기 위해 목록보다 위, 검색창 바로 아래로 이동. -->
+        <div id="region-selected-chips" style="flex-shrink:0;display:flex;gap:8px;overflow-x:auto;padding:0 2px 10px"></div>
         <!-- 재설계(사용자요청 — 레퍼런스 앱 참고): 좌측 시/도 고정탭 + 우측 구/군 체크박스(다중선택) 2단 레이아웃 -->
         <!-- 재설계(사용자요청 — 화면 높이 맞춤): 이 2열 영역만 내부 스크롤하고, 높이는 JS(fitRegionPickerColumns)가
              실제 뷰포트 여유공간을 측정해서 지정한다. inline height는 JS 실행 전 잠깐 보일 기본값(폴백)일 뿐. -->
@@ -1393,14 +1402,12 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
           <div id="region-sido-tabs" style="width:84px;flex-shrink:0;background:var(--ivory);overflow-y:auto"></div>
           <div id="region-gu-checklist" style="flex:1;overflow-y:auto;padding:6px 14px"></div>
         </div>
-        <!-- 재설계(사용자요청 — 레퍼런스 앱(강남언니 지역필터) 참고): 텍스트 카운트 대신 선택한 지역을
-             하나씩 제거 가능한 칩으로 나열. 선택이 없으면 이 줄 자체가 빈 채로 남는다(레퍼런스와 동일). -->
-        <div id="region-selected-chips" style="flex-shrink:0;display:flex;gap:8px;overflow-x:auto;padding:10px 2px 0"></div>
-        <!-- 재설계(사용자요청 — 레퍼런스 앱 참고): 버튼 1개("선택 완료") → "초기화"+"필터 선택 완료" 2개로 분리 -->
-        <div style="display:flex;gap:8px;margin-top:8px;flex-shrink:0">
-          <button type="button" onclick="resetRegionSelection()" class="btn btn-outline" style="flex:1">초기화</button>
-          <button type="button" onclick="applyRegionSelection()" class="btn btn-primary" style="flex:1.4">필터 선택 완료</button>
-        </div>
+      </div>
+      <!-- 재설계: sticky 하단 액션바(초기화/필터 선택 완료) — region-picker가 열려있는 동안만 표시.
+           .scr가 display:none이 되면(다른 화면으로 이동) 이 fixed 요소도 조상과 함께 함께 숨겨진다. -->
+      <div id="region-picker-actionbar" style="display:none;gap:8px;position:fixed;left:0;right:0;bottom:0;background:#fff;box-shadow:0 -4px 16px rgba(20,32,41,.08);padding:14px 20px;max-width:700px;margin:0 auto;z-index:20">
+        <button type="button" onclick="resetRegionSelection()" class="btn btn-outline" style="flex:1">초기화</button>
+        <button type="button" onclick="applyRegionSelection()" class="btn btn-primary" style="flex:1.4">필터 선택 완료</button>
       </div>
       <div id="region-preview" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--stone)">
         <div class="caption" style="margin-bottom:10px" id="lb-region-preview"></div>
@@ -6529,6 +6536,7 @@ window._selectedGuSet = new Set();
 window._currentPickerSido = null;
 function openRegionPicker(){
   document.getElementById('region-picker').style.display='flex';
+  document.getElementById('region-picker-actionbar').style.display='flex';
   document.getElementById('region-search').value='';
   window._selectedGuSet = new Set();
   renderSidoTabs();
@@ -6537,14 +6545,14 @@ function openRegionPicker(){
   fitRegionPickerColumns();
 }
 // 신규(사용자요청 — 화면 높이에 맞춘 지역선택): 목록(2열)만 남은 공간만큼 내부 스크롤되게 하고,
-// 검색창·선택 지역 칩 줄·하단 버튼 2개는 항상 화면에 보이도록 목록 높이를 실측해서 지정한다.
-// (고정 vh/px값 대신 실제 DOM 위치를 재는 이유: 광고배너·헤더 높이가 화면폭마다 달라 고정값으로는
-// PC·모바일 모두에 맞추기 어렵기 때문)
+// 검색창·선택 지역 칩 줄은 항상 화면 흐름대로 보이며, 버튼 2개는 이제 화면 하단 고정바로 분리돼
+// 항상 화면에 보인다. 목록 높이는 남은 공간을 실측해서 지정한다(고정 vh/px값 대신 실제 DOM 위치를
+// 재는 이유: 광고배너·헤더 높이가 화면폭마다 달라 고정값으로는 PC·모바일 모두에 맞추기 어렵기 때문).
 function fitRegionPickerColumns(){
   var cols = document.getElementById('region-picker-columns');
   var picker = document.getElementById('region-picker');
   if(!cols || !picker || getComputedStyle(picker).display === 'none') return;
-  var reserveBelow = 108; // 선택 지역 칩 줄 + 버튼 2개(초기화/필터 선택 완료) + 여백
+  var reserveBelow = 92; // 화면 하단 고정 액션바(초기화/필터 선택 완료) 높이 + 여백
   var viewportH = window.innerHeight || document.documentElement.clientHeight;
   var top = cols.getBoundingClientRect().top;
   var available = viewportH - top - reserveBelow;
