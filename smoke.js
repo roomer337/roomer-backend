@@ -37,6 +37,19 @@ function buildMultipart(fields, fileField, filename, mime, data) {
   parts.push(data); parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
   return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
 }
+// 신규(사용자요청 — 포트폴리오→상세페이지 반영 테스트용): buildMultipart는 파일 1개만 지원하므로,
+// 여러 장(photos[])을 한 번에 올려야 하는 포트폴리오 업로드 테스트를 위해 다중 파일 버전을 추가한다.
+function buildMultipartMulti(fields, files) {
+  const boundary = '----smoke' + Date.now() + Math.random().toString(36).slice(2);
+  let parts = [];
+  for (const [k, v] of Object.entries(fields)) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+  for (const f of files) {
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${f.field}"; filename="${f.filename}"\r\nContent-Type: ${f.mime}\r\n\r\n`));
+    parts.push(f.data); parts.push(Buffer.from('\r\n'));
+  }
+  parts.push(Buffer.from(`--${boundary}--\r\n`));
+  return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
+}
 async function apiMultipart(method, url, multipart, auth) {
   const r = await fetch(`http://127.0.0.1:${port}${url}`, {
     method, headers: { 'content-type': multipart.contentType, ...(auth ? { authorization: `Bearer ${auth}` } : {}) }, body: multipart.body
@@ -169,6 +182,71 @@ function check(name, cond, detail) {
     }
     r = await api('POST', '/api/ads/reservations', { region: '서울 송파구', startDate: capStart, endDate: capEnd }, p2);
     check('지역당 6자리 정원이 다 찬 뒤 7번째 예약은 차단', r.status === 400 && r.json.error.code === 'CAPACITY_FULL', r);
+
+    // ---- 광고 장바구니(배치) 결제: "실반영" 확인 — 슬롯이 실제로 즉시 줄어드는지 ----
+    // (사용자요청): 여러 자리를 담아 한 번에 결제했을 때, 결제 직후 잔여 정원 조회가 곧바로 반영돼야 하고,
+    // 배치 중간에 정원을 넘는 항목이 하나라도 있으면 전부 롤백(부분결제 없음)돼야 한다.
+    r = await api('GET', '/api/partners/me', null, p2);
+    const balanceBeforeBatch = r.json.data.credit_balance;
+    const batchDay = addDaysStr(20);
+    r = await api('POST', '/api/ads/reservations/batch', { items: [
+      { region: '서울 서초구', startDate: batchDay, endDate: batchDay },
+      { region: '서울 서초구', startDate: batchDay, endDate: batchDay }
+    ] }, p2);
+    check('장바구니 배치결제: 같은 지역·같은 날짜 2건 동시 예약 성공', r.status === 200 && r.json.data.items.length === 2 && r.json.data.totalCost === 9900 * 2, r);
+
+    r = await api('GET', `/api/ads/availability?region=${encodeURIComponent('서울 서초구')}&days=25`, null, p2);
+    const dayInfo = r.json.data.calendar.find(d => d.date === batchDay);
+    check('실반영 확인: 배치결제 직후 그 날짜의 잔여자리가 6→4로 즉시 감소', dayInfo && dayInfo.used === 2 && dayInfo.available === 4, dayInfo);
+
+    r = await api('GET', '/api/partners/me', null, p2);
+    const balanceAfterBatch = r.json.data.credit_balance;
+    check('배치결제 금액이 크레딧 잔액에 정확히 반영됨', balanceAfterBatch === balanceBeforeBatch - 9900 * 2, { balanceAfterBatch, expected: balanceBeforeBatch - 9900 * 2 });
+
+    // 이미 2자리를 쓴 상태에서 5건을 한 배치로 더 담으면(2+5=7 > 6) 중간에 막혀야 하고, 전부 롤백돼야 한다
+    r = await api('POST', '/api/ads/reservations/batch', { items: [
+      { region: '서울 서초구', startDate: batchDay, endDate: batchDay },
+      { region: '서울 서초구', startDate: batchDay, endDate: batchDay },
+      { region: '서울 서초구', startDate: batchDay, endDate: batchDay },
+      { region: '서울 서초구', startDate: batchDay, endDate: batchDay },
+      { region: '서울 서초구', startDate: batchDay, endDate: batchDay }
+    ] }, p2);
+    check('배치 중 정원을 넘는 항목이 있으면 배치 전체가 차단됨', r.status === 400 && r.json.error.code === 'CAPACITY_FULL', r);
+
+    r = await api('GET', `/api/ads/availability?region=${encodeURIComponent('서울 서초구')}&days=25`, null, p2);
+    const dayInfoAfterFail = r.json.data.calendar.find(d => d.date === batchDay);
+    check('실패한 배치는 부분반영 없이 전부 롤백됨(잔여자리 그대로 4)', dayInfoAfterFail && dayInfoAfterFail.used === 2, dayInfoAfterFail);
+
+    r = await api('GET', '/api/partners/me', null, p2);
+    check('롤백된 배치는 크레딧도 그대로(이중차감 없음)', r.json.data.credit_balance === balanceAfterBatch, r);
+
+    r = await api('POST', '/api/ads/reservations/batch', { items: new Array(11).fill({ region: '서울 서초구', startDate: batchDay, endDate: batchDay }) }, p2);
+    check('장바구니는 최대 10건까지만 허용', r.status === 400, r);
+
+    // ---- 포트폴리오 → 상세페이지 대표사진 반영 ----
+    // (사용자요청): 포트폴리오 사진 업로드 시 "상세페이지 대표사진으로도 쓰기"를 체크한 사진만,
+    // 관리자가 그 프로젝트를 승인하는 시점에 partners.portfolio_images에 반영돼야 한다.
+    let pmp = buildMultipartMulti(
+      { title: '거실 리모델링 사례', description: '깔끔한 화이트톤 시공', useAsProfilePhoto: JSON.stringify([true, false]) },
+      [
+        { field: 'photos', filename: 'p1.jpg', mime: 'image/jpeg', data: JPEG_HEADER },
+        { field: 'photos', filename: 'p2.jpg', mime: 'image/jpeg', data: JPEG_HEADER }
+      ]
+    );
+    r = await apiMultipart('POST', '/api/partners/me/portfolio', pmp, p2);
+    check('포트폴리오 등록 성공(사진 2장, 첫번째만 대표사진 체크)', r.status === 200 && r.json.data.photos.length === 2, r);
+    const portfolioProjectId = r.json.data.id;
+
+    r = await api('GET', '/api/partners/me', null, p2);
+    const profileImagesBeforeApprove = JSON.parse(r.json.data.portfolio_images || '[]');
+    check('승인 전에는 대표사진에 아직 반영 안 됨(미승인 사진 유출 방지)', profileImagesBeforeApprove.length === 0, profileImagesBeforeApprove);
+
+    r = await api('PUT', `/api/admin/portfolio/${portfolioProjectId}/approve`, null, admin);
+    check('관리자 포트폴리오 승인 성공', r.status === 200, r);
+
+    r = await api('GET', '/api/partners/me', null, p2);
+    const profileImagesAfterApprove = JSON.parse(r.json.data.portfolio_images || '[]');
+    check('승인 즉시 체크했던 대표사진(1장)만 상세페이지 대표사진에 자동 반영됨', profileImagesAfterApprove.length === 1, profileImagesAfterApprove);
 
     // ---- 어뷰징(반복 노쇼) ----
     r = await api('GET', '/api/admin/abuse/queue', null, admin);
