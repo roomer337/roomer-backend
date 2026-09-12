@@ -2714,151 +2714,219 @@ app.post('/api/meas-jobs/:roomId/contract-confirmed', authRequired, (req,res) =>
   return sendMeasurementResult(res,commitMeasurementAction({room,user:req.user,eventType:'contract_confirmed',allowedStatuses:['quote_finalized'],nextStatus:'contract_confirmed',updates:{},payload:{contractId:contract.id},summary:'소비자가 최종 계약금액을 확인했습니다'}));
 });
 
-// ===== 5. 광고(Ad Slots) — AI 1차 검수 + 구매 즉시 자동노출(5단계: 사용자요청) =====
-const AD_BANNED_WORDS = ['100%', '최고', '1위', '완벽', '무조건'];
-// 신규(사용자요청 — 5단계: 지역광고 자동노출): 슬롯종류별 가격표(서버가 신뢰 소스 — 클라이언트가 보낸 가격은 사용하지 않음)
-// 프론트(window.AD_PRICING)와 반드시 동일한 값으로 유지할 것
-const AD_PRICING = {
-  hero: { periodDays: 7, price: 99000 },
-  'hero-sub': { periodDays: 7, price: 29000 },
-  'region-top': { periodDays: 30, price: 200000 }
-};
-// 신규(사용자요청 — 5단계): 슬롯종류별 "지역당" 최대 동시노출 개수(자리 품절 방지)
-const AD_CAPACITY_PER_REGION = { hero: 1, 'hero-sub': 2, 'region-top': 1 };
-// 결함정리(2026-09, 전수조사 발견 — 운영콘솔): 관리자 "광고관리" 화면에서 단가·정원을 수정해도
-// 그 브라우저 세션 메모리만 바뀔 뿐 실제 광고 구매 시 적용되는 값은 이 하드코딩 상수 그대로였음.
-function getAdPricing() {
-  const overrides = getAdminPolicy('ad_pricing', {});
-  const out = {};
-  Object.keys(AD_PRICING).forEach(k => {
-    const o = overrides[k];
-    out[k] = { periodDays: AD_PRICING[k].periodDays, price: (o && typeof o.price === 'number') ? o.price : AD_PRICING[k].price };
-  });
-  return out;
+// ===== 5. 광고(Ad Reservations) — 지역당 6자리 달력 예약 + "정해진 틀" 자동검증(전면 재설계,
+// 사용자요청): 슬롯종류(히어로/히어로하단/지역상위노출)별로 따로 사고 따로 심사받던 방식을 버리고,
+// 폼 하나를 완성해서 예약한 지역·기간에 3곳(우리동네 추천디자인업체·우리지역 대표업체·지역추천업체)
+// 전부 동시노출되는 방식으로 바꿨다. 관리자 승인 절차는 없다 — "정해진 틀"(사진 필수, 문구 글자수
+// 제한)을 다 채웠는지가 유일한 게이트이며, 다 채우면 예약 시작일 자정부터 자동으로 노출된다. =====
+const AD_PRICE_PER_DAY_DEFAULT = 9900;
+const AD_CAPACITY_PER_REGION_DEFAULT = 6;
+const AD_HERO_SLIDE_COUNT = 6; // 히어로 영상 슬라이드 개수와 반드시 일치(프론트 .hero-vid 6개)
+const AD_TAGLINE_MAX = 24;
+const AD_KEYWORD_MAX = 2;
+const AD_KEYWORD_LEN_MAX = 10;
+function getAdPricePerDay() {
+  const o = getAdminPolicy('ad_price_per_day', null);
+  return (typeof o === 'number' && o > 0) ? o : AD_PRICE_PER_DAY_DEFAULT;
 }
-function getAdCapacity() {
-  const overrides = getAdminPolicy('ad_capacity', {});
-  const out = {};
-  Object.keys(AD_CAPACITY_PER_REGION).forEach(k => {
-    out[k] = (typeof overrides[k] === 'number') ? overrides[k] : AD_CAPACITY_PER_REGION[k];
-  });
-  return out;
+function getAdCapacityPerRegion() {
+  const o = getAdminPolicy('ad_capacity_per_region', null);
+  return (typeof o === 'number' && o > 0) ? o : AD_CAPACITY_PER_REGION_DEFAULT;
 }
+function dateOnly(d) { return d.toISOString().slice(0, 10); }
+function addDays(dateStr, n) { const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return dateOnly(d); }
+function isValidDateStr(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s + 'T00:00:00Z').getTime()); }
+function daysBetweenInclusive(a, b) { return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000) + 1; }
+// 예약(ad_reservations) 한 건의 "지금 시점" 상태를 계산한다 — 상태를 별도 컬럼에 저장하고 매일
+// 자정마다 바꿔주는 배치 없이, 오늘 날짜와 예약 기간·콘텐츠 완성 여부만으로 그때그때 판단한다.
+function adReservationStatus(row, todayStr) {
+  if (!row.content_completed_at) return 'pending_content'; // 결제(예약)는 됐지만 사진·문구를 아직 안 채움
+  if (todayStr < row.start_date) return 'scheduled';
+  if (todayStr <= row.end_date) return 'active';
+  return 'ended';
+}
+function serializeAdReservation(row, todayStr) {
+  const status = adReservationStatus(row, todayStr);
+  const remainingDays = status === 'active' ? daysBetweenInclusive(todayStr, row.end_date) : (status === 'scheduled' ? daysBetweenInclusive(todayStr, row.start_date) - 1 : 0);
+  return {
+    id: row.id, partnerId: row.partner_id, partnerName: row.partner_name, region: row.region,
+    startDate: row.start_date, endDate: row.end_date, days: row.days, costCredits: row.cost_credits,
+    imageUrl: row.image_url, tagline: row.tagline, keywords: row.keywords ? JSON.parse(row.keywords) : [],
+    heroSlideIndex: row.hero_slide_index, impressions: row.impressions, clicks: row.clicks,
+    status, remainingDays, createdAt: row.created_at
+  };
+}
+// GET /api/ads/availability — 지역을 고르면 앞으로 N일(기본 92일≈3개월)치 달력에서 하루하루
+// 6자리 중 몇 자리가 이미 찼는지 보여준다. 오늘 자리는 판매 대상이 아니므로 내일부터 계산한다.
+app.get('/api/ads/availability', (req, res) => {
+  const region = req.query.region;
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 92, 1), 186);
+  if (!isNonEmptyString(region, 50)) return validationError(res, '지역을 선택해주세요');
+  const capacity = getAdCapacityPerRegion();
+  const todayStr = dateOnly(new Date());
+  const rangeStart = addDays(todayStr, 1);
+  const rangeEnd = addDays(rangeStart, days - 1);
+  // 이 지역에서 요청 구간과 하루라도 겹치는 예약을 전부 가져와 하루 단위로 카운트한다
+  const rows = db.prepare(`SELECT start_date, end_date FROM ad_reservations WHERE region=? AND NOT(end_date < ? OR start_date > ?)`)
+    .all(region, rangeStart, rangeEnd);
+  const calendar = [];
+  for (let i = 0; i < days; i++) {
+    const d = addDays(rangeStart, i);
+    const used = rows.filter(r => r.start_date <= d && r.end_date >= d).length;
+    calendar.push({ date: d, used, capacity, available: Math.max(0, capacity - used) });
+  }
+  res.json({ success: true, data: { region, pricePerDay: getAdPricePerDay(), capacity, calendar } });
+});
 
-app.post('/api/ads', authRequired, (req, res) => {
-  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 광고를 등록할 수 있습니다' } });
-  const approvedAdvertiser=db.prepare("SELECT id FROM partners WHERE id=? AND verify_status='approved'").get(req.user.sub);
-  if (!approvedAdvertiser) return res.status(403).json({success:false,error:{code:'PARTNER_NOT_APPROVED',message:'승인된 업체만 광고를 등록할 수 있습니다'}});
-  const { slotType, region, tagline } = req.body;
-  if (!isNonEmptyString(slotType, 30) || !AD_PRICING[slotType]) return validationError(res, '올바른 광고 슬롯 유형을 선택해주세요');
+// POST /api/ads/reservations — 날짜(범위)를 골라 자리를 예약·결제한다(내용은 아직 없음, 다음 단계에서 채움)
+app.post('/api/ads/reservations', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 광고를 예약할 수 있습니다' } });
+  const approvedAdvertiser = db.prepare("SELECT id FROM partners WHERE id=? AND verify_status='approved'").get(req.user.sub);
+  if (!approvedAdvertiser) return res.status(403).json({ success: false, error: { code: 'PARTNER_NOT_APPROVED', message: '승인된 업체만 광고를 예약할 수 있습니다' } });
+  const { region, startDate, endDate } = req.body;
   if (!isNonEmptyString(region, 50)) return validationError(res, '노출 지역을 선택해주세요');
-  if (!isNonEmptyString(tagline, 100)) return validationError(res, '광고 문구를 입력해주세요(100자 이내)');
-
-  const pricing = getAdPricing()[slotType];
-  const hit = AD_BANNED_WORDS.filter(w => tagline.includes(w));
-  const aiPrecheckResult = hit.length ? 'flagged' : 'pass';
+  if (!isValidDateStr(startDate) || !isValidDateStr(endDate)) return validationError(res, '날짜 형식이 올바르지 않습니다');
+  if (endDate < startDate) return validationError(res, '종료일은 시작일보다 빠를 수 없습니다');
+  const todayStr = dateOnly(new Date());
+  const tomorrow = addDays(todayStr, 1);
+  if (startDate < tomorrow) return validationError(res, '오늘 결제하면 내일부터 예약할 수 있어요');
+  const maxEnd = addDays(todayStr, 186);
+  if (endDate > maxEnd) return validationError(res, '예약은 최대 약 6개월 이내 날짜까지만 가능합니다');
+  const days = daysBetweenInclusive(startDate, endDate);
+  const pricePerDay = getAdPricePerDay();
+  const cost = pricePerDay * days;
+  const capacity = getAdCapacityPerRegion();
   const id = randomUUID();
-
   try {
     const tx = db.transaction(() => {
-      // 1) 지역별 정원 확인 — 이미 이 지역+슬롯종류에 활성 광고가 꽉 찼으면 차단
-      const activeCount = db.prepare("SELECT COUNT(*) as c FROM ad_slots WHERE slot_type=? AND region=? AND status='active'").get(slotType, region).c;
-      const capacity = getAdCapacity()[slotType] ?? 1;
-      if (activeCount >= capacity) {
-        throw Object.assign(new Error('이 지역은 광고 자리가 모두 찼어요. 다른 지역을 선택하거나 대기 등록해주세요.'), { code: 'CAPACITY_FULL' });
+      // 1) 예약 기간 동안 하루라도 6자리가 이미 다 찬 날이 있으면 차단
+      const overlapping = db.prepare(`SELECT start_date, end_date FROM ad_reservations WHERE region=? AND NOT(end_date < ? OR start_date > ?)`)
+        .all(region, startDate, endDate);
+      for (let i = 0; i < days; i++) {
+        const d = addDays(startDate, i);
+        const used = overlapping.filter(r => r.start_date <= d && r.end_date >= d).length;
+        if (used >= capacity) throw Object.assign(new Error(`${d} 날짜는 이 지역 광고자리가 모두 찼어요. 다른 날짜를 선택해주세요.`), { code: 'CAPACITY_FULL' });
       }
-      // 2) 크레딧 잔액 확인
+      // 2) 크레딧 잔액 확인 및 차감
       const partner = db.prepare('SELECT credit_balance FROM partners WHERE id=?').get(req.user.sub);
       if (!partner) throw Object.assign(new Error('업체를 찾을 수 없습니다'), { code: 'NOT_FOUND' });
-      if (partner.credit_balance < pricing.price) {
-        throw Object.assign(new Error('보유 크레딧이 부족합니다. 충전 후 다시 시도해주세요.'), { code: 'INSUFFICIENT_BALANCE' });
-      }
-      // 3) 크레딧 차감 + 원장 기록
-      db.prepare('UPDATE partners SET credit_balance = credit_balance - ? WHERE id=?').run(pricing.price, req.user.sub);
+      if (partner.credit_balance < cost) throw Object.assign(new Error('보유 크레딧이 부족합니다. 충전 후 다시 시도해주세요.'), { code: 'INSUFFICIENT_BALANCE' });
+      db.prepare('UPDATE partners SET credit_balance = credit_balance - ? WHERE id=?').run(cost, req.user.sub);
       db.prepare('INSERT INTO credit_ledger (id, partner_id, type, amount, related_ad_id) VALUES (?,?,?,?,?)')
-        .run(randomUUID(), req.user.sub, 'ad_purchase', -pricing.price, id);
-      // 4) 광고 슬롯 생성 — 금칙어 없으면 즉시 active(자동노출), 금칙어 있으면 관리자 확인 대기(pending)
-      //    (크레딧은 어느 경우든 이미 차감됨 — 반려시 별도 환불 처리는 관리자 반려 API에서 수행)
-      const status = hit.length ? 'pending' : 'active';
-      const startDate = new Date().toISOString().slice(0, 10);
-      const endDate = new Date(Date.now() + pricing.periodDays * 86400000).toISOString().slice(0, 10);
-      db.prepare(`INSERT INTO ad_slots (id, partner_id, slot_type, region, tagline, status, cost_type, cost_value, spent_credits, start_date, end_date, ai_precheck_result)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(id, req.user.sub, slotType, region, tagline, status, 'period', pricing.periodDays, pricing.price, startDate, endDate, aiPrecheckResult);
+        .run(randomUUID(), req.user.sub, 'ad_purchase', -cost, id);
+      // 3) 예약 생성(내용은 아직 비어있음 — 다음 화면에서 채워야 노출 시작)
+      db.prepare(`INSERT INTO ad_reservations (id, partner_id, region, start_date, end_date, days, cost_credits)
+        VALUES (?,?,?,?,?,?,?)`).run(id, req.user.sub, region, startDate, endDate, days, cost);
     });
     tx();
   } catch (e) {
-    const code = e.code || 'AD_PURCHASE_FAILED';
+    const code = e.code || 'AD_RESERVE_FAILED';
     const status = code === 'NOT_FOUND' ? 404 : (code === 'INSUFFICIENT_BALANCE' || code === 'CAPACITY_FULL') ? 400 : 500;
     return res.status(status).json({ success: false, error: { code, message: e.message } });
   }
-
-  res.json({ success: true, data: {
-    id, price: pricing.price, periodDays: pricing.periodDays,
-    autoActivated: !hit.length, aiPrecheckResult, flaggedWords: hit,
-    message: hit.length ? '광고 문구에 확인이 필요한 표현이 있어 관리자 검토 후 노출됩니다.' : '결제가 완료되어 즉시 노출이 시작됐어요.'
-  } });
+  res.json({ success: true, data: { id, region, startDate, endDate, days, cost, pricePerDay,
+    message: '예약이 완료됐어요. 이어서 광고 내용을 등록하면 예약일부터 자동으로 노출됩니다.' } });
 });
 
-// 결함수정(사용자요청 — 히어로 배너 클릭시 실제 광고주 상세로 연결): 이 엔드포인트는 이미 있었지만
-// 프론트 어디서도 호출하지 않아 실제로 구매된 광고가 화면에 전혀 반영되지 않고 있었음(히어로 클릭이
-// 항상 검색화면으로 빠지던 근본 원인). business_name을 함께 내려줘야 프론트가 "가짜 업체명"을
-// 지어내지 않고 실제 광고주 이름으로 AD 배지를 표시할 수 있다(/api/admin/ads와 동일한 조인 패턴).
+// PATCH /api/ads/reservations/:id/content — "정해진 틀"에 사진·문구를 채운다. 다 채우면(사진 필수,
+// 문구 글자수 이내) 그 즉시 완료 처리되고, 예약 시작일이 되면 별도 승인 없이 자동노출된다.
+// 시작일 전날 자정까지는 몇 번이든 다시 수정할 수 있고, 이미 노출이 시작된 뒤에는 잠근다(표시 안정성).
+const adContentMultipart = express.raw({ type: 'multipart/form-data', limit: '12mb' });
+app.patch('/api/ads/reservations/:id/content', authRequired, portfolioUploadLimiter, adContentMultipart, async (req, res, next) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 등록할 수 있습니다' } });
+  const reservation = db.prepare('SELECT * FROM ad_reservations WHERE id=?').get(req.params.id);
+  if (!reservation) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '해당 예약을 찾을 수 없습니다' } });
+  if (reservation.partner_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인 예약만 수정할 수 있습니다' } });
+  const todayStr = dateOnly(new Date());
+  if (todayStr >= reservation.start_date) return res.status(409).json({ success: false, error: { code: 'LOCKED', message: '이미 노출이 시작된 광고는 내용을 수정할 수 없습니다' } });
+  let parsed;
+  try { parsed = parseMultipartBody(req); }
+  catch (e) { return validationError(res, 'multipart/form-data 형식으로 보내주세요'); }
+  const tagline = (parsed.fields.tagline || '').trim();
+  let keywords = [];
+  if (parsed.fields.keywords) {
+    try { keywords = JSON.parse(parsed.fields.keywords); } catch (e) { return validationError(res, '강조 키워드 형식이 올바르지 않습니다'); }
+  }
+  if (!Array.isArray(keywords) || keywords.length > AD_KEYWORD_MAX || keywords.some(k => typeof k !== 'string' || !k.trim() || k.length > AD_KEYWORD_LEN_MAX)) {
+    return validationError(res, `강조 키워드는 최대 ${AD_KEYWORD_MAX}개, 각 ${AD_KEYWORD_LEN_MAX}자 이내여야 합니다`);
+  }
+  if (!tagline || tagline.length > AD_TAGLINE_MAX) return validationError(res, `한 줄 문구는 1~${AD_TAGLINE_MAX}자 이내로 입력해주세요`);
+  const photoFile = parsed.files.find(f => f.field === 'photo');
+  if (!photoFile && !reservation.image_url) return validationError(res, '대표 사진을 올려주세요');
+  let uploaded = null;
+  if (photoFile) {
+    if (photoFile.data.length === 0 || photoFile.data.length > 10 * 1024 * 1024) return validationError(res, '사진은 최대 10MB까지 올릴 수 있습니다');
+    const detected = detectPortfolioImage(photoFile);
+    if (!detected || photoFile.declaredType !== detected.mime) return validationError(res, 'JPG, PNG, WebP 이미지 파일만 올릴 수 있습니다');
+    const fileId = randomUUID();
+    const key = `public/ad-content/${req.user.sub}/${req.params.id}.${detected.ext}`;
+    try {
+      const url = await objectStorage.putObject({ key, body: photoFile.data, contentType: detected.mime, isPublic: true });
+      db.prepare(`INSERT INTO stored_files (id,storage_key,owner_type,owner_id,purpose,original_name,mime_type,size_bytes,public_url,visibility)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(fileId, key, 'partner', req.user.sub, 'ad-content', normalizeUploadFilename(photoFile.filename), detected.mime, photoFile.data.length, url, 'public');
+      uploaded = url;
+    } catch (e) { return next(e); }
+  }
+  const firstTime = !reservation.content_completed_at;
+  let heroSlideIndex = reservation.hero_slide_index;
+  if (firstTime) {
+    // 같은 지역에서 내 예약 기간과 겹치는 다른 예약들이 이미 쓰고 있는 히어로 슬라이드 번호를 피해서
+    // 비어있는 가장 작은 번호(0~5)를 배정한다 — 지역당 6자리 = 히어로 슬라이드 6개이므로 항상 하나는 남는다.
+    const overlapping = db.prepare(`SELECT hero_slide_index FROM ad_reservations WHERE region=? AND id!=? AND hero_slide_index IS NOT NULL AND NOT(end_date < ? OR start_date > ?)`)
+      .all(reservation.region, reservation.id, reservation.start_date, reservation.end_date);
+    const used = new Set(overlapping.map(r => r.hero_slide_index));
+    heroSlideIndex = 0;
+    while (used.has(heroSlideIndex) && heroSlideIndex < AD_HERO_SLIDE_COUNT - 1) heroSlideIndex++;
+  }
+  db.prepare(`UPDATE ad_reservations SET image_url=COALESCE(?, image_url), tagline=?, keywords=?, hero_slide_index=?,
+    content_completed_at=COALESCE(content_completed_at, datetime('now')) WHERE id=?`)
+    .run(uploaded, tagline, JSON.stringify(keywords), heroSlideIndex, req.params.id);
+  const updated = db.prepare('SELECT * FROM ad_reservations WHERE id=?').get(req.params.id);
+  res.json({ success: true, data: serializeAdReservation(updated, todayStr) });
+});
+
+// GET /api/ads/active — 우리동네 추천디자인업체·우리지역 대표업체·지역추천업체 3곳이 전부 이 하나의
+// API로 같은 데이터를 받아서 각자 필요한 필드만 꺼내 쓴다(폼 하나 = 3곳 동일노출 원칙).
 app.get('/api/ads/active', (req, res) => {
-  const { slotType } = req.query;
-  const list = db.prepare(`SELECT a.*, p.business_name AS partner_name FROM ad_slots a
-    LEFT JOIN partners p ON p.id=a.partner_id WHERE a.status='active' AND a.slot_type=?`).all(slotType);
+  const region = req.query.region;
+  if (!isNonEmptyString(region, 50)) return res.json({ success: true, data: [] });
+  const todayStr = dateOnly(new Date());
+  const rows = db.prepare(`SELECT a.*, p.business_name AS partner_name FROM ad_reservations a
+    LEFT JOIN partners p ON p.id=a.partner_id
+    WHERE a.region=? AND a.content_completed_at IS NOT NULL AND a.start_date<=? AND a.end_date>=?
+    ORDER BY a.hero_slide_index ASC, a.rowid ASC`).all(region, todayStr, todayStr);
+  res.json({ success: true, data: rows.map(r => serializeAdReservation(r, todayStr)) });
+});
+
+// GET /api/ads/mine — 내 광고관리 화면: 진행중/예정/지난 광고를 한 번에 조회(상태는 그때그때 계산)
+app.get('/api/ads/mine', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 조회할 수 있습니다' } });
+  const todayStr = dateOnly(new Date());
+  const rows = db.prepare('SELECT * FROM ad_reservations WHERE partner_id=? ORDER BY start_date DESC, rowid DESC').all(req.user.sub);
+  res.json({ success: true, data: rows.map(r => serializeAdReservation(r, todayStr)) });
+});
+// 관리자는 이제 승인/반려할 게 없다(정해진 틀 자동검증으로 대체) — 현황 모니터링 목적의 조회만 남긴다
+app.get('/api/admin/ads', adminAuthRequired(), (req, res) => {
+  const todayStr = dateOnly(new Date());
+  const { status } = req.query;
+  const rows = db.prepare(`SELECT a.*, p.business_name AS partner_name FROM ad_reservations a
+    LEFT JOIN partners p ON p.id=a.partner_id ORDER BY a.start_date DESC, a.rowid DESC`).all();
+  let list = rows.map(r => serializeAdReservation(r, todayStr));
+  if (isNonEmptyString(status, 20)) list = list.filter(r => r.status === status);
   res.json({ success: true, data: list });
 });
 
-app.patch('/api/admin/ads/:id/approve', adminAuthRequired(), (req, res) => {
-  const result = db.prepare("UPDATE ad_slots SET status='active' WHERE id=?").run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '해당 광고를 찾을 수 없습니다' } });
-  res.json({ success: true, data: { message: '승인되었습니다' } });
-});
-
-app.patch('/api/admin/ads/:id/reject', adminAuthRequired(), (req, res) => {
-  const { reason } = req.body;
-  const ad=db.prepare('SELECT * FROM ad_slots WHERE id=?').get(req.params.id);
-  if (!ad) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '해당 광고를 찾을 수 없습니다' } });
-  db.transaction(()=>{
-    db.prepare("UPDATE ad_slots SET status='rejected', reject_reason=? WHERE id=?").run(reason || '관리자 검토 후 반려', req.params.id);
-    if(ad.spent_credits>0&&!db.prepare("SELECT id FROM credit_ledger WHERE related_ad_id=? AND type='ad_refund'").get(ad.id)){
-      db.prepare('UPDATE partners SET credit_balance=credit_balance+? WHERE id=?').run(ad.spent_credits,ad.partner_id);
-      db.prepare('INSERT INTO credit_ledger (id,partner_id,type,amount,related_ad_id) VALUES (?,?,?,?,?)').run(randomUUID(),ad.partner_id,'ad_refund',ad.spent_credits,ad.id);
-    }
-  })();
-  res.json({ success: true, data: { message: '반려되었습니다' } });
-});
-
-// 신규(2026-09, 관리자 콘솔·업체 광고화면 실연동 — 허수업체 전수조사 후속):
-// 광고 등록/승인 API는 이미 있었지만, "내 광고 목록"·"관리자 전체 광고 목록"을 조회하는 API가 없어서
-// 프론트가 window.AD_SLOTS라는 로컬 배열만 쓰고 있었음. 아래 두 개를 추가해 실제 DB를 그대로 노출한다.
-app.get('/api/ads/mine', authRequired, (req, res) => {
-  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 조회할 수 있습니다' } });
-  const rows = db.prepare('SELECT * FROM ad_slots WHERE partner_id=? ORDER BY start_date DESC, rowid DESC').all(req.user.sub);
-  res.json({ success: true, data: rows });
-});
-app.get('/api/admin/ads', adminAuthRequired(), (req, res) => {
-  const { status } = req.query;
-  let query = 'SELECT a.*, p.business_name AS partner_name FROM ad_slots a LEFT JOIN partners p ON p.id=a.partner_id';
-  const params = [];
-  if (isNonEmptyString(status, 20)) { query += ' WHERE a.status=?'; params.push(status); }
-  query += " ORDER BY (a.status='pending') DESC, a.start_date DESC, a.rowid DESC";
-  res.json({ success: true, data: db.prepare(query).all(...params) });
-});
-
-// 신규(2026-09): 업체 본인의 크레딧 원장(적립·소진·환불·출금 이력) 조회. 광고비 소진 내역은 광고 슬롯 정보를 함께 붙여서 반환.
+// 신규(2026-09): 업체 본인의 크레딧 원장(적립·소진·환불·출금 이력) 조회. 광고비 소진 내역은 예약 정보를 함께 붙여서 반환.
 app.get('/api/credit/ledger/mine', authRequired, (req, res) => {
   if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 조회할 수 있습니다' } });
-  const rows = db.prepare(`SELECT l.*, a.slot_type, a.region, a.tagline FROM credit_ledger l LEFT JOIN ad_slots a ON a.id=l.related_ad_id
+  const rows = db.prepare(`SELECT l.*, a.region, a.tagline, a.start_date, a.end_date FROM credit_ledger l LEFT JOIN ad_reservations a ON a.id=l.related_ad_id
     WHERE l.partner_id=? ORDER BY l.created_at DESC, l.rowid DESC LIMIT 200`).all(req.user.sub);
   res.json({ success: true, data: rows });
 });
 // 관리자 "포인트 관리 › 업체 크레딧" 탭: 전체 업체를 가로질러 원장을 모아본다(위 /mine과 달리 partner_id로 필터하지 않음)
 app.get('/api/admin/credit-ledger', adminAuthRequired(), (req, res) => {
-  const rows = db.prepare(`SELECT l.*, p.business_name AS partner_name, a.slot_type, a.region, a.tagline
-    FROM credit_ledger l LEFT JOIN partners p ON p.id=l.partner_id LEFT JOIN ad_slots a ON a.id=l.related_ad_id
+  const rows = db.prepare(`SELECT l.*, p.business_name AS partner_name, a.region, a.tagline
+    FROM credit_ledger l LEFT JOIN partners p ON p.id=l.partner_id LEFT JOIN ad_reservations a ON a.id=l.related_ad_id
     ORDER BY l.created_at DESC, l.rowid DESC LIMIT 300`).all();
   res.json({ success: true, data: rows });
 });
@@ -3322,7 +3390,8 @@ app.post('/api/admin/columns/sync-notion', adminAuthRequired(), async (req, res)
 // 결함수정(전체 재검증 중 발견): dispute/abuse/inspect/settleHold/tier가 전부 하드코딩된 0이었음
 // → 각각 실제 테이블에서 미처리 건수를 집계하도록 수정
 app.get('/api/admin/dashboard/counts', adminAuthRequired(), (req, res) => {
-  const ads = db.prepare("SELECT COUNT(*) c FROM ad_slots WHERE status='pending'").get().c;
+  // 결함정리(사용자요청 — 광고를 관리자 승인 없이 "정해진 틀" 자동검증 방식으로 전면 개편):
+  // 더 이상 관리자가 처리해야 할 "광고승인 대기" 큐 자체가 없어져서 이 카운트를 제거했다.
   const partners = db.prepare("SELECT COUNT(*) c FROM partners WHERE verify_status='pending'").get().c;
   const dispute = db.prepare("SELECT COUNT(*) c FROM disputes WHERE status IN ('filed','ai_judged')").get().c;
   // 결함정리(2026-09): "완공검수 승인" 화면이 (AI 자동검수가 아니라) 포트폴리오 게시 승인 대기열을
@@ -3335,7 +3404,7 @@ app.get('/api/admin/dashboard/counts', adminAuthRequired(), (req, res) => {
   // buildAbuseQueue()(실제 대기열 화면과 동일한 기준 — 이미 조치된 노쇼는 제외)로 통일
   const abuseCandidates = buildAbuseQueue().length;
   const tier = db.prepare("SELECT COUNT(*) c FROM tier_upgrades WHERE status='admin_review'").get().c;
-  res.json({ success: true, data: { ads, partners, dispute, abuse: abuseCandidates, inspect, inspectionQueue, settleHold, tier } });
+  res.json({ success: true, data: { partners, dispute, abuse: abuseCandidates, inspect, inspectionQueue, settleHold, tier } });
 });
 
 // 신규(2026-09, 전수조사 발견 — 운영콘솔 "실시간 현황"): loadTodayStats()가
