@@ -52,7 +52,10 @@ app.use(helmet({
       // 결함정리(사용자요청 — 우편번호 팝업 iframe이 깨진 이미지로 뜨는 문제 발견·수정): 카카오가
       // 2026년 3월 우편번호 서비스 도메인을 postcode.map.kakao.com으로 이관(자동 리다이렉트 적용)
       // 했는데, CSP에 신규 도메인이 없어서 iframe이 차단되고 있었음. 신규 도메인 추가.
-      frameSrc: ["'self'", "https://postcode.map.kakao.com", "https://postcode.map.daum.net", "https://t1.kakaocdn.net", "https://t1.daumcdn.net", "https://js.tosspayments.com", "https://*.tosspayments.com"],
+      // 결함수정(사용자 실제 발견 — 업체 상세 페이지 위치지도가 "maps.google.com이(가) 차단되었습니다
+      // ERR_BLOCKED_BY_CSP"로 깨짐): #cprofile-map-iframe이 구글맵 embed(maps.google.com)를 쓰는데
+      // CSP frameSrc에 이 도메인이 아예 없어서 임베드 자체가 브라우저 레벨에서 차단되고 있었음.
+      frameSrc: ["'self'", "https://postcode.map.kakao.com", "https://postcode.map.daum.net", "https://t1.kakaocdn.net", "https://t1.daumcdn.net", "https://js.tosspayments.com", "https://*.tosspayments.com", "https://maps.google.com", "https://www.google.com"],
       fontSrc: ["'self'", "https://cdn.jsdelivr.net", "data:"],
       connectSrc: ["'self'", "https:"],
       mediaSrc: ["'self'", "data:", "blob:"]
@@ -2395,6 +2398,12 @@ app.get('/api/rooms/mine', authRequired, (req, res) => {
   const getLastMsg = db.prepare('SELECT text, msg_type, created_at FROM chat_messages WHERE room_id=? ORDER BY seq DESC LIMIT 1');
   const getReadState = db.prepare('SELECT last_read_seq FROM room_read_states WHERE room_id=? AND reader_role=? AND reader_id=?');
   const getUnreadCount = db.prepare('SELECT count(*) AS count FROM chat_messages WHERE room_id=? AND seq>? AND sender_id<>?');
+  // 신규(사용자요청 — 파트너가 여러 소비자의 견적요청을 구분 관리): 방마다 연결된 가장 최근
+  // quote_requests/quotes 행을 함께 내려줘서, 프론트가 "이 방=이 소비자의 어떤 요청/견적 상태인지"를
+  // 화면(견적 요청함, 알림 딥링크)에서 확실히 구분할 수 있게 한다. 기존엔 방 id·이름·마지막 메시지만
+  // 내려줘서 프론트가 room과 quote_requests를 연결할 방법이 전혀 없었음(사용자 실제 발견).
+  const getLatestRequest = db.prepare('SELECT id, address, pyeong, space_type, status, created_at FROM quote_requests WHERE user_id=? AND partner_id=? ORDER BY created_at DESC LIMIT 1');
+  const getLatestQuote = db.prepare('SELECT id, status, total_amount, version FROM quotes WHERE request_id=? ORDER BY version DESC LIMIT 1');
   const enriched = rooms.map(room => {
     let displayName;
     if (req.user.role === 'partner') {
@@ -2413,14 +2422,26 @@ app.get('/api/rooms/mine', authRequired, (req, res) => {
     if (lastMsg && lastMsg.msg_type === 'quote_request') {
       try { const q = JSON.parse(lastMsg.text); lastMessagePreview = '📋 견적요청 · ' + q.address + ' · ' + q.pyeong + '평'; } catch (e) {}
     }
+    const latestRequest = getLatestRequest.get(room.consumer_id, room.partner_id);
+    const latestQuote = latestRequest ? getLatestQuote.get(latestRequest.id) : null;
     return {
       id: room.id,
+      consumerId: room.consumer_id,
+      partnerId: room.partner_id,
       displayName,
       lastMessage: lastMessagePreview,
       lastMessageType: lastMsg ? lastMsg.msg_type : 'text',
       lastTime: lastMsg ? lastMsg.created_at : room.created_at,
       lastReadSeq,
-      unreadCount
+      unreadCount,
+      requestId: latestRequest ? latestRequest.id : null,
+      requestStatus: latestRequest ? latestRequest.status : null,
+      requestCreatedAt: latestRequest ? latestRequest.created_at : null,
+      projectAddress: latestRequest ? latestRequest.address : null,
+      projectSpaceType: latestRequest ? latestRequest.space_type : null,
+      projectPyeong: latestRequest ? latestRequest.pyeong : null,
+      latestQuoteId: latestQuote ? latestQuote.id : null,
+      latestQuoteStatus: latestQuote ? latestQuote.status : null
     };
   });
   res.json({ success: true, data: enriched });
@@ -2574,8 +2595,11 @@ function commitMeasurementAction({ room, user, eventType, allowedStatuses, nextS
     const setSql = columns.map(key => `${key}=?`).concat(["revision=revision+1", "updated_at=datetime('now')"]).join(', ');
     db.prepare(`UPDATE meas_jobs SET ${setSql} WHERE room_id=?`).run(...columns.map(key => values[key]), room.id);
     const updated = db.prepare('SELECT * FROM meas_jobs WHERE room_id=?').get(room.id);
-    db.prepare(`INSERT INTO measurement_events (id,room_id,actor_role,actor_id,event_type,from_status,to_status,payload)
-      VALUES (?,?,?,?,?,?,?,?)`).run(randomUUID(),room.id,user.role,user.sub,eventType,current.status,updated.status,JSON.stringify(payload||{}));
+    // 결함수정(사용자 실제 발견 — "실측 진행 이력" 팝업 undefined 표시): 채팅에는 이미 사람이 읽을 수
+    // 있는 summary 문장을 보내면서, 정작 그 문장을 measurement_events에는 저장하지 않아서 이 팝업이
+    // 재구성할 방법이 없었다. 같은 트랜잭션에서 함께 저장한다.
+    db.prepare(`INSERT INTO measurement_events (id,room_id,actor_role,actor_id,event_type,from_status,to_status,payload,summary)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(randomUUID(),room.id,user.role,user.sub,eventType,current.status,updated.status,JSON.stringify(payload||{}),summary||null);
     const message = {
       id: randomUUID(), room_id:room.id, sender_role:'system', sender_id:'roomer', text:summary, msg_type:'measurement_event'
     };
@@ -2599,7 +2623,7 @@ app.get('/api/meas-jobs/:roomId', authRequired, (req, res) => {
   if (!assertRoomAccess(room, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인이 속한 채팅방만 조회할 수 있습니다' } });
   const job = db.prepare('SELECT * FROM meas_jobs WHERE room_id=?').get(req.params.roomId);
   if (!job) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '실측 정보를 찾을 수 없습니다' } });
-  const events = db.prepare('SELECT id,actor_role,event_type,from_status,to_status,payload,created_at FROM measurement_events WHERE room_id=? ORDER BY created_at,id').all(req.params.roomId)
+  const events = db.prepare('SELECT id,actor_role,event_type,from_status,to_status,payload,summary,created_at FROM measurement_events WHERE room_id=? ORDER BY created_at,id').all(req.params.roomId)
     .map(row => ({ ...row, payload:parseJsonField(row.payload,{}) }));
   res.json({ success: true, data: { ...measurementView(job), events } });
 });
