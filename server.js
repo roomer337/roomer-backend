@@ -1426,6 +1426,13 @@ app.post('/api/partners/me/portfolio', authRequired, portfolioUploadLimiter, por
   if (description && !isNonEmptyString(description, 1000)) return validationError(res, '설명은 1000자 이내여야 합니다');
   if (photoFiles.length === 0) return validationError(res, '사진을 1장 이상 올려주세요');
   if (photoFiles.length > 10) return validationError(res, '사진은 최대 10장까지 올릴 수 있습니다');
+  // 신규(사용자요청 — 포트폴리오→상세페이지 반영): 사진마다 "상세페이지 대표사진으로도 쓰기" 체크값을
+  // photos와 같은 순서의 boolean 배열로 받는다. 형식이 안 맞으면 전부 false로 안전하게 무시한다.
+  let profilePhotoFlags = [];
+  if (parsed.fields.useAsProfilePhoto) {
+    try { profilePhotoFlags = JSON.parse(parsed.fields.useAsProfilePhoto); } catch (e) { profilePhotoFlags = []; }
+  }
+  if (!Array.isArray(profilePhotoFlags)) profilePhotoFlags = [];
   const validated = [];
   for (const file of photoFiles) {
     if (file.data.length === 0 || file.data.length > 10 * 1024 * 1024) return validationError(res, '사진 1장당 최대 10MB까지 올릴 수 있습니다');
@@ -1447,8 +1454,8 @@ app.post('/api/partners/me/portfolio', authRequired, portfolioUploadLimiter, por
     }
     const saveProject = db.transaction(() => {
       db.prepare("INSERT INTO portfolio_projects (id, partner_id, title, description, status) VALUES (?,?,?,?,'pending')").run(projectId, req.user.sub, title.trim(), description ? description.trim() : null);
-      const insertPhoto = db.prepare('INSERT INTO portfolio_photos (id, project_id, image_url, sort_order) VALUES (?,?,?,?)');
-      photos.forEach((url, i) => insertPhoto.run(randomUUID(), projectId, url, i));
+      const insertPhoto = db.prepare('INSERT INTO portfolio_photos (id, project_id, image_url, sort_order, use_as_profile_photo) VALUES (?,?,?,?,?)');
+      photos.forEach((url, i) => insertPhoto.run(randomUUID(), projectId, url, i, profilePhotoFlags[i] ? 1 : 0));
     });
     saveProject();
     res.json({ success: true, data: { id: projectId, title: title.trim(), description: description ? description.trim() : '', photos, status: 'pending' } });
@@ -1503,7 +1510,22 @@ app.put('/api/admin/portfolio/:id/approve', adminAuthRequired(), (req, res) => {
   const result = db.prepare("UPDATE portfolio_projects SET status='approved', reviewed_at=datetime('now'), reject_reason=NULL WHERE id=? AND status='pending'").run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '심사 대기중인 포트폴리오를 찾을 수 없습니다' } });
   const project = db.prepare('SELECT partner_id FROM portfolio_projects WHERE id=?').get(req.params.id);
-  if (project) createNotification('partner', project.partner_id, 'portfolio_approved', '포트폴리오가 승인되었습니다', '완공사례 피드에 공개되었습니다', 'portfolio', req.params.id);
+  if (project) {
+    createNotification('partner', project.partner_id, 'portfolio_approved', '포트폴리오가 승인되었습니다', '완공사례 피드에 공개되었습니다', 'portfolio', req.params.id);
+    // 신규(사용자요청 — 포트폴리오→상세페이지 반영): 업로드 당시 "상세페이지 대표사진으로도 쓰기"로
+    // 체크된 사진만, 관리자가 이 프로젝트를 승인하는 지금 시점에 상세페이지 대표사진(portfolio_images)에
+    // 합쳐넣는다. 미승인 사진이 먼저 새어나가지 않도록 승인 시점에만 반영하는 게 핵심.
+    const flaggedPhotos = db.prepare('SELECT image_url FROM portfolio_photos WHERE project_id=? AND use_as_profile_photo=1 ORDER BY sort_order').all(req.params.id).map(r => r.image_url);
+    if (flaggedPhotos.length) {
+      const partner = db.prepare('SELECT portfolio_images FROM partners WHERE id=?').get(project.partner_id);
+      let existing = [];
+      try { existing = JSON.parse((partner && partner.portfolio_images) || '[]'); } catch (e) { existing = []; }
+      if (!Array.isArray(existing)) existing = [];
+      // 새로 승인된 사진을 앞쪽(최신순)에 두고, 기존 사진 중 중복이 아닌 것만 이어붙인 뒤 최대 6장으로 자른다
+      const merged = flaggedPhotos.concat(existing.filter(u => !flaggedPhotos.includes(u))).slice(0, 6);
+      db.prepare('UPDATE partners SET portfolio_images=? WHERE id=?').run(JSON.stringify(merged), project.partner_id);
+    }
+  }
   res.json({ success: true, data: { message: '승인되었습니다' } });
 });
 app.put('/api/admin/portfolio/:id/reject', adminAuthRequired(), (req, res) => {
@@ -2826,6 +2848,74 @@ app.post('/api/ads/reservations', authRequired, (req, res) => {
   }
   res.json({ success: true, data: { id, region, startDate, endDate, days, cost, pricePerDay,
     message: '예약이 완료됐어요. 이어서 광고 내용을 등록하면 예약일부터 자동으로 노출됩니다.' } });
+});
+
+// POST /api/ads/reservations/batch — 신규(사용자요청): 장바구니 방식 — 여러 지역·기간을 한 번에 담아
+// 한 번의 결제로 예약을 확정한다. 장바구니 자체는 서버에 저장하지 않고(브라우저를 벗어나면 사라지는
+// 임시상태로 충분하다고 확인받음) 프론트가 모아둔 항목을 한 번에 이 API로 보낸다.
+// "실반영" 요구사항: 항목마다 자리 검증을 그 시점의 실제 DB 상태로 다시 조회해서 확인한다 — 같은
+// 배치 안에서 앞서 넣은 예약도 곧바로 반영되므로(트랜잭션 내부에서 매 항목마다 재조회), 예를 들어
+// 장바구니에 같은 지역·겹치는 날짜를 두 번 담았어도 실제 정원(6자리)을 넘어서게 되면 그 자리에서
+// 막힌다. 하나라도 자리가 없거나 잔액이 부족하면 전부 롤백되어 크레딧도, 예약도 하나도 생기지 않는다
+// (부분결제로 어중간하게 남는 상태를 만들지 않음).
+app.post('/api/ads/reservations/batch', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 광고를 예약할 수 있습니다' } });
+  const approvedAdvertiser = db.prepare("SELECT id FROM partners WHERE id=? AND verify_status='approved'").get(req.user.sub);
+  if (!approvedAdvertiser) return res.status(403).json({ success: false, error: { code: 'PARTNER_NOT_APPROVED', message: '승인된 업체만 광고를 예약할 수 있습니다' } });
+  const items = req.body.items;
+  if (!Array.isArray(items) || items.length === 0) return validationError(res, '장바구니가 비어있습니다');
+  if (items.length > 10) return validationError(res, '한 번에 최대 10건까지 예약할 수 있어요');
+  const todayStr = dateOnly(new Date());
+  const tomorrow = addDays(todayStr, 1);
+  const maxEnd = addDays(todayStr, 186);
+  const pricePerDay = getAdPricePerDay();
+  const capacity = getAdCapacityPerRegion();
+  const parsedItems = [];
+  for (let idx = 0; idx < items.length; idx++) {
+    const it = items[idx] || {};
+    const { region, startDate, endDate } = it;
+    const label = (idx + 1) + '번째 항목';
+    if (!isNonEmptyString(region, 50)) return validationError(res, label + ': 노출 지역을 선택해주세요');
+    if (!isValidDateStr(startDate) || !isValidDateStr(endDate)) return validationError(res, label + ': 날짜 형식이 올바르지 않습니다');
+    if (endDate < startDate) return validationError(res, label + ': 종료일은 시작일보다 빠를 수 없습니다');
+    if (startDate < tomorrow) return validationError(res, label + ': 오늘 결제하면 내일부터 예약할 수 있어요');
+    if (endDate > maxEnd) return validationError(res, label + ': 예약은 최대 약 6개월 이내 날짜까지만 가능합니다');
+    const days = daysBetweenInclusive(startDate, endDate);
+    parsedItems.push({ region, startDate, endDate, days, cost: pricePerDay * days });
+  }
+  const totalCost = parsedItems.reduce((s, it) => s + it.cost, 0);
+  const results = [];
+  try {
+    const tx = db.transaction(() => {
+      const partner = db.prepare('SELECT credit_balance FROM partners WHERE id=?').get(req.user.sub);
+      if (!partner) throw Object.assign(new Error('업체를 찾을 수 없습니다'), { code: 'NOT_FOUND' });
+      if (partner.credit_balance < totalCost) throw Object.assign(new Error('보유 크레딧이 부족합니다. 충전 후 다시 시도해주세요.'), { code: 'INSUFFICIENT_BALANCE' });
+      parsedItems.forEach((item, idx) => {
+        // 실반영 보장: 배치 안에서 방금 넣은 예약도 다시 조회에 포함되도록 항목마다 새로 조회
+        const overlapping = db.prepare(`SELECT start_date, end_date FROM ad_reservations WHERE region=? AND NOT(end_date < ? OR start_date > ?)`)
+          .all(item.region, item.startDate, item.endDate);
+        for (let i = 0; i < item.days; i++) {
+          const d = addDays(item.startDate, i);
+          const used = overlapping.filter(r => r.start_date <= d && r.end_date >= d).length;
+          if (used >= capacity) throw Object.assign(new Error((idx + 1) + '번째 항목(' + item.region + ' ' + d + '): 이 지역 광고자리가 모두 찼어요. 장바구니에서 날짜를 조정해주세요.'), { code: 'CAPACITY_FULL' });
+        }
+        const id = randomUUID();
+        db.prepare(`INSERT INTO ad_reservations (id, partner_id, region, start_date, end_date, days, cost_credits)
+          VALUES (?,?,?,?,?,?,?)`).run(id, req.user.sub, item.region, item.startDate, item.endDate, item.days, item.cost);
+        db.prepare('INSERT INTO credit_ledger (id, partner_id, type, amount, related_ad_id) VALUES (?,?,?,?,?)')
+          .run(randomUUID(), req.user.sub, 'ad_purchase', -item.cost, id);
+        results.push({ id, region: item.region, startDate: item.startDate, endDate: item.endDate, days: item.days, cost: item.cost });
+      });
+      db.prepare('UPDATE partners SET credit_balance = credit_balance - ? WHERE id=?').run(totalCost, req.user.sub);
+    });
+    tx();
+  } catch (e) {
+    const code = e.code || 'AD_RESERVE_FAILED';
+    const status = code === 'NOT_FOUND' ? 404 : (code === 'INSUFFICIENT_BALANCE' || code === 'CAPACITY_FULL') ? 400 : 500;
+    return res.status(status).json({ success: false, error: { code, message: e.message } });
+  }
+  res.json({ success: true, data: { items: results, totalCost, pricePerDay,
+    message: results.length + '건 예약이 완료됐어요. 이어서 각 광고의 내용을 등록해주세요.' } });
 });
 
 // PATCH /api/ads/reservations/:id/content — "정해진 틀"에 사진·문구를 채운다. 다 채우면(사진 필수,
