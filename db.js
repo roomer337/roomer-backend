@@ -653,6 +653,10 @@ ensureColumn('portfolio_projects', 'status', "TEXT NOT NULL DEFAULT 'pending'");
 ensureColumn('portfolio_projects', 'reject_reason', 'TEXT');
 ensureColumn('portfolio_projects', 'reviewed_at', 'TEXT');
 db.exec("CREATE INDEX IF NOT EXISTS idx_portfolio_projects_status ON portfolio_projects(status, created_at)");
+// 신규(사용자요청 — 포트폴리오→상세페이지 반영): 포트폴리오 사진 업로드 시 사진마다 "상세페이지
+// 대표사진으로도 쓰기"를 선택할 수 있게 하고, 그 프로젝트가 관리자 승인되는 순간에만(미승인 사진이
+// 공개 상세페이지로 새어나가지 않도록) partners.portfolio_images에 자동 반영한다.
+ensureColumn('portfolio_photos', 'use_as_profile_photo', 'INTEGER NOT NULL DEFAULT 0');
 
 db.exec('CREATE INDEX IF NOT EXISTS idx_tier_upgrades_partner ON tier_upgrades(partner_id, created_at DESC)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_tier_upgrades_status ON tier_upgrades(status, created_at)');
