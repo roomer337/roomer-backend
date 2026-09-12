@@ -1403,7 +1403,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
            요청하기" 등)에서 이미 쓰는 sticky 하단바 패턴을 그대로 재사용. 목록이 몇 줄이든 버튼은 항상
            화면에 보인다. 하단 고정바에 가려지지 않도록 region-picker 자체에 여유 패딩을 둔다. -->
       <div id="region-picker" style="display:none;flex-direction:column;margin-top:13px;padding-top:13px;padding-bottom:76px;border-top:1px solid var(--stone)">
-        <input id="region-search" oninput="filterRegionSearch(this.value)" placeholder="구·군 이름으로 검색 (예: 강남)" style="width:100%;padding:8px 10px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:12.5px;font-family:inherit;margin-bottom:8px;flex-shrink:0">
+        <input id="region-search" oninput="filterRegionSearch(this.value)" placeholder="구·군 이름으로 검색 (예: 강남)" style="width:100%;padding:8px 10px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:8px;flex-shrink:0">
         <!-- 재설계(사용자요청 — 레퍼런스 앱(강남언니 지역필터) 참고): 텍스트 카운트 대신 선택한 지역을
              하나씩 제거 가능한 칩으로 나열. 선택이 없으면 이 줄 자체가 빈 채로 남는다(레퍼런스와 동일).
              재설계: 체크 결과를 스크롤 없이 바로 보여주기 위해 목록보다 위, 검색창 바로 아래로 이동. -->
@@ -14420,10 +14420,6 @@ function addAdBookingToCart(){
   var note = document.getElementById('ad-booking-note');
   var days = Math.round((new Date(b.end+'T00:00:00')-new Date(b.start+'T00:00:00'))/86400000)+1;
   var cost = days*b.pricePerDay;
-  if(myCreditBalance() < adCartTotal()+cost){
-    if(note) note.innerHTML = '<span style="color:var(--terracotta)">장바구니에 담긴 금액을 합치면 잔액이 부족해요. 크레딧을 충전해주세요.</span>';
-    return;
-  }
   var overlap = window._adCart.some(function(it){
     return it.region===b.region && !(b.end<it.startDate || b.start>it.endDate);
   });
@@ -14431,11 +14427,22 @@ function addAdBookingToCart(){
     if(note) note.innerHTML = '<span style="color:var(--terracotta)">같은 지역에 겹치는 기간이 이미 장바구니에 담겨있어요. 장바구니에서 확인해주세요.</span>';
     return;
   }
+  // 결함수정(사용자요청 — "장바구니에 넣기를 하면 장바구니는 보이지 않는다"): 여기서 잔액이 모자라면
+  // 아예 담기 자체를 막아버려서, 크레딧을 충전하기 전까지는 장바구니에 아무 것도 못 넣고 고정버튼도
+  // 영영 나타나지 않았다(원인 그 자체). 장바구니는 원래 "먼저 담아두고 나중에 한 번에 결제"하려고
+  // 만든 기능이므로, 잔액 확인은 여기서 막지 않고 실제 결제 시점(checkoutAdCart)에서만 한다 — 이미
+  // renderAdCart()가 장바구니 화면에 "N크레딧 부족해요" 안내를 보여주므로 결제 전에 충전 필요 여부를
+  // 미리 알 수 있다.
   window._adCart.push({ region: b.region, startDate: b.start, endDate: b.end, days: days, cost: cost });
   b.start = null; b.end = null;
   renderAdApply();
   updateAdCartFab();
-  if(note) note.innerHTML = '<span style="color:var(--success)">장바구니에 담았어요. 이어서 다른 날짜·지역을 담거나, 오른쪽 아래 장바구니 버튼으로 바로 결제하세요.</span>';
+  var bal = myCreditBalance(), total = adCartTotal();
+  if(note){
+    note.innerHTML = bal < total
+      ? '<span style="color:var(--success)">장바구니에 담았어요.</span> <span style="color:var(--warning);font-weight:700">단, 지금 잔액으로는 '+(total-bal).toLocaleString()+'크레딧이 부족해요 — 결제 전에 충전해주세요.</span>'
+      : '<span style="color:var(--success)">장바구니에 담았어요. 이어서 다른 날짜·지역을 담거나, 오른쪽 아래 장바구니 버튼으로 바로 결제하세요.</span>';
+  }
 }
 function removeAdCartItem(i){
   window._adCart.splice(i,1);
