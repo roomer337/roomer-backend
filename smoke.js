@@ -10,7 +10,9 @@ const secret = 'roomer-smoke-secret-at-least-thirty-two-characters';
 const port = 4222;
 const server = spawn(process.execPath, ['server.js'], {
   cwd: root,
-  env: { ...process.env, PORT: String(port), DB_PATH: dbPath, JWT_SECRET: secret, NODE_ENV: 'test', ENABLE_DEV_TEST_ROUTES: 'false' },
+  // GEO_TEST_MODE=true: 실제 카카오 API를 호출하지 않는 결정론적 좌표→지역 스텁을 켠다(ALIGO_TEST_MODE와
+  // 동일한 취지 — 이 값은 운영 환경에서는 절대 설정하지 않고, 여기서만 좌표변환 앞뒤 로직을 검증하기 위해 사용)
+  env: { ...process.env, PORT: String(port), DB_PATH: dbPath, JWT_SECRET: secret, NODE_ENV: 'test', ENABLE_DEV_TEST_ROUTES: 'false', GEO_TEST_MODE: 'true' },
   stdio: ['ignore', 'pipe', 'pipe']
 });
 server.stdout.on('data', d => process.stdout.write('[srv] ' + d));
@@ -25,6 +27,26 @@ async function api(method, url, body, auth) {
   let json; try { json = await r.json(); } catch (e) { json = null; }
   return { status: r.status, json };
 }
+// 신규(2026-09, 광고 예약형 재설계 스모크): PATCH /api/ads/reservations/:id/content는 multipart/form-data라
+// tests/integration.js의 buildMultipart/apiMultipart 패턴을 그대로 이식(POST 전용이던 걸 method 인자로 일반화).
+function buildMultipart(fields, fileField, filename, mime, data) {
+  const boundary = '----smoke' + Date.now();
+  let parts = [];
+  for (const [k, v] of Object.entries(fields)) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="${filename}"\r\nContent-Type: ${mime}\r\n\r\n`));
+  parts.push(data); parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+  return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
+}
+async function apiMultipart(method, url, multipart, auth) {
+  const r = await fetch(`http://127.0.0.1:${port}${url}`, {
+    method, headers: { 'content-type': multipart.contentType, ...(auth ? { authorization: `Bearer ${auth}` } : {}) }, body: multipart.body
+  });
+  let json; try { json = await r.json(); } catch (e) { json = null; }
+  return { status: r.status, json };
+}
+const JPEG_HEADER = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+function dateOnlyStr(d) { return d.toISOString().slice(0, 10); }
+function addDaysStr(n) { const d = new Date(); d.setUTCDate(d.getUTCDate() + n); return dateOnlyStr(d); }
 async function waitReady() {
   for (let i = 0; i < 50; i++) { try { const r = await fetch(`http://127.0.0.1:${port}/`); if (r.ok || r.status === 404) return; } catch (e) {} await new Promise(r => setTimeout(r, 100)); }
   throw new Error('server did not start');
@@ -98,25 +120,55 @@ function check(name, cond, detail) {
     r = await api('POST', '/api/credit/topup', { amount: 100000 }, p2);
     check('크레딧 충전(결제키 미설정 → 503)', r.status === 503, r);
 
-    // ---- 광고 등록/조회 (p2는 credit_balance 500000 보유) ----
-    r = await api('POST', '/api/ads', { slotType: 'hero-sub', region: '서울', tagline: '정직한 시공, 루머 인증업체' }, p2);
-    check('광고 등록 성공(자동승인)', r.status === 200 && r.json.data.autoActivated === true, r);
+    // ---- 광고자리 예약(달력형, 지역당 6자리, 관리자 승인 없음) — p2는 credit_balance 500000, region 서울 송파구 ----
+    r = await api('GET', '/api/ads/availability?region=서울 송파구&days=10', null, p2);
+    check('광고 달력 조회(지역당 6자리, 오늘 제외 내일부터)', r.status === 200 && r.json.data.capacity === 6 && r.json.data.calendar.length === 10 && r.json.data.calendar[0].available === 6 && r.json.data.pricePerDay === 9900, r);
+
+    const adTomorrow = addDaysStr(1);
+    r = await api('POST', '/api/ads/reservations', { region: '서울 송파구', startDate: dateOnlyStr(new Date()), endDate: adTomorrow }, p2);
+    check('오늘 날짜로 예약 시도는 거부(오늘 결제하면 내일부터)', r.status === 400, r);
+
+    const adStart = addDaysStr(1), adEnd = addDaysStr(3); // 3일 예약
+    r = await api('POST', '/api/ads/reservations', { region: '서울 송파구', startDate: adStart, endDate: adEnd }, p2);
+    check('광고자리 예약 성공(3일, 관리자 승인 없이 즉시 확정)', r.status === 200 && r.json.data.days === 3 && r.json.data.cost === 29700 && r.json.data.pricePerDay === 9900, r);
+    const adId = r.json.data.id;
 
     r = await api('GET', '/api/ads/mine', null, p2);
-    check('내 광고 목록 조회', r.status === 200 && r.json.data.length === 1 && r.json.data[0].status === 'active', r);
+    check('내 광고 목록 조회(결제 직후 상태=pending_content)', r.status === 200 && r.json.data.length === 1 && r.json.data[0].status === 'pending_content', r);
 
-    r = await api('GET', '/api/ads/active?slotType=hero-sub');
-    check('활성광고 공개조회', r.status === 200 && r.json.data.length === 1, r);
+    r = await api('GET', '/api/ads/active?region=서울 송파구');
+    check('내용(사진·문구) 미등록 광고는 공개조회에 안 잡힘(허수 데이터 금지 원칙)', r.status === 200 && r.json.data.length === 0, r);
+
+    // "정해진 틀" 등록: 사진(JPEG 매직바이트) + 24자 이내 문구 + 키워드 2개 — 관리자 승인 없이 이 요청만으로 자동노출 확정
+    let mp = buildMultipart({ tagline: '정직한 시공, 루머 인증업체', keywords: JSON.stringify(['24시간상담', '무료견적']) }, 'photo', 'ad.jpg', 'image/jpeg', JPEG_HEADER);
+    r = await apiMultipart('PATCH', `/api/ads/reservations/${adId}/content`, mp, p2);
+    check('광고 내용 등록 성공(사진+문구+키워드, 관리자 승인 없이 자동완료)', r.status === 200 && r.json.data.tagline === '정직한 시공, 루머 인증업체' && r.json.data.keywords.length === 2 && !!r.json.data.imageUrl && r.json.data.heroSlideIndex === 0, r);
+
+    mp = buildMultipart({ tagline: 'a'.repeat(25), keywords: '[]' }, 'photo', 'ad.jpg', 'image/jpeg', JPEG_HEADER);
+    r = await apiMultipart('PATCH', `/api/ads/reservations/${adId}/content`, mp, p2);
+    check('한 줄 문구 24자 초과는 "정해진 틀" 위반으로 거부', r.status === 400, r);
+
+    r = await api('GET', '/api/ads/mine', null, p2);
+    check('내용 등록 후 상태=scheduled(시작일 전)', r.status === 200 && r.json.data[0].status === 'scheduled' && r.json.data[0].remainingDays >= 0, r);
 
     r = await api('GET', '/api/admin/ads', null, admin);
-    check('관리자 전체광고 조회', r.status === 200 && r.json.data.length === 1 && r.json.data[0].partner_name.includes('광고주'), r);
+    check('관리자 전체광고 조회(승인/반려 없이 현황만)', r.status === 200 && r.json.data.length === 1 && r.json.data[0].partnerName.includes('광고주') && r.json.data[0].status === 'scheduled', r);
 
     r = await api('GET', '/api/credit/ledger/mine', null, p2);
     check('내 크레딧 원장 조회(광고비 소진 1건)', r.status === 200 && r.json.data.length === 1 && r.json.data[0].type === 'ad_purchase', r);
 
     r = await api('GET', '/api/partners/me', null, p2);
     const balanceAfterAd = r.json.data.credit_balance;
-    check('광고비 차감 확인(500000-29000)', balanceAfterAd === 500000 - 29000, { balanceAfterAd });
+    check('광고비 차감 확인(500000-29700, 9900원×3일)', balanceAfterAd === 500000 - 29700, { balanceAfterAd });
+
+    // 지역당 6자리 정원 초과 방지: 같은 지역·같은 날짜에 6건 예약해서 정원을 정확히 채운 뒤, 7번째는 차단돼야 함
+    const capStart = addDaysStr(10), capEnd = addDaysStr(10);
+    for (let i = 0; i < 6; i++) {
+      r = await api('POST', '/api/ads/reservations', { region: '서울 송파구', startDate: capStart, endDate: capEnd }, p2);
+      check(`정원 채우기 예약 ${i + 1}/6 성공`, r.status === 200, r);
+    }
+    r = await api('POST', '/api/ads/reservations', { region: '서울 송파구', startDate: capStart, endDate: capEnd }, p2);
+    check('지역당 6자리 정원이 다 찬 뒤 7번째 예약은 차단', r.status === 400 && r.json.error.code === 'CAPACITY_FULL', r);
 
     // ---- 어뷰징(반복 노쇼) ----
     r = await api('GET', '/api/admin/abuse/queue', null, admin);
@@ -283,17 +335,21 @@ function check(name, cond, detail) {
     check('사진감리 가격이 관리자가 바꾼 장당가(5장×1만원=5만원)로 계산됨(기본 8천원 아님)', r.status === 200 && r.json.data.price === 50000, r);
     await api('PUT', '/api/admin/policy', { key: 'inspect_plan_pricing', value: { photo: { unitPrice: 8000 } } }, admin); // 원복
 
-    // ---- 광고 정원·단가 오버라이드: 실제 광고구매(POST /api/ads)에 반영돼야 함 ----
-    r = await api('PUT', '/api/admin/policy', { key: 'ad_capacity', value: { hero: 0 } }, admin);
-    check('관리자 정책저장: 광고 정원 오버라이드 저장 성공', r.status === 200, r);
-    r = await api('POST', '/api/ads', { slotType: 'hero', region: '서울 강남구', tagline: '스모크테스트 광고' }, p2);
-    check('광고 정원을 0으로 낮추면 크레딧이 있어도 즉시 정원마감으로 차단됨(하드코딩 정원 무시하고 정책값 적용 확인)', r.status === 400 && r.json.error.code === 'CAPACITY_FULL', r);
-    await api('PUT', '/api/admin/policy', { key: 'ad_capacity', value: { hero: 5 } }, admin);
-    r = await api('PUT', '/api/admin/policy', { key: 'ad_pricing', value: { hero: { price: 1 } } }, admin);
-    check('관리자 정책저장: 광고 단가 오버라이드 저장 성공', r.status === 200, r);
-    r = await api('POST', '/api/ads', { slotType: 'hero', region: '서울 서초구', tagline: '스모크테스트 광고2' }, p2);
-    check('광고 단가를 1크레딧으로 낮추면 실제로 1크레딧만 차감됨(기본 99000 아님)', r.status === 200 && r.json.data.price === 1, r);
-    await api('PUT', '/api/admin/policy', { key: 'ad_pricing', value: { hero: { price: 99000 } } }, admin); // 원복
+    // ---- 광고 정원·단가 오버라이드(재설계 2026-09): 실제 예약(POST /api/ads/reservations)에 반영돼야 함 ----
+    // (0 이하는 "정책 미설정"으로 간주해 기본값 6으로 폴백하는 서버쪽 안전장치가 있어, 1로 낮춰서 검증)
+    r = await api('PUT', '/api/admin/policy', { key: 'ad_capacity_per_region', value: 1 }, admin);
+    check('관리자 정책저장: 지역당 정원 오버라이드 저장 성공', r.status === 200, r);
+    const polStart = addDaysStr(20), polEnd = addDaysStr(20);
+    r = await api('POST', '/api/ads/reservations', { region: '서울 강남구', startDate: polStart, endDate: polEnd }, p2);
+    check('정원 1로 낮춘 뒤 첫 예약은 성공', r.status === 200, r);
+    r = await api('POST', '/api/ads/reservations', { region: '서울 강남구', startDate: polStart, endDate: polEnd }, p2);
+    check('지역당 정원을 1로 낮추면 크레딧이 있어도 두번째 예약은 즉시 정원마감으로 차단됨(서버 기본값 6 무시하고 정책값 적용 확인)', r.status === 400 && r.json.error.code === 'CAPACITY_FULL', r);
+    await api('PUT', '/api/admin/policy', { key: 'ad_capacity_per_region', value: 6 }, admin);
+    r = await api('PUT', '/api/admin/policy', { key: 'ad_price_per_day', value: 1 }, admin);
+    check('관리자 정책저장: 1일 단가 오버라이드 저장 성공', r.status === 200, r);
+    r = await api('POST', '/api/ads/reservations', { region: '서울 서초구', startDate: polStart, endDate: polEnd }, p2);
+    check('1일 단가를 1크레딧으로 낮추면 실제로 1크레딧만 차감됨(기본 9,900원 아님)', r.status === 200 && r.json.data.cost === 1 && r.json.data.pricePerDay === 1, r);
+    await api('PUT', '/api/admin/policy', { key: 'ad_price_per_day', value: 9900 }, admin); // 원복
 
     // ---- 분쟁 유형 '기타' 접수 차단 결함 수정 확인 (전수조사 발견) ----
     r = await api('POST', '/api/disputes', { contractId: contractId1, type: 'etc', reason: '스모크테스트 기타분쟁' }, u1);
@@ -344,6 +400,62 @@ function check(name, cond, detail) {
     check('생성한 이벤트가 목록에서 실제로 조회됨(참여자·전환은 가짜숫자 없이 0)', !!eventRow && eventRow.participants === 0 && eventRow.conversions === 0, eventRow);
     r = await api('PATCH', `/api/admin/events/${eventId1}/status`, { status: 'ended' }, admin);
     check('이벤트 상태 변경(종료) API 성공', r.status === 200, r);
+
+    // ---- 신규: 소비자 회원관리(전체 목록·검색·정지/해제) ----
+    r = await api('GET', '/api/admin/consumers?status=all', null, admin);
+    const consumerRow = r.json.data && r.json.data.list.find(u => u.id === 'u1');
+    check('소비자 전체 목록에 u1이 정상 조회됨(status=active)', r.status === 200 && !!consumerRow && consumerRow.status === 'active', r);
+    r = await api('GET', '/api/admin/consumers?q=소비자1', null, admin);
+    check('소비자 검색(닉네임)이 실제로 동작함', r.status === 200 && r.json.data.list.some(u => u.id === 'u1'), r);
+    r = await api('PUT', '/api/admin/consumers/u1/suspend', { reason: '' }, admin);
+    check('정지 사유 미입력시 400 차단', r.status === 400, r);
+    r = await api('PUT', '/api/admin/consumers/u1/suspend', { reason: '스모크테스트 정지사유' }, admin);
+    check('소비자 정지 처리 성공', r.status === 200, r);
+    r = await api('GET', '/api/admin/consumers/u1', null, admin);
+    check('정지 후 소비자 상세에 status=suspended·정지사유·처리이력이 반영됨', r.status === 200 && r.json.data.status === 'suspended' && r.json.data.suspendReason === '스모크테스트 정지사유' && r.json.data.actionHistory.some(a => a.action === 'suspend'), r.json.data);
+    r = await api('GET', '/api/users/me', null, u1);
+    check('정지된 소비자는 토큰이 남아있어도 즉시 차단됨(ACCOUNT_SUSPENDED)', r.status === 403 && r.json.error.code === 'ACCOUNT_SUSPENDED', r);
+    r = await api('PUT', '/api/admin/consumers/u1/unsuspend', {}, admin);
+    check('소비자 정지 해제 성공', r.status === 200, r);
+    r = await api('GET', '/api/users/me', null, u1);
+    check('정지 해제 후 다시 정상 이용 가능', r.status === 200, r);
+
+    // ---- 신규: 파트너 회원관리(전체 목록·검색·필터·정지/해제) ----
+    r = await api('GET', '/api/admin/partners?status=approved', null, admin);
+    check('파트너 전체 목록(승인됨 필터)에 p2가 조회됨', r.status === 200 && r.json.data.list.some(p => p.id === 'p2'), r);
+    r = await api('GET', '/api/admin/partners?q=승인업체2', null, admin);
+    check('파트너 검색(상호명)이 실제로 동작함', r.status === 200 && r.json.data.list.some(p => p.id === 'p2'), r);
+    r = await api('GET', '/api/admin/partners?tier=' + encodeURIComponent('면허 파트너'), null, admin);
+    check('파트너 등급 필터가 실제로 동작함(면허 파트너만)', r.status === 200 && r.json.data.list.every(p => p.tier === '면허 파트너') && r.json.data.list.some(p => p.id === 'p2'), r);
+    r = await api('GET', '/api/admin/partners/p2/detail', null, admin);
+    check('파트너 상세(연관활동 포함)가 정상 조회됨', r.status === 200 && r.json.data.businessName === '승인업체2(광고주)' && typeof r.json.data.activity.contracts === 'number', r.json.data);
+    r = await api('PUT', '/api/admin/partners/p2/suspend', { reason: '스모크테스트 업체정지' }, admin);
+    check('파트너 정지(회원관리 화면 경로) 성공', r.status === 200, r);
+    r = await api('GET', '/api/admin/partners/p2/detail', null, admin);
+    check('정지 후 파트너 상세에 status=suspended·처리이력이 반영됨', r.status === 200 && r.json.data.status === 'suspended' && r.json.data.actionHistory.some(a => a.action === 'suspend'), r.json.data);
+    r = await api('GET', '/api/partners/me', null, p2);
+    check('정지된 파트너는 토큰이 남아있어도 즉시 차단됨(PARTNER_SUSPENDED)', r.status === 403 && r.json.error.code === 'PARTNER_SUSPENDED', r);
+    r = await api('PATCH', '/api/admin/partners/p2/unsuspend', {}, admin);
+    check('파트너 정지 해제(기존 어뷰징 해제 API 재사용) 성공', r.status === 200, r);
+    r = await api('GET', '/api/partners/me', null, p2);
+    check('정지 해제 후 파트너 다시 정상 이용 가능', r.status === 200, r);
+
+    // ---- CSV 다운로드(엑셀) ----
+    r = await api('GET', '/api/admin/consumers/export.csv', null, admin);
+    check('소비자 CSV 다운로드 200 + text/csv', r.status === 200, r);
+    r = await api('GET', '/api/admin/partners/export.csv', null, admin);
+    check('파트너 CSV 다운로드 200', r.status === 200, r);
+
+    // ---- 신규: 지역기반 서비스 — GEO_TEST_MODE 스텁으로 좌표→지역 변환 전체 흐름 검증 ----
+    // (실제 카카오 API 호출 자체는 tests/integration.js에서 "키 미설정시 정직하게 503" 경로로 별도 검증함)
+    r = await api('GET', '/api/geo/reverse?lat=37.4979&lng=127.0276', null, null);
+    check('좌표→지역 변환(강남 인근 좌표)이 실제로 서울 강남구를 반환함', r.status === 200 && r.json.data.regionCode === '서울 강남구' && r.json.data.source === 'test-stub', r);
+    r = await api('GET', '/api/geo/reverse?lat=37.3595&lng=127.1052', null, null);
+    check('좌표→지역 변환(성남 인근 좌표)이 실제로 경기 성남시를 반환함(다른 좌표엔 다른 지역이 나옴을 확인)', r.status === 200 && r.json.data.regionCode === '경기 성남시', r);
+    r = await api('PUT', '/api/users/me/region', { region: '경기 성남시' }, u1);
+    check('위치조회 결과를 실제로 소비자 프로필에 저장 가능', r.status === 200 && r.json.data.region === '경기 성남시', r);
+    r = await api('GET', '/api/users/me', null, u1);
+    check('저장된 활성지역이 재조회시에도 그대로 유지됨(세션 새로고침 시나리오)', r.status === 200 && r.json.data.region === '경기 성남시', r);
 
     console.log(`\n결과: ${pass} 성공 / ${fail} 실패`);
     server.kill();
