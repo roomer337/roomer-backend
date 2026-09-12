@@ -671,6 +671,12 @@ db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_inspections_order_id ON inspectio
 // users 테이블에도 추가(정지시각+사유). suspended_at이 있으면 정지 상태, withdrawn_at이 있으면 탈퇴 상태로 구분.
 ensureColumn('users', 'suspended_at', 'TEXT');
 ensureColumn('users', 'suspend_reason', 'TEXT');
+// 결함수정(사용자 실제 발견 — "실측 진행 이력" 팝업이 "undefined undefined undefined"만 표시):
+// measurement_events가 actor_role/event_type/from_status/to_status만 갖고 있어서, 화면에
+// 보여줄 사람이 읽을 수 있는 문장이 DB에 저장돼있지 않았다(같은 순간 chat_messages에는 저장됐지만
+// 그건 채팅용이라 이 팝업은 조회할 방법이 없었음). 이벤트 발생 시점에 이미 만들어져 있는 요약문을
+// 같이 저장해서, 이 팝업이 그걸 그대로 재사용할 수 있게 한다.
+ensureColumn('measurement_events', 'summary', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_partners_approved_at ON partners(approved_at DESC)');
 
