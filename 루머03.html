@@ -1792,6 +1792,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
         <input type="text" id="in-available-hours" placeholder="예) 평일 09:00~18:00" style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:16px">
 
         <div class="caption" style="margin-bottom:6px;font-weight:700;color:var(--charcoal)">대표 시공사진 (최대 6장, 상세페이지 상단에 노출)</div>
+        <div style="margin-bottom:8px;padding:9px 12px;background:#fff8ec;border:1px solid #f3ddb0;border-radius:10px;font-size:12.5px;line-height:1.5;color:#8a6a1f">💡 이 사진은 고객이 보는 업체 소개 화면 맨 위에 대표 이미지로 사용돼요. 가입 후에도 파트너 홈에서 언제든 바꿀 수 있어요.</div>
         <label id="reg-portfolio-box" style="min-height:90px;border:1.5px dashed var(--stone);border-radius:var(--radius-card);display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px;padding:10px;cursor:pointer" class="caption">
           <span id="reg-portfolio-placeholder">탭하여 사진 선택</span>
           <input type="file" id="reg-portfolio-input" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0">
@@ -1824,8 +1825,8 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 <div class="scr" id="s-p-up1">
   <header class="header"><div id="hdr-p-up1" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
   <div class="content-narrow" style="margin-top:20px">
-    <div class="h2" style="margin-bottom:6px">시공 사례 등록</div>
-    <div class="caption" style="margin-bottom:18px">프로젝트 단위로 제목·사진·설명을 함께 올려주세요</div>
+    <div class="h2" style="margin-bottom:6px" id="p-up1-title">시공 사례 등록</div>
+    <div class="caption" style="margin-bottom:18px" id="p-up1-subtitle">프로젝트 단위로 제목·사진·설명을 함께 올려주세요</div>
     <div class="caption" style="margin-bottom:6px;font-weight:700;color:var(--charcoal)">프로젝트 제목</div>
     <input type="text" id="project-title" placeholder="예) OO아파트 32평" style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:16px">
     <div class="caption" style="margin-bottom:6px;font-weight:700;color:var(--charcoal)">사진 (여러 장 선택 가능)</div>
@@ -1833,10 +1834,10 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
       <span id="project-photos-placeholder">탭하여 사진 선택</span>
       <input type="file" id="project-photos-input" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0">
     </label>
-    <div class="caption" style="margin:-10px 0 16px;font-size:11.5px;line-height:1.5">사진 아래 "대표사진으로" 버튼을 누르면, 이 프로젝트가 승인됐을 때 그 사진이 업체상세페이지 대표사진에도 함께 반영돼요.</div>
+    <div class="caption" style="margin:-10px 0 16px;font-size:11.5px;line-height:1.5" id="p-up1-photo-note">사진 아래 "대표사진으로" 버튼을 누르면, 이 프로젝트가 승인됐을 때 그 사진이 업체상세페이지 대표사진에도 함께 반영돼요.</div>
     <div class="caption" style="margin-bottom:6px;font-weight:700;color:var(--charcoal)">설명</div>
     <textarea id="project-desc" rows="4" placeholder="예) 좁은 욕실을 넓어 보이게 재배치하고, 자쿠지 대신 반신욕 욕조를 시공했습니다." style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;resize:vertical;margin-bottom:20px"></textarea>
-    <button class="btn btn-primary" onclick="submitPortfolioProject()">등록 완료</button>
+    <button class="btn btn-primary" id="btn-p-up1-submit" onclick="submitPortfolioProject()">등록 완료</button>
   </div>
 </div>
 
@@ -3161,10 +3162,48 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   <header class="header" style="position:relative"><div id="hdr-partner-portfolio" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
   <div class="content" style="">
     <div class="h1" style="margin:20px 0 4px">포트폴리오 관리</div>
-    <div class="caption" style="margin-bottom:20px">올린 시공 사례를 확인하고 관리하세요</div>
-    <button class="btn btn-primary" style="margin-bottom:16px" onclick="setReturnTo('partner-portfolio'); go('p-up1')">+ 사진 추가하기</button>
+    <div class="caption" style="margin-bottom:16px">올린 시공 사례를 확인하고 관리하세요</div>
+
+    <div class="caption" style="font-weight:700;color:var(--charcoal);margin-bottom:8px">대표 시공사진 (상세페이지 상단, 최대 6장)</div>
+    <div id="partner-hero-photos-box" style="min-height:80px;border:1.5px dashed var(--stone);border-radius:var(--radius-card);display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px;margin-bottom:8px"></div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:20px"><button class="btn btn-primary" style="padding:9px 16px;font-size:13.5px" onclick="savePartnerHeroPhotos()">대표 시공사진 저장</button></div>
+
+    <div id="partner-ad-upsell-banner" style="margin-bottom:20px"></div>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+      <div class="caption" style="font-weight:700;color:var(--charcoal);margin:0;white-space:nowrap">완공사례 프로젝트</div>
+      <button class="btn btn-primary" style="padding:9px 16px;font-size:13.5px;flex-shrink:0" onclick="setReturnTo('partner-portfolio'); startNewPortfolioProject()">+ 사진 추가하기</button>
+    </div>
     <div id="partner-portfolio-items"></div>
     <div style="margin-top:20px"><button class="btn btn-outline" onclick="go('partner-home')">닫기</button></div>
+  </div>
+</div>
+
+<!-- 신규(사용자요청 — "가입시 인지를 못한 상태에서 가입이 되었더라도 파트너회원 스스로 상세페이지를
+     수정할수 있는 기능"): 대시보드 상호명 옆 "상세정보 수정"에서 들어오는 셀프 수정 화면. 상호명·주소·
+     사업자번호 등 심사와 직결된 항목은 여기서 다루지 않고, 소비자에게 노출되는 소개문구·강점키워드·
+     연락가능시간·전문분야만 언제든 고칠 수 있게 한다. -->
+<div class="scr" id="s-partner-profile-edit">
+  <header class="header"><div id="hdr-partner-profile-edit" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
+  <div class="content-narrow" style="margin-top:20px">
+    <div class="h2" style="margin-bottom:6px">상세정보 수정</div>
+    <div class="caption" style="margin-bottom:20px">고객이 보는 업체 소개 화면에 그대로 반영돼요</div>
+
+    <div class="caption" style="margin-bottom:6px;font-weight:700;color:var(--charcoal)">전문분야 (복수 선택)</div>
+    <div id="edit-space-categories" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div>
+
+    <div class="caption" style="margin-bottom:6px;font-weight:700;color:var(--charcoal)">한줄 소개 (50자 이내)</div>
+    <input type="text" id="edit-intro" maxlength="50" placeholder="예) 정직한 견적, 15년 경력 욕실 전문" style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:16px">
+
+    <div class="caption" style="margin-bottom:6px;font-weight:700;color:var(--charcoal)">강점 키워드 (쉼표로 구분, 최대 5개)</div>
+    <input type="text" id="edit-strength-tags" placeholder="예) 당일시공, 무료AS 2년, 친환경자재" style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:16px">
+
+    <div class="caption" style="margin-bottom:6px;font-weight:700;color:var(--charcoal)">연락 가능 시간대</div>
+    <input type="text" id="edit-available-hours" placeholder="예) 평일 09:00~18:00" style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;margin-bottom:20px">
+
+    <div style="margin-bottom:10px;padding:9px 12px;background:#fff8ec;border:1px solid #f3ddb0;border-radius:10px;font-size:12px;line-height:1.5;color:#8a6a1f">💡 대표 시공사진(상세페이지 상단 이미지)은 "포트폴리오 관리"에서 바꿀 수 있어요.</div>
+    <button class="btn btn-primary" onclick="savePartnerProfileEdit()" id="btn-save-partner-profile-edit">저장하기</button>
+    <button class="btn btn-outline" style="margin-top:10px" onclick="go('partner-home')">취소</button>
   </div>
 </div>
 
@@ -3766,6 +3805,11 @@ function createLocalPartnerId(){
   if(window.crypto && typeof window.crypto.randomUUID === 'function') return 'local-partner-' + window.crypto.randomUUID();
   return 'local-partner-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,10);
 }
+function safeParsePartnerArray(v){
+  if(Array.isArray(v)) return v;
+  if(typeof v === 'string'){ try{ var parsed = JSON.parse(v); return Array.isArray(parsed) ? parsed : []; }catch(e){ return []; } }
+  return [];
+}
 function normalizePartnerProfilePayload(payload){
   var outer = payload || {};
   var root = outer.partner || outer.profile || outer.data || outer;
@@ -3788,7 +3832,14 @@ function normalizePartnerProfilePayload(payload){
     serviceRegions:firstPartnerDefined(root.serviceRegions, root.service_regions),
     // 신규(2026-09, 광고 크레딧 실연동): GET /api/partners/me가 이미 credit_balance를 내려주고 있었는데
     // 이 정규화 함수가 그 필드를 옮겨담지 않아서 PARTNER_PROFILE.creditBalance가 항상 비어있었음
-    creditBalance:firstPartnerDefined(root.creditBalance, root.credit_balance)
+    creditBalance:firstPartnerDefined(root.creditBalance, root.credit_balance),
+    // 신규(사용자요청 — 파트너 셀프 상세페이지 수정): 가입 때만 저장되던 소개문구·강점키워드·연락가능시간·
+    // 전문분야·대표시공사진을 수정화면에서 채워넣기 위해 정규화 목록에 추가.
+    intro:firstPartnerDefined(root.intro),
+    strengthTags:partnerDefined(firstPartnerDefined(root.strengthTags, root.strength_tags)) ? safeParsePartnerArray(firstPartnerDefined(root.strengthTags, root.strength_tags)) : undefined,
+    availableHours:firstPartnerDefined(root.availableHours, root.available_hours),
+    spaceCategories:partnerDefined(firstPartnerDefined(root.spaceCategories, root.space_categories)) ? safeParsePartnerArray(firstPartnerDefined(root.spaceCategories, root.space_categories)) : undefined,
+    portfolioImages:partnerDefined(firstPartnerDefined(root.portfolioImages, root.portfolio_images)) ? safeParsePartnerArray(firstPartnerDefined(root.portfolioImages, root.portfolio_images)) : undefined
   };
 }
 function applyPartnerProfile(payload, options){
@@ -6154,6 +6205,7 @@ renderStdHeader('hdr-ad-content', "closeToReturn()");
 renderStdHeader('hdr-partner-alert-list', "closeToReturn()");
 renderStdHeader('hdr-partner-withdraw', "closeToReturn()");
 renderStdHeader('hdr-partner-portfolio', "closeToReturn()");
+renderStdHeader('hdr-partner-profile-edit', "go('partner-home')");
 renderStdHeader('hdr-partner-alerts', "closeToReturn()");
 renderStdHeader('hdr-partner-mydata', "closeToReturn()");
 renderStdHeader('hdr-partner-support', "closeToReturn()");
@@ -9304,13 +9356,51 @@ document.getElementById('btn-next3').addEventListener('click', function(){
   document.getElementById('tier-fee').textContent = '수수료 ' + info.tierFee;
 });
 
-/* ===== (s-p-up1) 시공 사례 등록 — 재설계(사용자요청): AI검증 삭제, 프로젝트단위(제목+여러사진+설명)로 전환 ===== */
+/* ===== (s-p-up1) 시공 사례 등록/수정 — 재설계(사용자요청): AI검증 삭제, 프로젝트단위(제목+여러사진+설명)로 전환.
+   신규(사용자요청 — 포트폴리오관리 실동작화): 기존에 있던 프로젝트를 이 같은 화면에서 그대로 "수정"할 수 있게
+   window._editingProjectId로 등록/수정 모드를 구분한다. ===== */
 window.PARTNER_PROJECTS = window.PARTNER_PROJECTS || [];
 window._projectPhotos = window._projectPhotos || [];
 window._projectPhotoFiles = window._projectPhotoFiles || [];
 // 신규(사용자요청 — 포트폴리오→상세페이지 반영): 사진마다 "상세페이지 대표사진으로도 쓰기" 체크 상태를
 // _projectPhotos/_projectPhotoFiles와 같은 순서로 나란히 들고 있다가, 등록 시 서버로 함께 보낸다.
 window._projectPhotoUseAsProfile = window._projectPhotoUseAsProfile || [];
+window._editingProjectId = window._editingProjectId || null;
+// 수정 모드로 들어왔을 때 사진칸이 아직 "기존 사진(파일 없이 URL만 있음)"인지 표시 — 이 상태에서 사진을
+// 새로 추가하면 파일 없는 기존 미리보기와 섞일 수 없으므로 통째로 비우고 새 파일들로만 다시 채운다(전체교체).
+window._editingProjectPhotosAreExisting = false;
+function startNewPortfolioProject(){
+  window._editingProjectId = null;
+  window._editingProjectPhotosAreExisting = false;
+  window._projectPhotos = []; window._projectPhotoFiles = []; window._projectPhotoUseAsProfile = [];
+  document.getElementById('project-title').value = '';
+  document.getElementById('project-desc').value = '';
+  document.getElementById('p-up1-title').textContent = '시공 사례 등록';
+  document.getElementById('p-up1-subtitle').textContent = '프로젝트 단위로 제목·사진·설명을 함께 올려주세요';
+  document.getElementById('p-up1-photo-note').textContent = '사진 아래 "대표사진으로" 버튼을 누르면, 이 프로젝트가 승인됐을 때 그 사진이 업체상세페이지 대표사진에도 함께 반영돼요.';
+  document.getElementById('btn-p-up1-submit').textContent = '등록 완료';
+  renderProjectPhotosPreview();
+  go('p-up1');
+}
+// 신규(사용자요청 — "포트폴리오관리 탭 안에서 이미 올려진 포트폴리오를 관리하거나 수정"): 기존 프로젝트를
+// 같은 등록화면에 프리필해서 그대로 고칠 수 있게 한다.
+function openPortfolioProjectEdit(project){
+  if(!project) return;
+  window._editingProjectId = project.id;
+  window._editingProjectPhotosAreExisting = true;
+  window._projectPhotos = (project.photos||[]).map(function(p){ return p.url || p; });
+  window._projectPhotoFiles = [];
+  window._projectPhotoUseAsProfile = (project.photos||[]).map(function(p){ return !!(p && p.useAsProfilePhoto); });
+  document.getElementById('project-title').value = project.title || '';
+  document.getElementById('project-desc').value = project.desc || project.description || '';
+  document.getElementById('p-up1-title').textContent = '시공 사례 수정';
+  document.getElementById('p-up1-subtitle').textContent = '제목·설명·사진을 고칠 수 있어요';
+  document.getElementById('p-up1-photo-note').textContent = '사진은 그대로 두거나, "+"로 새 사진을 올리면 기존 사진 전체가 새 사진으로 교체돼요. 승인됐던 프로젝트도 수정하면 다시 검수를 거쳐요.';
+  document.getElementById('btn-p-up1-submit').textContent = '수정 완료';
+  renderProjectPhotosPreview();
+  setReturnTo('partner-portfolio');
+  go('p-up1');
+}
 function validatePortfolioPhotoFile(file){
   var allowed=['image/jpeg','image/png','image/webp'];
   if(!file||allowed.indexOf(String(file.type||'').toLowerCase())===-1) return 'JPG, PNG, WebP 이미지만 올릴 수 있어요.';
@@ -9320,6 +9410,12 @@ function validatePortfolioPhotoFile(file){
 function addPortfolioPhotoFiles(fileList){
   var files=Array.prototype.slice.call(fileList||[]), accepted=[], errors=[];
   files.forEach(function(file){ var error=validatePortfolioPhotoFile(file); if(error) errors.push(file.name+': '+error); else accepted.push(file); });
+  // 수정모드에서 기존(파일 없는 URL) 사진 미리보기 상태였다면, 새 사진 추가는 곧 "전체 교체"를 의미하므로
+  // 먼저 기존 미리보기를 비우고 새로 올리는 파일들로만 다시 채운다.
+  if(window._editingProjectPhotosAreExisting){
+    window._projectPhotos=[]; window._projectPhotoFiles=[]; window._projectPhotoUseAsProfile=[];
+    window._editingProjectPhotosAreExisting=false;
+  }
   var remainingSlots=Math.max(0,window.MVP.portfolioMaxPhotos-window._projectPhotoFiles.length);
   if(accepted.length>remainingSlots){ errors.push('프로젝트당 사진은 최대 '+window.MVP.portfolioMaxPhotos+'장까지 올릴 수 있어요.'); accepted=accepted.slice(0,remainingSlots); }
   if(errors.length) alert(errors.join('\n'));
@@ -9363,13 +9459,32 @@ function renderProjectPhotosPreview(){
 function commitPortfolioProject(title,desc,photos,serverRecord){
   var safeTitle=safePortfolioText(title,100), safeDesc=safePortfolioText(desc,1000), safePhotos=(photos||[]).filter(Boolean);
   window.PARTNER_PROJECTS.unshift({id:serverRecord&&(serverRecord.id||serverRecord.portfolioId),title:safeTitle,photos:safePhotos.slice(),desc:safeDesc,at:(typeof measNow==='function'?measNow():''),verificationStatus:'pending'});
-  window._projectPhotos=[]; window._projectPhotoFiles=[]; window._projectPhotoUseAsProfile=[];
+  window._projectPhotos=[]; window._projectPhotoFiles=[]; window._projectPhotoUseAsProfile=[]; window._editingProjectId=null;
   document.getElementById('project-title').value=''; document.getElementById('project-desc').value=''; go('up-done');
 }
 function submitPortfolioProject(){
   var title = document.getElementById('project-title').value.trim();
   var desc = document.getElementById('project-desc').value.trim();
   if(!title){ alert('프로젝트 제목을 입력해주세요.'); return; }
+  var editingId = window._editingProjectId;
+  // 신규(사용자요청 — 포트폴리오관리 실동작화): 기존 프로젝트 수정 — PUT으로 보내고, 사진을 새로
+  // 고르지 않았으면 사진 필드 자체를 아예 보내지 않아 서버가 기존 사진을 그대로 유지하게 한다.
+  if(editingId){
+    if(!window.MVP.live){ alert('프로토타입 모드에서는 수정을 지원하지 않아요.'); return; }
+    var editForm=new FormData(); editForm.append('title',title); editForm.append('description',desc);
+    if(window._projectPhotoFiles.length){
+      window._projectPhotoFiles.forEach(function(file){ editForm.append('photos',file,file.name); });
+      editForm.append('useAsProfilePhoto', JSON.stringify(window._projectPhotoUseAsProfile.slice(0,window._projectPhotoFiles.length)));
+    }
+    apiFetch('/api/partners/me/portfolio/'+editingId,{method:'PUT',body:editForm}).then(function(){
+      window._editingProjectId=null; window._editingProjectPhotosAreExisting=false;
+      window._projectPhotos=[]; window._projectPhotoFiles=[]; window._projectPhotoUseAsProfile=[];
+      document.getElementById('project-title').value=''; document.getElementById('project-desc').value='';
+      alert('수정했어요. 사진을 바꿨거나 승인된 프로젝트를 고친 경우 다시 검수를 거쳐요.');
+      renderPartnerPortfolio(); go('partner-portfolio');
+    }).catch(function(e){ alert('수정에 실패했어요.\n'+(e.message||'')); });
+    return;
+  }
   if(!window._projectPhotos.length){ alert('사진을 1장 이상 올려주세요.'); return; }
   if(!window.MVP.live){ commitPortfolioProject(title,desc,window._projectPhotos.slice(),null); return; }
   if(!window._projectPhotoFiles.length){ alert('업로드할 원본 사진을 다시 선택해주세요.'); return; }
@@ -14762,7 +14877,14 @@ window._adContent = null;
 function openAdContentEditor(row){
   window._adContent = { reservationId: row.id, region: row.region, startDate: row.startDate, endDate: row.endDate,
     days: row.days, costCredits: row.costCredits, tagline: row.tagline||'', keywords: (row.keywords||[]).slice(),
-    photoFile: null, photoDataUrl: null, existingImageUrl: row.imageUrl||null };
+    photoFile: null, photoDataUrl: null, existingImageUrl: row.imageUrl||null, reuseImageUrl: null };
+  // 신규(사용자요청 — 포트폴리오 사진을 광고 이미지로 재사용): 포트폴리오관리 화면에서 "광고 이미지로 쓰기"를
+  // 누르고 넘어온 경우, 새로 업로드하지 않고 그 사진을 자동으로 채워준다.
+  if(window._pendingAdReuseImage){
+    window._adContent.reuseImageUrl = window._pendingAdReuseImage;
+    window._adContent.photoDataUrl = window._pendingAdReuseImage;
+    window._pendingAdReuseImage = null;
+  }
   go('ad-content');
 }
 function renderAdContentWizard(){
@@ -14848,7 +14970,7 @@ function submitAdContent(){
   var tagline = (c.tagline||'').trim();
   var note = document.getElementById('ad-content-note');
   if(!tagline || tagline.length>24){ if(note) note.innerHTML = '<span style="color:var(--terracotta)">한 줄 문구는 1~24자 이내로 입력해주세요.</span>'; return; }
-  if(!c.photoFile && !c.existingImageUrl){ if(note) note.innerHTML = '<span style="color:var(--terracotta)">대표 사진을 올려주세요.</span>'; return; }
+  if(!c.photoFile && !c.existingImageUrl && !c.reuseImageUrl){ if(note) note.innerHTML = '<span style="color:var(--terracotta)">대표 사진을 올려주세요.</span>'; return; }
   var btn = document.getElementById('ad-content-submit-btn');
   if(btn){ btn.disabled = true; btn.textContent = '등록 중...'; }
   if(!window.MVP.live){
@@ -14860,6 +14982,9 @@ function submitAdContent(){
   form.append('tagline', tagline);
   form.append('keywords', JSON.stringify(c.keywords||[]));
   if(c.photoFile) form.append('photo', c.photoFile, c.photoFile.name||'ad-photo');
+  // 신규(사용자요청 — 포트폴리오 사진을 광고 이미지로 재사용): 새 파일이 없고 재사용 사진 URL만 있으면
+  // 그 URL을 그대로 서버에 넘겨 재업로드 없이 광고 이미지로 반영한다.
+  else if(c.reuseImageUrl) form.append('reuseImageUrl', c.reuseImageUrl);
   apiFetch('/api/ads/reservations/'+c.reservationId+'/content', {method:'PATCH', body: form})
     .then(function(){
       if(note) note.innerHTML = '<span style="color:var(--success)">'+icon('checkCircle',T.success,12)+' 등록 완료! 예약된 날짜부터 자동으로 노출돼요.</span>';
@@ -15463,23 +15588,146 @@ function renderPartnerMypage(){
     menuEl.appendChild(row);
   });
 }
+// 재설계(사용자요청 — "포트폴리오관리 탭 안에서 이미 올려진 포트폴리오를 관리하거나 수정할 수 있어야"):
+// 예전엔 window.PARTNER_PROJECTS(메모리)만 그렸기 때문에 새로고침하면 목록이 통째로 사라졌다(전수조사 발견).
+// 이제 화면에 들어올 때마다 서버(GET /api/partners/me/portfolio)에서 실제 상태(pending/approved/rejected
+// 전부)를 불러와 window.PARTNER_PROJECTS를 갱신한 뒤 그린다. 프로토타입 모드에서는 서버가 없으니 메모리
+// 캐시만 그대로 사용.
 function renderPartnerPortfolio(){
+  window._heroPhotos = null; // 화면에 다시 들어올 때마다 최신 서버상태(PARTNER_PROFILE)로 다시 채운다
+  renderPartnerPortfolioList();
+  renderPartnerHeroPhotos();
+  renderPartnerAdUpsellBanner();
+  if(!window.MVP.live) return;
+  apiFetch('/api/partners/me/portfolio', {method:'GET'}).then(function(rows){
+    window.PARTNER_PROJECTS = (rows||[]).map(function(r){
+      return {
+        id: r.id, title: r.title, desc: r.description || '',
+        photos: (r.photos||[]).map(function(ph){ return { id: ph.id, url: ph.url, useAsProfilePhoto: !!ph.useAsProfilePhoto }; }),
+        status: r.status, rejectReason: r.reject_reason,
+        at: (r.created_at||'').slice(0,10)
+      };
+    });
+    renderPartnerPortfolioList();
+  }).catch(function(e){ console.error('포트폴리오 불러오기 실패:', e.message); });
+}
+function partnerPortfolioStatusBadge(status){
+  if(status==='approved') return '<span style="font-size:11px;font-weight:800;color:var(--success);background:#3C6F5114;padding:2px 8px;border-radius:var(--radius-pill)">승인됨</span>';
+  if(status==='rejected') return '<span style="font-size:11px;font-weight:800;color:var(--terracotta);background:#c0392b14;padding:2px 8px;border-radius:var(--radius-pill)">반려됨</span>';
+  return '<span style="font-size:11px;font-weight:800;color:var(--slate);background:var(--ivory);padding:2px 8px;border-radius:var(--radius-pill)">심사중</span>';
+}
+function renderPartnerPortfolioList(){
   const el = document.getElementById('partner-portfolio-items'); if(!el) return;
   const projects = window.PARTNER_PROJECTS || [];
   if(!projects.length){ el.innerHTML = emptyStateBox('아직 등록한 시공 사례가 없어요.<br>프로젝트를 추가하면 완공사례 피드에 노출돼요.'); return; }
   el.innerHTML = projects.map(function(p, i){
+    var photos = (p.photos||[]).map(function(ph){ return typeof ph === 'string' ? ph : ph.url; });
+    var firstPhoto = photos[0];
     return '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px;margin-bottom:12px">'
-      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-size:15.5px;font-weight:700;color:var(--charcoal)">'+p.title+'</div><button type="button" onclick="removePortfolioProject('+i+')" style="background:none;border:none;color:var(--slate);font-size:13.5px;cursor:pointer;font-family:inherit">삭제</button></div>'
-      + '<div style="display:flex;gap:6px;overflow-x:auto;margin-bottom:8px">' + p.photos.map(function(src){ return '<div style="width:64px;height:64px;border-radius:8px;overflow:hidden;flex-shrink:0"><img src="'+src+'" style="width:100%;height:100%;object-fit:cover"></div>'; }).join('') + '</div>'
-      + (p.desc ? '<div style="font-size:13.5px;color:var(--slate);line-height:1.6">'+p.desc+'</div>' : '')
-      + '<div style="font-size:12px;color:var(--slate);margin-top:6px">'+(p.photos.length)+'장 · '+(p.at||'')+'</div>'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px">'
+        + '<div style="display:flex;align-items:center;gap:7px;min-width:0"><div style="font-size:15.5px;font-weight:700;color:var(--charcoal);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeConsumerIdentityHtml(p.title)+'</div>'+(p.status?partnerPortfolioStatusBadge(p.status):'')+'</div>'
+        + '<div style="display:flex;gap:10px;flex-shrink:0">'
+          + '<button type="button" onclick="openPortfolioProjectEdit(window.PARTNER_PROJECTS['+i+'])" style="background:none;border:none;color:var(--steelblue);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">수정</button>'
+          + '<button type="button" onclick="deletePortfolioProject('+i+')" style="background:none;border:none;color:var(--terracotta);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">삭제</button>'
+        + '</div>'
+      + '</div>'
+      + (p.status==='rejected' && p.rejectReason ? '<div style="font-size:12.5px;color:var(--terracotta);background:#c0392b0d;border-radius:8px;padding:7px 9px;margin-bottom:8px">반려 사유: '+escapeConsumerIdentityHtml(p.rejectReason)+'</div>' : '')
+      + '<div style="display:flex;gap:6px;overflow-x:auto;margin-bottom:8px">' + photos.map(function(src){ return '<div style="width:64px;height:64px;border-radius:8px;overflow:hidden;flex-shrink:0"><img src="'+src+'" style="width:100%;height:100%;object-fit:cover"></div>'; }).join('') + '</div>'
+      + (p.desc ? '<div style="font-size:13.5px;color:var(--slate);line-height:1.6">'+escapeConsumerIdentityHtml(p.desc)+'</div>' : '')
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">'
+        + '<div style="font-size:12px;color:var(--slate)">'+(photos.length)+'장 · '+(p.at||'')+'</div>'
+        + (firstPhoto ? '<button type="button" onclick="useAsAdImage(\''+String(firstPhoto).replace(/'/g,"\\'")+'\')" style="background:none;border:1px solid var(--steelblue);color:var(--steelblue);border-radius:var(--radius-pill);padding:4px 10px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit">📢 광고 이미지로 쓰기</button>' : '')
+      + '</div>'
     + '</div>';
   }).join('');
 }
-function removePortfolioProject(idx){
-  (window.PARTNER_PROJECTS||[]).splice(idx, 1);
-  renderPartnerPortfolio();
-  if(typeof renderRealcases === 'function') renderRealcases();
+// 결함수정(전수조사 발견 — 가짜 삭제): 예전 removePortfolioProject는 메모리 배열만 splice해서 새로고침하면
+// 되살아났다. 실제로 DELETE /api/partners/me/portfolio/:id를 호출해 서버에서도 지운다.
+function deletePortfolioProject(idx){
+  var project = (window.PARTNER_PROJECTS||[])[idx]; if(!project) return;
+  if(!confirm('"'+project.title+'" 포트폴리오를 삭제할까요? 상세페이지 대표사진으로 반영돼 있었다면 그것도 함께 내려가요.')) return;
+  if(!window.MVP.live){
+    window.PARTNER_PROJECTS.splice(idx, 1);
+    renderPartnerPortfolioList();
+    if(typeof renderRealcases === 'function') renderRealcases();
+    return;
+  }
+  apiFetch('/api/partners/me/portfolio/'+project.id, {method:'DELETE'}).then(function(){
+    window.PARTNER_PROJECTS.splice(idx, 1);
+    renderPartnerPortfolioList();
+    renderPartnerHeroPhotos();
+    if(typeof renderRealcases === 'function') renderRealcases();
+  }).catch(function(e){ alert('삭제에 실패했어요.\n'+(e.message||'')); });
+}
+
+/* ===== 신규(사용자요청 — "포트폴리오관리 탭 안에서 대표 시공사진 관리"): 가입 때 한 번만 저장되던
+   대표 시공사진(portfolio_images, 상세페이지 최상단 노출)을 언제든 직접 추가·삭제·저장할 수 있게 한다. ===== */
+window._heroPhotos = window._heroPhotos || null;
+function renderPartnerHeroPhotos(){
+  var box = document.getElementById('partner-hero-photos-box'); if(!box) return;
+  if(window._heroPhotos === null) window._heroPhotos = ((window.PARTNER_PROFILE && window.PARTNER_PROFILE.portfolioImages) || []).slice();
+  var photos = window._heroPhotos;
+  box.innerHTML = photos.map(function(src, i){
+    return '<div style="width:64px;height:64px;border-radius:8px;overflow:hidden;flex-shrink:0;position:relative">'
+      + '<img src="'+src+'" style="width:100%;height:100%;object-fit:cover">'
+      + '<button type="button" onclick="removeHeroPhoto('+i+')" style="position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:50%;border:none;background:rgba(0,0,0,.55);color:#fff;font-size:12px;line-height:1;cursor:pointer">&times;</button>'
+    + '</div>';
+  }).join('') + (photos.length < 6 ? '<label style="width:64px;height:64px;border:1.5px dashed var(--stone);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;position:relative;color:var(--slate)">+<input type="file" id="hero-photo-input" accept="image/*" multiple style="position:absolute;width:1px;height:1px;opacity:0"></label>' : '');
+  var input = document.getElementById('hero-photo-input');
+  if(input) input.addEventListener('change', function(e){ addHeroPhotoFiles(e.target.files); });
+}
+function addHeroPhotoFiles(fileList){
+  var files = Array.prototype.slice.call(fileList||[]).filter(function(f){ return f.type && f.type.indexOf('image')===0; });
+  if(!files.length) return;
+  var remainingSlots = Math.max(0, 6 - window._heroPhotos.length);
+  if(files.length > remainingSlots) files = files.slice(0, remainingSlots);
+  if(!files.length){ alert('대표 시공사진은 최대 6장까지 등록할 수 있어요.'); return; }
+  var remaining = files.length;
+  files.forEach(function(file){
+    var reader = new FileReader();
+    reader.onload = function(ev){ window._heroPhotos.push(ev.target.result); remaining--; if(remaining<=0) renderPartnerHeroPhotos(); };
+    reader.readAsDataURL(file);
+  });
+}
+function removeHeroPhoto(i){
+  window._heroPhotos.splice(i, 1);
+  renderPartnerHeroPhotos();
+}
+function savePartnerHeroPhotos(){
+  var photos = window._heroPhotos || [];
+  if(!window.MVP.live){
+    window.PARTNER_PROFILE = window.PARTNER_PROFILE || {};
+    window.PARTNER_PROFILE.portfolioImages = photos.slice();
+    alert('저장했어요. (프로토타입 모드)');
+    return;
+  }
+  apiFetch('/api/partners/me/hero-photos', {method:'PUT', body: JSON.stringify({ portfolioImages: photos })}).then(function(){
+    window.PARTNER_PROFILE = window.PARTNER_PROFILE || {};
+    window.PARTNER_PROFILE.portfolioImages = photos.slice();
+    alert('대표 시공사진을 저장했어요. 상세페이지에 바로 반영돼요.');
+  }).catch(function(e){ alert('저장에 실패했어요.\n'+(e.message||'')); });
+}
+
+/* ===== 신규(사용자요청 — "광고에 나가는 이미지를 만들어 볼수 있고 광고를 유도하는 방법을 넣어주면 광고
+   매출에 도움이 될듯해"): 이미 올린 사진을 재업로드 없이 그대로 광고 이미지로 쓸 수 있게 하고, 포트폴리오
+   관리 화면에 광고 유도 배너를 노출한다. ===== */
+function useAsAdImage(url){
+  if(!url) return;
+  window._pendingAdReuseImage = url;
+  var myAds = window._myAdsCache || [];
+  var pending = myAds.find(function(a){ return a.status === 'pending_content'; });
+  if(pending){ setReturnTo('partner-portfolio'); openAdContentEditor(pending); return; }
+  alert('이 사진이 준비됐어요! 광고 지면을 예약하면 재업로드 없이 바로 이 사진으로 등록할 수 있어요.');
+  setReturnTo('partner-portfolio');
+  openAdApply();
+}
+function renderPartnerAdUpsellBanner(){
+  var el = document.getElementById('partner-ad-upsell-banner'); if(!el) return;
+  el.innerHTML = '<div style="background:linear-gradient(135deg,#1f3a52,#2d5a7a);border-radius:var(--radius-card);padding:16px 18px;color:#fff">'
+    + '<div style="font-size:14.5px;font-weight:800;margin-bottom:4px">📢 이 사진, 광고로도 써보세요</div>'
+    + '<div style="font-size:12.5px;line-height:1.6;opacity:.9;margin-bottom:12px">완공사례 사진 아래 "광고 이미지로 쓰기"를 누르면 재업로드 없이 우리동네 추천업체 지면에 바로 노출할 수 있어요.</div>'
+    + '<button type="button" onclick="setReturnTo(\'partner-portfolio\'); openAdApply()" style="background:#fff;color:#1f3a52;border:none;border-radius:var(--radius-pill);padding:8px 16px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit">광고 지면 예약하기 &rsaquo;</button>'
+  + '</div>';
 }
 // 결함수정(전수조사 발견): renderPartnerInfo/renderPartnerTierInfo는 s-partner-info/s-partner-tier-info
 // 화면 삭제(위 참고)와 함께 제거 — 같은 정보가 renderPartnerGreeting()에 이미 통합되어 있음
@@ -15568,7 +15816,10 @@ function renderPartnerGreeting(){
     profileStateText = '파트너 가입정보 작성 중'; profileStateColor = 'var(--warning)';
   }
   el.innerHTML =
-    '<div style="font-size:19px;font-weight:800;color:var(--charcoal);margin-bottom:4px">'+safePartnerName+'님</div>'
+    '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px">'
+      + '<div style="font-size:19px;font-weight:800;color:var(--charcoal)">'+safePartnerName+'님</div>'
+      + '<span onclick="openPartnerProfileEdit()" style="flex-shrink:0;font-size:12.5px;font-weight:700;color:var(--steelblue);cursor:pointer;padding:5px 10px;border:1px solid var(--steelblue);border-radius:20px;white-space:nowrap">✎ 상세정보 수정</span>'
+    + '</div>'
     + '<div style="font-size:14px;color:var(--slate);margin-bottom:5px">'+safePartnerTier+' · 수수료 '+fee.pct+'</div>'
     + '<div id="partner-profile-restore-status" style="font-size:12.5px;color:'+profileStateColor+';font-weight:700;margin-bottom:14px">'+profileStateText+'</div>'
     + (pf.verifyStatus==='rejected' ? '<div style="background:#44607914;border:1px solid #44607955;border-radius:var(--radius-input);padding:11px 13px;margin-bottom:14px;font-size:13px;color:var(--terracotta);line-height:1.6"><b>파트너 가입 심사 반려</b><br>반려 사유: '+escapeConsumerIdentityHtml(pf.rejectReason||'관리자 검토 결과를 고객센터에 문의해주세요.')+'</div>' : '')
@@ -15584,6 +15835,57 @@ function renderPartnerGreeting(){
     + '</div>';
 }
 renderPartnerGreeting();
+
+/* ===== 신규(사용자요청 — "파트너회원 스스로 상세페이지를 수정할수 있는 기능"): 상호명 옆
+   "상세정보 수정"에서 들어와 소개문구·강점키워드·연락가능시간·전문분야를 언제든 고치는 화면. ===== */
+window._editSpaceCategories = window._editSpaceCategories || [];
+function renderEditSpaceCategories(){
+  var el = document.getElementById('edit-space-categories'); if(!el) return;
+  el.innerHTML = SPACE_CATEGORY_OPTIONS.map(function(cat){
+    var active = window._editSpaceCategories.indexOf(cat) !== -1;
+    return '<button type="button" onclick="toggleEditSpaceCategory(\''+cat+'\')" style="border:1px solid '+(active?'var(--charcoal)':'var(--stone)')+';background:'+(active?'var(--charcoal)':'#fff')+';color:'+(active?'#fff':'var(--charcoal)')+';border-radius:var(--radius-pill);padding:8px 14px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit">'+cat+'</button>';
+  }).join('');
+}
+function toggleEditSpaceCategory(cat){
+  var idx = window._editSpaceCategories.indexOf(cat);
+  if(idx === -1) window._editSpaceCategories.push(cat); else window._editSpaceCategories.splice(idx, 1);
+  renderEditSpaceCategories();
+}
+function openPartnerProfileEdit(){
+  var pf = window.PARTNER_PROFILE || {};
+  window._editSpaceCategories = (pf.spaceCategories || []).slice();
+  document.getElementById('edit-intro').value = pf.intro || '';
+  document.getElementById('edit-strength-tags').value = (pf.strengthTags || []).join(', ');
+  document.getElementById('edit-available-hours').value = pf.availableHours || '';
+  renderEditSpaceCategories();
+  setReturnTo('partner-home');
+  go('partner-profile-edit');
+}
+function savePartnerProfileEdit(){
+  var intro = (document.getElementById('edit-intro').value || '').trim();
+  var strengthTags = (document.getElementById('edit-strength-tags').value || '').split(',').map(function(s){ return s.trim(); }).filter(Boolean).slice(0,5);
+  var availableHours = (document.getElementById('edit-available-hours').value || '').trim();
+  var spaceCategories = window._editSpaceCategories.slice();
+  var btn = document.getElementById('btn-save-partner-profile-edit');
+  if(!window.MVP.live){
+    window.PARTNER_PROFILE = window.PARTNER_PROFILE || {};
+    Object.assign(window.PARTNER_PROFILE, {intro:intro, strengthTags:strengthTags, availableHours:availableHours, spaceCategories:spaceCategories});
+    alert('저장했어요. (프로토타입 모드)');
+    renderPartnerGreeting();
+    go('partner-home');
+    return;
+  }
+  if(btn){ btn.disabled = true; btn.textContent = '저장 중...'; }
+  apiFetch('/api/partners/me', {method:'PUT', body: JSON.stringify({intro:intro, strengthTags:strengthTags, availableHours:availableHours, spaceCategories:spaceCategories})})
+    .then(function(){
+      window.PARTNER_PROFILE = window.PARTNER_PROFILE || {};
+      Object.assign(window.PARTNER_PROFILE, {intro:intro, strengthTags:strengthTags, availableHours:availableHours, spaceCategories:spaceCategories});
+      renderPartnerGreeting();
+      go('partner-home');
+    })
+    .catch(function(e){ alert('저장에 실패했어요.\n'+(e.message||'')); })
+    .finally(function(){ if(btn){ btn.disabled = false; btn.textContent = '저장하기'; } });
+}
 function renderPartnerFeeGuide(){
   var box=document.getElementById('partner-fee-guide'); if(!box) return;
   if(window.partnerFeeGuideDismissed){ box.style.display='none'; return; }
