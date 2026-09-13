@@ -1096,6 +1096,55 @@ app.put('/api/partners/me/service-regions', authRequired, (req, res) => {
   res.json({ success:true, data:updated });
 });
 
+// 신규(사용자요청 — 파트너 셀프 상세페이지 수정): 가입 때 딱 한 번만 저장되던 소개문구·강점키워드·
+// 연락가능시간·전문분야를 언제든 스스로 수정할 수 있게 하는 범용 PUT. 상호명·주소·사업자번호 등
+// 심사와 직결된 항목은 여기서 다루지 않는다(오용 방지 — 필요해지면 관리자 재검수 플로우로 별도 설계).
+app.put('/api/partners/me', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 수정할 수 있습니다' } });
+  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.user.sub);
+  if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체 정보를 찾을 수 없습니다' } });
+  const { intro, strengthTags, availableHours, spaceCategories } = req.body;
+  if (intro != null && !isNonEmptyString(intro, 50) && intro !== '') return validationError(res, '한줄소개는 50자 이내여야 합니다');
+  if (strengthTags != null && (!Array.isArray(strengthTags) || strengthTags.length > 5 || strengthTags.some(t => typeof t !== 'string' || t.length > 20))) {
+    return validationError(res, '강점 키워드는 최대 5개, 각 20자 이내여야 합니다');
+  }
+  if (availableHours != null && !isNonEmptyString(availableHours, 60) && availableHours !== '') return validationError(res, '연락 가능 시간대는 60자 이내여야 합니다');
+  if (spaceCategories != null && (!Array.isArray(spaceCategories) || spaceCategories.some(c => typeof c !== 'string' || c.length > 20))) {
+    return validationError(res, '전문분야 형식이 올바르지 않습니다');
+  }
+  db.prepare(`UPDATE partners SET
+    intro = COALESCE(?, intro),
+    strength_tags = COALESCE(?, strength_tags),
+    available_hours = COALESCE(?, available_hours),
+    space_categories = COALESCE(?, space_categories)
+    WHERE id=?`)
+    .run(
+      intro != null ? intro.trim() : null,
+      strengthTags != null ? JSON.stringify(strengthTags) : null,
+      availableHours != null ? availableHours.trim() : null,
+      spaceCategories != null ? JSON.stringify(spaceCategories) : null,
+      req.user.sub
+    );
+  const updated = omitPartnerSecrets(withPartnerServiceRegions(db.prepare('SELECT * FROM partners WHERE id=?').get(req.user.sub)), true);
+  res.json({ success: true, data: updated });
+});
+
+// 신규(사용자요청 — 파트너 셀프 상세페이지 수정): 가입 때 등록한 "대표 시공사진"(상세페이지 상단 노출,
+// 최대 6장)을 언제든 직접 교체·삭제·추가할 수 있게 한다. 가입 때와 동일하게 관리자 검수 없이 즉시 반영
+// (완공사례 프로젝트 기반 포트폴리오는 별도로 계속 검수를 거침 — 이 필드만 원래부터 즉시반영 정책이었음).
+app.put('/api/partners/me/hero-photos', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 수정할 수 있습니다' } });
+  const partner = db.prepare('SELECT id FROM partners WHERE id=?').get(req.user.sub);
+  if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체 정보를 찾을 수 없습니다' } });
+  const { portfolioImages } = req.body;
+  if (!Array.isArray(portfolioImages) || portfolioImages.length > 6) return validationError(res, '대표 시공사진은 최대 6장까지 등록 가능합니다');
+  if (portfolioImages.some(src => typeof src !== 'string' || !src.trim() || src.length > 8_000_000)) {
+    return validationError(res, '사진 형식이 올바르지 않거나 용량이 너무 큽니다');
+  }
+  db.prepare('UPDATE partners SET portfolio_images=? WHERE id=?').run(JSON.stringify(portfolioImages), req.user.sub);
+  res.json({ success: true, data: { portfolioImages } });
+});
+
 app.get('/api/partners/:id', (req, res) => {
   const partner = omitPartnerSecrets(withPartnerServiceRegions(db.prepare("SELECT * FROM partners WHERE id=? AND verify_status='approved'").get(req.params.id)), false);
   if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
@@ -1469,6 +1518,120 @@ app.post('/api/partners/me/portfolio', authRequired, portfolioUploadLimiter, por
     }
     next(e);
   }
+});
+
+// 신규(사용자요청 — 포트폴리오관리 탭 실제 동작하게 고치기): 파트너 본인의 포트폴리오 전체(심사중·승인·
+// 반려 전부)를 불러온다. 기존 "/api/partners/:id/portfolio"는 승인된 것만 보여주는 공개 라우트라
+// 관리 화면에는 맞지 않았음(새로고침하면 화면이 통째로 비던 원인).
+app.get('/api/partners/me/portfolio', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 조회할 수 있습니다' } });
+  const projects = db.prepare('SELECT * FROM portfolio_projects WHERE partner_id=? ORDER BY created_at DESC').all(req.user.sub);
+  const getPhotos = db.prepare('SELECT id, image_url, use_as_profile_photo FROM portfolio_photos WHERE project_id=? ORDER BY sort_order');
+  const withPhotos = projects.map(p => ({
+    ...p,
+    photos: getPhotos.all(p.id).map(r => ({ id: r.id, url: r.image_url, useAsProfilePhoto: !!r.use_as_profile_photo }))
+  }));
+  res.json({ success: true, data: withPhotos });
+});
+
+// 신규(사용자요청 — "수정" 기능): 제목·설명을 고치거나 사진을 통째로 교체할 수 있게 한다.
+// 사진이 바뀌면(내용이 달라지므로) 다시 검수를 받도록 status를 pending으로 되돌린다 — 텍스트만
+// 바꾸는 경우도 보수적으로 동일하게 재검수를 받게 해서, 이미 승인된 문구를 검수 없이 몰래 바꿔치기하는
+// 경로가 생기지 않도록 막는다.
+app.put('/api/partners/me/portfolio/:id', authRequired, portfolioUploadLimiter, portfolioMultipart, async (req, res, next) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 수정할 수 있습니다' } });
+  const project = db.prepare('SELECT * FROM portfolio_projects WHERE id=?').get(req.params.id);
+  if (!project) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '포트폴리오를 찾을 수 없습니다' } });
+  if (project.partner_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인 포트폴리오만 수정할 수 있습니다' } });
+  let parsed;
+  try { parsed = parseMultipartBody(req); }
+  catch (e) { return validationError(res, 'multipart/form-data 형식으로 보내주세요'); }
+  const { title, description } = parsed.fields;
+  if (!isNonEmptyString(title, 60)) return validationError(res, '제목은 1~60자여야 합니다');
+  if (description && !isNonEmptyString(description, 1000)) return validationError(res, '설명은 1000자 이내여야 합니다');
+  const photoFiles = parsed.files.filter(file => file.field === 'photos');
+  let profilePhotoFlags = [];
+  if (parsed.fields.useAsProfilePhoto) {
+    try { profilePhotoFlags = JSON.parse(parsed.fields.useAsProfilePhoto); } catch (e) { profilePhotoFlags = []; }
+  }
+  if (!Array.isArray(profilePhotoFlags)) profilePhotoFlags = [];
+  let newPhotoUrls = null;
+  const savedObjects = [];
+  if (photoFiles.length) {
+    if (photoFiles.length > 10) return validationError(res, '사진은 최대 10장까지 올릴 수 있습니다');
+    const validated = [];
+    for (const file of photoFiles) {
+      if (file.data.length === 0 || file.data.length > 10 * 1024 * 1024) return validationError(res, '사진 1장당 최대 10MB까지 올릴 수 있습니다');
+      const detected = detectPortfolioImage(file);
+      if (!detected || file.declaredType !== detected.mime) return validationError(res, 'JPG, PNG, WebP 이미지 파일만 올릴 수 있습니다');
+      validated.push({ ...file, ...detected });
+    }
+    try {
+      newPhotoUrls = [];
+      for (let i = 0; i < validated.length; i++) {
+        const file = validated[i], fileId = randomUUID();
+        const key = `public/portfolio/${req.user.sub}/${project.id}/${fileId}.${file.ext}`;
+        const url = await objectStorage.putObject({ key, body: file.data, contentType: file.mime, isPublic: true });
+        savedObjects.push({ key, fileId }); newPhotoUrls.push(url);
+        db.prepare(`INSERT INTO stored_files (id,storage_key,owner_type,owner_id,purpose,original_name,mime_type,size_bytes,public_url,visibility)
+          VALUES (?,?,?,?,?,?,?,?,?,?)`).run(fileId, key, 'partner', req.user.sub, 'portfolio', normalizeUploadFilename(file.filename), file.mime, file.data.length, url, 'public');
+      }
+    } catch (e) {
+      for (const item of savedObjects) {
+        try { await objectStorage.deleteObject(item.key); } catch (_) {}
+        try { db.prepare('DELETE FROM stored_files WHERE id=?').run(item.fileId); } catch (_) {}
+      }
+      return next(e);
+    }
+  }
+  const needsReview = project.status === 'approved';
+  const previousHeroUrls = newPhotoUrls
+    ? db.prepare('SELECT image_url FROM portfolio_photos WHERE project_id=? AND use_as_profile_photo=1').all(project.id).map(r => r.image_url)
+    : [];
+  db.transaction(() => {
+    db.prepare(`UPDATE portfolio_projects SET title=?, description=?, status=?, reject_reason=NULL, reviewed_at=CASE WHEN ? THEN NULL ELSE reviewed_at END WHERE id=?`)
+      .run(title.trim(), description ? description.trim() : null, needsReview ? 'pending' : project.status, needsReview ? 1 : 0, project.id);
+    if (newPhotoUrls) {
+      db.prepare('DELETE FROM portfolio_photos WHERE project_id=?').run(project.id);
+      const insertPhoto = db.prepare('INSERT INTO portfolio_photos (id, project_id, image_url, sort_order, use_as_profile_photo) VALUES (?,?,?,?,?)');
+      newPhotoUrls.forEach((url, i) => insertPhoto.run(randomUUID(), project.id, url, i, profilePhotoFlags[i] ? 1 : 0));
+      // 사진을 통째로 교체했으면, 예전 사진 중 대표사진으로 이미 반영돼있던 것들은 상세페이지에서도 함께 내린다.
+      if (previousHeroUrls.length) {
+        const partnerRow = db.prepare('SELECT portfolio_images FROM partners WHERE id=?').get(req.user.sub);
+        let hero = []; try { hero = JSON.parse((partnerRow && partnerRow.portfolio_images) || '[]'); } catch (e) { hero = []; }
+        if (Array.isArray(hero) && hero.length) {
+          const filtered = hero.filter(u => !previousHeroUrls.includes(u));
+          if (filtered.length !== hero.length) db.prepare('UPDATE partners SET portfolio_images=? WHERE id=?').run(JSON.stringify(filtered), req.user.sub);
+        }
+      }
+    }
+  })();
+  const updated = db.prepare('SELECT * FROM portfolio_projects WHERE id=?').get(project.id);
+  const getPhotos = db.prepare('SELECT id, image_url, use_as_profile_photo FROM portfolio_photos WHERE project_id=? ORDER BY sort_order');
+  res.json({ success: true, data: { ...updated, photos: getPhotos.all(project.id).map(r => ({ id: r.id, url: r.image_url, useAsProfilePhoto: !!r.use_as_profile_photo })) } });
+});
+
+// 신규(사용자요청 — "관리" 기능): 포트폴리오 프로젝트를 실제로 삭제한다. 기존 화면의 "삭제" 버튼은
+// 서버 호출 자체가 없어 새로고침하면 되살아나는 가짜 삭제였음(전수조사 발견).
+app.delete('/api/partners/me/portfolio/:id', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 삭제할 수 있습니다' } });
+  const project = db.prepare('SELECT * FROM portfolio_projects WHERE id=?').get(req.params.id);
+  if (!project) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '포트폴리오를 찾을 수 없습니다' } });
+  if (project.partner_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인 포트폴리오만 삭제할 수 있습니다' } });
+  const heroUrls = db.prepare('SELECT image_url FROM portfolio_photos WHERE project_id=? AND use_as_profile_photo=1').all(project.id).map(r => r.image_url);
+  db.transaction(() => {
+    db.prepare('DELETE FROM portfolio_photos WHERE project_id=?').run(project.id);
+    db.prepare('DELETE FROM portfolio_projects WHERE id=?').run(project.id);
+    if (heroUrls.length) {
+      const partnerRow = db.prepare('SELECT portfolio_images FROM partners WHERE id=?').get(req.user.sub);
+      let hero = []; try { hero = JSON.parse((partnerRow && partnerRow.portfolio_images) || '[]'); } catch (e) { hero = []; }
+      if (Array.isArray(hero) && hero.length) {
+        const filtered = hero.filter(u => !heroUrls.includes(u));
+        if (filtered.length !== hero.length) db.prepare('UPDATE partners SET portfolio_images=? WHERE id=?').run(JSON.stringify(filtered), req.user.sub);
+      }
+    }
+  })();
+  res.json({ success: true, data: { message: '삭제되었습니다' } });
 });
 
 // 결함정리(2026-09, 완공사례 피드 운영검수 게이트): 운영자 승인(status='approved') 전에는
@@ -2966,8 +3129,22 @@ app.patch('/api/ads/reservations/:id/content', authRequired, portfolioUploadLimi
   }
   if (!tagline || tagline.length > AD_TAGLINE_MAX) return validationError(res, `한 줄 문구는 1~${AD_TAGLINE_MAX}자 이내로 입력해주세요`);
   const photoFile = parsed.files.find(f => f.field === 'photo');
-  if (!photoFile && !reservation.image_url) return validationError(res, '대표 사진을 올려주세요');
-  let uploaded = null;
+  // 신규(사용자요청 — 포트폴리오 사진을 광고 이미지로 재사용): 새로 업로드하지 않고 이미 갖고 있는
+  // 대표 시공사진/포트폴리오 사진 URL을 그대로 광고 이미지로 쓸 수 있게 한다. 본인 소유가 아닌 URL을
+  // 함부로 지정하지 못하도록 대표 시공사진(portfolio_images)과 완공사례 사진(portfolio_photos, 파트너 소유
+  // 프로젝트에 한함) 두 곳 중 하나에 실제로 존재하는지 검증한다.
+  const reuseImageUrl = isNonEmptyString(parsed.fields.reuseImageUrl, 2000) ? parsed.fields.reuseImageUrl.trim() : null;
+  if (!photoFile && reuseImageUrl) {
+    const partnerRow = db.prepare('SELECT portfolio_images FROM partners WHERE id=?').get(req.user.sub);
+    let heroUrls = []; try { heroUrls = JSON.parse((partnerRow && partnerRow.portfolio_images) || '[]'); } catch (e) { heroUrls = []; }
+    const ownsHero = Array.isArray(heroUrls) && heroUrls.includes(reuseImageUrl);
+    const ownsProjectPhoto = !!db.prepare(`SELECT pp.id FROM portfolio_photos pp
+      JOIN portfolio_projects proj ON proj.id = pp.project_id
+      WHERE proj.partner_id = ? AND pp.image_url = ?`).get(req.user.sub, reuseImageUrl);
+    if (!ownsHero && !ownsProjectPhoto) return validationError(res, '본인의 사진만 광고 이미지로 사용할 수 있습니다');
+  }
+  if (!photoFile && !reuseImageUrl && !reservation.image_url) return validationError(res, '대표 사진을 올려주세요');
+  let uploaded = reuseImageUrl || null;
   if (photoFile) {
     if (photoFile.data.length === 0 || photoFile.data.length > 10 * 1024 * 1024) return validationError(res, '사진은 최대 10MB까지 올릴 수 있습니다');
     const detected = detectPortfolioImage(photoFile);
