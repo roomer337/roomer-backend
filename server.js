@@ -1,546 +1,4875 @@
-const { spawn } = require('child_process');
-const path = require('path');
-const os = require('os');
+// 루머 ROOMER 백엔드 프로토타입
+// 프로토타입 화면(인별그램018.html)의 핵심 기능 일부를 실제로 동작하는 API로 구현한 것입니다.
+// 실서비스에서는: SQLite→PostgreSQL, JWT시크릿 환경변수화, 소셜로그인 실제 OAuth 연동 필요
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
-const Database = require('better-sqlite3');
+const bcrypt = require('bcryptjs');
+const { randomUUID, createHmac } = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+const { WebSocketServer } = require('ws');
+const objectStorage = require('./storage');
+const db = require('./db');
+const swaggerUi = require('swagger-ui-express');
+const QRCode = require('qrcode');
+const webpush = require('web-push');
+const openapiPath = path.join(__dirname,'openapi.json');
+const openapiSpec = fs.existsSync(openapiPath) ? JSON.parse(fs.readFileSync(openapiPath,'utf8')) : { openapi:'3.0.0', info:{ title:'ROOMER API', version:'1.0.0' }, paths:{} };
 
-const root = '/home/claude/roomer';
-const dbPath = path.join(os.tmpdir(), `roomer-smoke-${process.pid}.db`);
-const secret = 'roomer-smoke-secret-at-least-thirty-two-characters';
-const port = 4222;
-const server = spawn(process.execPath, ['server.js'], {
-  cwd: root,
-  // GEO_TEST_MODE=true: 실제 카카오 API를 호출하지 않는 결정론적 좌표→지역 스텁을 켠다(ALIGO_TEST_MODE와
-  // 동일한 취지 — 이 값은 운영 환경에서는 절대 설정하지 않고, 여기서만 좌표변환 앞뒤 로직을 검증하기 위해 사용)
-  env: { ...process.env, PORT: String(port), DB_PATH: dbPath, JWT_SECRET: secret, NODE_ENV: 'test', ENABLE_DEV_TEST_ROUTES: 'false', GEO_TEST_MODE: 'true' },
-  stdio: ['ignore', 'pipe', 'pipe']
-});
-server.stdout.on('data', d => process.stdout.write('[srv] ' + d));
-server.stderr.on('data', d => process.stderr.write('[srv-err] ' + d));
-
-function token(sub, role) { return jwt.sign({ sub, role }, secret, { expiresIn: '10m' }); }
-async function api(method, url, body, auth) {
-  const r = await fetch(`http://127.0.0.1:${port}${url}`, {
-    method, headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...(auth ? { authorization: `Bearer ${auth}` } : {}) },
-    body: body ? JSON.stringify(body) : undefined
-  });
-  let json; try { json = await r.json(); } catch (e) { json = null; }
-  return { status: r.status, json };
-}
-// 신규(2026-09, 광고 예약형 재설계 스모크): PATCH /api/ads/reservations/:id/content는 multipart/form-data라
-// tests/integration.js의 buildMultipart/apiMultipart 패턴을 그대로 이식(POST 전용이던 걸 method 인자로 일반화).
-function buildMultipart(fields, fileField, filename, mime, data) {
-  const boundary = '----smoke' + Date.now();
-  let parts = [];
-  for (const [k, v] of Object.entries(fields)) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
-  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="${filename}"\r\nContent-Type: ${mime}\r\n\r\n`));
-  parts.push(data); parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-  return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
-}
-// 신규(사용자요청 — 포트폴리오→상세페이지 반영 테스트용): buildMultipart는 파일 1개만 지원하므로,
-// 여러 장(photos[])을 한 번에 올려야 하는 포트폴리오 업로드 테스트를 위해 다중 파일 버전을 추가한다.
-function buildMultipartMulti(fields, files) {
-  const boundary = '----smoke' + Date.now() + Math.random().toString(36).slice(2);
-  let parts = [];
-  for (const [k, v] of Object.entries(fields)) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
-  for (const f of files) {
-    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${f.field}"; filename="${f.filename}"\r\nContent-Type: ${f.mime}\r\n\r\n`));
-    parts.push(f.data); parts.push(Buffer.from('\r\n'));
-  }
-  parts.push(Buffer.from(`--${boundary}--\r\n`));
-  return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
-}
-async function apiMultipart(method, url, multipart, auth) {
-  const r = await fetch(`http://127.0.0.1:${port}${url}`, {
-    method, headers: { 'content-type': multipart.contentType, ...(auth ? { authorization: `Bearer ${auth}` } : {}) }, body: multipart.body
-  });
-  let json; try { json = await r.json(); } catch (e) { json = null; }
-  return { status: r.status, json };
-}
-const JPEG_HEADER = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-function dateOnlyStr(d) { return d.toISOString().slice(0, 10); }
-function addDaysStr(n) { const d = new Date(); d.setUTCDate(d.getUTCDate() + n); return dateOnlyStr(d); }
-async function waitReady() {
-  for (let i = 0; i < 50; i++) { try { const r = await fetch(`http://127.0.0.1:${port}/`); if (r.ok || r.status === 404) return; } catch (e) {} await new Promise(r => setTimeout(r, 100)); }
-  throw new Error('server did not start');
-}
-let pass = 0, fail = 0;
-function check(name, cond, detail) {
-  if (cond) { pass++; console.log('OK  ', name); }
-  else { fail++; console.log('FAIL', name, JSON.stringify(detail)); }
+// 신규(사용자요청 — 푸시알림 인프라 완성): VAPID 키가 Render 환경변수에 설정된 경우에만 실제로
+// 활성화되고, 없으면 조용히 비활성 상태로 남아 서버 부팅이나 다른 기능에 영향을 주지 않는다.
+const PUSH_ENABLED = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+if (PUSH_ENABLED) {
+  webpush.setVapidDetails(
+    process.env.VAPID_SUBJECT || 'mailto:roomer0829@naver.com',
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+  );
 }
 
-(async () => {
-  try {
-    await waitReady();
-    const db = new Database(dbPath);
-    db.exec(`INSERT INTO users(id,social_provider,social_id,nickname,cash_balance) VALUES ('u1','qa','u1','소비자1',0);`);
-    const insertPartner = db.prepare(`INSERT INTO partners(id,login_provider,login_id,business_name,business_reg_number,ceo_name,tier,region,doc_image_url,verify_status,credit_balance,approved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`);
-    insertPartner.run('p1', 'email', 'p1@test.dev', '승인업체1(부분공사가능업체)', '111-11-11111', '대표1', '부분공사가능업체', '서울 강남구', 'file', 'approved', 0);
-    insertPartner.run('p2', 'email', 'p2@test.dev', '승인업체2(광고주)', '222-22-22222', '대표2', '면허 파트너', '서울 송파구', 'file', 'approved', 500000);
-    insertPartner.run('p3', 'email', 'p3@test.dev', '노쇼업체', '333-33-33333', '대표3', '면허 파트너', '서울 마포구', 'file', 'approved', 0);
-    const { randomUUID } = require('crypto');
-    const roomId = randomUUID();
-    db.prepare(`INSERT INTO chat_rooms (id, consumer_id, partner_id) VALUES (?,?,?)`).run(roomId, 'u1', 'p3');
-    const noshowLog = JSON.stringify([
-      { reportedBy: 'consumer', reporterId: 'u1', reason: '연락두절', at: new Date(Date.now() - 200000).toISOString() },
-      { reportedBy: 'consumer', reporterId: 'u1', reason: '재차 노쇼', at: new Date().toISOString() }
-    ]);
-    db.prepare(`INSERT INTO meas_jobs (room_id, noshow_log) VALUES (?,?)`).run(roomId, noshowLog);
-    db.close();
-
-    const p1 = token('p1', 'partner'), p2 = token('p2', 'partner'), admin = token('admin1', 'admin_super');
-    let r;
-
-    // ---- 등급 승급 심사 (부분공사가능업체 → 인증사업자: 면허번호 불필요) ----
-    r = await api('POST', '/api/partners/me/tier-upgrade', { docName: '하자보증보험 가입증서' }, p1);
-    check('승급신청 성공(인증사업자, 면허 불필요)', r.status === 200 && r.json.success && r.json.data.toTier === '인증사업자', r);
-    const tierId = r.json.data.id;
-
-    r = await api('POST', '/api/partners/me/tier-upgrade', { licenseNumber: 'x' }, p1);
-    check('중복 승급신청 차단(409)', r.status === 409, r);
-
-    r = await api('GET', '/api/partners/me/tier-upgrade', null, p1);
-    check('본인 승급신청 조회', r.status === 200 && r.json.data.status === 'admin_review', r);
-
-    r = await api('GET', '/api/admin/tier-upgrades', null, admin);
-    check('관리자 승급 큐에 노출', r.status === 200 && r.json.data.some(x => x.id === tierId && x.partnerName.includes('승인업체1')), r);
-
-    r = await api('GET', '/api/admin/dashboard/counts', null, admin);
-    check('대시보드 tier 카운트=1', r.status === 200 && r.json.data.tier === 1, r);
-
-    r = await api('PATCH', `/api/admin/tier-upgrades/${tierId}/approve`, {}, admin);
-    check('승급 승인', r.status === 200 && r.json.data.status === 'approved', r);
-
-    r = await api('GET', '/api/partners/me', null, p1);
-    check('승인 후 partner.tier 갱신', r.status === 200 && r.json.data.tier === '인증사업자', r);
-
-    r = await api('PATCH', `/api/admin/tier-upgrades/${tierId}/approve`, {}, admin);
-    check('이미 심사완료 재승인 차단(409)', r.status === 409, r);
-
-    // ---- 인증사업자 → 면허 파트너: 면허번호 필수 ----
-    r = await api('POST', '/api/partners/me/tier-upgrade', {}, p1);
-    check('면허번호 없이 면허파트너 승급신청 시 400', r.status === 400, r);
-    r = await api('POST', '/api/partners/me/tier-upgrade', { licenseNumber: '실내건축 제1234호', issuer: '서울특별시청' }, p1);
-    check('면허번호 포함 승급신청 성공', r.status === 200 && r.json.data.toTier === '면허 파트너', r);
-    const tierId2 = r.json.data.id;
-    r = await api('PATCH', `/api/admin/tier-upgrades/${tierId2}/reject`, { reason: '면허 진위 확인 불가' }, admin);
-    check('승급 반려', r.status === 200 && r.json.data.status === 'rejected', r);
-    r = await api('GET', '/api/partners/me', null, p1);
-    check('반려시 tier 변경 없음(계속 인증사업자)', r.status === 200 && r.json.data.tier === '인증사업자', r);
-
-    // ---- 광고 크레딧 충전 (TOSS_CLIENT_KEY 미설정 상태이므로 503만 확인) ----
-    r = await api('POST', '/api/credit/topup', { amount: 100000 }, p2);
-    check('크레딧 충전(결제키 미설정 → 503)', r.status === 503, r);
-
-    // ---- 광고자리 예약(달력형, 지역당 6자리, 관리자 승인 없음) — p2는 credit_balance 500000, region 서울 송파구 ----
-    r = await api('GET', '/api/ads/availability?region=서울 송파구&days=10', null, p2);
-    check('광고 달력 조회(지역당 6자리, 오늘 제외 내일부터)', r.status === 200 && r.json.data.capacity === 6 && r.json.data.calendar.length === 10 && r.json.data.calendar[0].available === 6 && r.json.data.pricePerDay === 9900, r);
-
-    const adTomorrow = addDaysStr(1);
-    r = await api('POST', '/api/ads/reservations', { region: '서울 송파구', startDate: dateOnlyStr(new Date()), endDate: adTomorrow }, p2);
-    check('오늘 날짜로 예약 시도는 거부(오늘 결제하면 내일부터)', r.status === 400, r);
-
-    const adStart = addDaysStr(1), adEnd = addDaysStr(3); // 3일 예약
-    r = await api('POST', '/api/ads/reservations', { region: '서울 송파구', startDate: adStart, endDate: adEnd }, p2);
-    check('광고자리 예약 성공(3일, 관리자 승인 없이 즉시 확정)', r.status === 200 && r.json.data.days === 3 && r.json.data.cost === 29700 && r.json.data.pricePerDay === 9900, r);
-    const adId = r.json.data.id;
-
-    r = await api('GET', '/api/ads/mine', null, p2);
-    check('내 광고 목록 조회(결제 직후 상태=pending_content)', r.status === 200 && r.json.data.length === 1 && r.json.data[0].status === 'pending_content', r);
-
-    r = await api('GET', '/api/ads/active?region=서울 송파구');
-    check('내용(사진·문구) 미등록 광고는 공개조회에 안 잡힘(허수 데이터 금지 원칙)', r.status === 200 && r.json.data.length === 0, r);
-
-    // "정해진 틀" 등록: 사진(JPEG 매직바이트) + 24자 이내 문구 + 키워드 2개 — 관리자 승인 없이 이 요청만으로 자동노출 확정
-    let mp = buildMultipart({ tagline: '정직한 시공, 루머 인증업체', keywords: JSON.stringify(['24시간상담', '무료견적']) }, 'photo', 'ad.jpg', 'image/jpeg', JPEG_HEADER);
-    r = await apiMultipart('PATCH', `/api/ads/reservations/${adId}/content`, mp, p2);
-    check('광고 내용 등록 성공(사진+문구+키워드, 관리자 승인 없이 자동완료)', r.status === 200 && r.json.data.tagline === '정직한 시공, 루머 인증업체' && r.json.data.keywords.length === 2 && !!r.json.data.imageUrl && r.json.data.heroSlideIndex === 0, r);
-
-    mp = buildMultipart({ tagline: 'a'.repeat(25), keywords: '[]' }, 'photo', 'ad.jpg', 'image/jpeg', JPEG_HEADER);
-    r = await apiMultipart('PATCH', `/api/ads/reservations/${adId}/content`, mp, p2);
-    check('한 줄 문구 24자 초과는 "정해진 틀" 위반으로 거부', r.status === 400, r);
-
-    r = await api('GET', '/api/ads/mine', null, p2);
-    check('내용 등록 후 상태=scheduled(시작일 전)', r.status === 200 && r.json.data[0].status === 'scheduled' && r.json.data[0].remainingDays >= 0, r);
-
-    r = await api('GET', '/api/admin/ads', null, admin);
-    check('관리자 전체광고 조회(승인/반려 없이 현황만)', r.status === 200 && r.json.data.length === 1 && r.json.data[0].partnerName.includes('광고주') && r.json.data[0].status === 'scheduled', r);
-
-    r = await api('GET', '/api/credit/ledger/mine', null, p2);
-    check('내 크레딧 원장 조회(광고비 소진 1건)', r.status === 200 && r.json.data.length === 1 && r.json.data[0].type === 'ad_purchase', r);
-
-    r = await api('GET', '/api/partners/me', null, p2);
-    const balanceAfterAd = r.json.data.credit_balance;
-    check('광고비 차감 확인(500000-29700, 9900원×3일)', balanceAfterAd === 500000 - 29700, { balanceAfterAd });
-
-    // 지역당 6자리 정원 초과 방지: 같은 지역·같은 날짜에 6건 예약해서 정원을 정확히 채운 뒤, 7번째는 차단돼야 함
-    const capStart = addDaysStr(10), capEnd = addDaysStr(10);
-    for (let i = 0; i < 6; i++) {
-      r = await api('POST', '/api/ads/reservations', { region: '서울 송파구', startDate: capStart, endDate: capEnd }, p2);
-      check(`정원 채우기 예약 ${i + 1}/6 성공`, r.status === 200, r);
+const app = express();
+// ===== 1-3(팀장 지시): 보안 정적점검 반영 =====
+// 결함수정(사용자가 실제 폰에서 발견한 치명적 버그): helmet()의 기본 CSP(Content-Security-Policy)가
+// 인라인 스크립트(<script>...</script>)와 인라인 이벤트핸들러(onclick="...")를 전부 차단해서,
+// 화면은 보이지만 모든 버튼이 완전히 먹통이 되던 문제 → 루머03.html의 구조(인라인 스크립트/onclick 대량 사용)에 맞게 CSP 완화
+app.use(helmet({
+  // 카카오 우편번호 팝업이 선택한 주소를 열어준 ROOMER 창으로 돌려줄 수 있게 한다.
+  // 기본값 same-origin은 검색창은 열리지만 oncomplete 콜백이 적용되지 않는 원인이다.
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      // 카카오 우편번호 서비스의 현재 공식 CDN을 허용한다. 구 daumcdn은 기존 배포 호환용으로 유지한다.
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://t1.kakaocdn.net", "https://t1.daumcdn.net", "https://cdn.portone.io", "https://js.tosspayments.com"],
+      scriptSrcAttr: ["'unsafe-inline'"], // onclick="..." 같은 인라인 이벤트핸들러 허용(이 프로토타입 전체가 이 방식으로 만들어짐)
+      styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+      imgSrc: ["'self'", "data:", "https:"],
+      // 팝업 차단 영향을 받지 않는 카카오 우편번호 화면 내 embed 방식을 허용한다.
+      // 결함정리(사용자요청 — 우편번호 팝업 iframe이 깨진 이미지로 뜨는 문제 발견·수정): 카카오가
+      // 2026년 3월 우편번호 서비스 도메인을 postcode.map.kakao.com으로 이관(자동 리다이렉트 적용)
+      // 했는데, CSP에 신규 도메인이 없어서 iframe이 차단되고 있었음. 신규 도메인 추가.
+      // 결함수정(사용자 실제 발견 — 업체 상세 페이지 위치지도가 "maps.google.com이(가) 차단되었습니다
+      // ERR_BLOCKED_BY_CSP"로 깨짐): #cprofile-map-iframe이 구글맵 embed(maps.google.com)를 쓰는데
+      // CSP frameSrc에 이 도메인이 아예 없어서 임베드 자체가 브라우저 레벨에서 차단되고 있었음.
+      frameSrc: ["'self'", "https://postcode.map.kakao.com", "https://postcode.map.daum.net", "https://t1.kakaocdn.net", "https://t1.daumcdn.net", "https://js.tosspayments.com", "https://*.tosspayments.com", "https://maps.google.com", "https://www.google.com"],
+      fontSrc: ["'self'", "https://cdn.jsdelivr.net", "data:"],
+      connectSrc: ["'self'", "https:"],
+      mediaSrc: ["'self'", "data:", "blob:"]
     }
-    r = await api('POST', '/api/ads/reservations', { region: '서울 송파구', startDate: capStart, endDate: capEnd }, p2);
-    check('지역당 6자리 정원이 다 찬 뒤 7번째 예약은 차단', r.status === 400 && r.json.error.code === 'CAPACITY_FULL', r);
-
-    // ---- 광고 장바구니(배치) 결제: "실반영" 확인 — 슬롯이 실제로 즉시 줄어드는지 ----
-    // (사용자요청): 여러 자리를 담아 한 번에 결제했을 때, 결제 직후 잔여 정원 조회가 곧바로 반영돼야 하고,
-    // 배치 중간에 정원을 넘는 항목이 하나라도 있으면 전부 롤백(부분결제 없음)돼야 한다.
-    r = await api('GET', '/api/partners/me', null, p2);
-    const balanceBeforeBatch = r.json.data.credit_balance;
-    const batchDay = addDaysStr(20);
-    r = await api('POST', '/api/ads/reservations/batch', { items: [
-      { region: '서울 서초구', startDate: batchDay, endDate: batchDay },
-      { region: '서울 서초구', startDate: batchDay, endDate: batchDay }
-    ] }, p2);
-    check('장바구니 배치결제: 같은 지역·같은 날짜 2건 동시 예약 성공', r.status === 200 && r.json.data.items.length === 2 && r.json.data.totalCost === 9900 * 2, r);
-
-    r = await api('GET', `/api/ads/availability?region=${encodeURIComponent('서울 서초구')}&days=25`, null, p2);
-    const dayInfo = r.json.data.calendar.find(d => d.date === batchDay);
-    check('실반영 확인: 배치결제 직후 그 날짜의 잔여자리가 6→4로 즉시 감소', dayInfo && dayInfo.used === 2 && dayInfo.available === 4, dayInfo);
-
-    r = await api('GET', '/api/partners/me', null, p2);
-    const balanceAfterBatch = r.json.data.credit_balance;
-    check('배치결제 금액이 크레딧 잔액에 정확히 반영됨', balanceAfterBatch === balanceBeforeBatch - 9900 * 2, { balanceAfterBatch, expected: balanceBeforeBatch - 9900 * 2 });
-
-    // 이미 2자리를 쓴 상태에서 5건을 한 배치로 더 담으면(2+5=7 > 6) 중간에 막혀야 하고, 전부 롤백돼야 한다
-    r = await api('POST', '/api/ads/reservations/batch', { items: [
-      { region: '서울 서초구', startDate: batchDay, endDate: batchDay },
-      { region: '서울 서초구', startDate: batchDay, endDate: batchDay },
-      { region: '서울 서초구', startDate: batchDay, endDate: batchDay },
-      { region: '서울 서초구', startDate: batchDay, endDate: batchDay },
-      { region: '서울 서초구', startDate: batchDay, endDate: batchDay }
-    ] }, p2);
-    check('배치 중 정원을 넘는 항목이 있으면 배치 전체가 차단됨', r.status === 400 && r.json.error.code === 'CAPACITY_FULL', r);
-
-    r = await api('GET', `/api/ads/availability?region=${encodeURIComponent('서울 서초구')}&days=25`, null, p2);
-    const dayInfoAfterFail = r.json.data.calendar.find(d => d.date === batchDay);
-    check('실패한 배치는 부분반영 없이 전부 롤백됨(잔여자리 그대로 4)', dayInfoAfterFail && dayInfoAfterFail.used === 2, dayInfoAfterFail);
-
-    r = await api('GET', '/api/partners/me', null, p2);
-    check('롤백된 배치는 크레딧도 그대로(이중차감 없음)', r.json.data.credit_balance === balanceAfterBatch, r);
-
-    r = await api('POST', '/api/ads/reservations/batch', { items: new Array(11).fill({ region: '서울 서초구', startDate: batchDay, endDate: batchDay }) }, p2);
-    check('장바구니는 최대 10건까지만 허용', r.status === 400, r);
-
-    // ---- 포트폴리오 → 상세페이지 대표사진 반영 ----
-    // (사용자요청): 포트폴리오 사진 업로드 시 "상세페이지 대표사진으로도 쓰기"를 체크한 사진만,
-    // 관리자가 그 프로젝트를 승인하는 시점에 partners.portfolio_images에 반영돼야 한다.
-    let pmp = buildMultipartMulti(
-      { title: '거실 리모델링 사례', description: '깔끔한 화이트톤 시공', useAsProfilePhoto: JSON.stringify([true, false]) },
-      [
-        { field: 'photos', filename: 'p1.jpg', mime: 'image/jpeg', data: JPEG_HEADER },
-        { field: 'photos', filename: 'p2.jpg', mime: 'image/jpeg', data: JPEG_HEADER }
-      ]
-    );
-    r = await apiMultipart('POST', '/api/partners/me/portfolio', pmp, p2);
-    check('포트폴리오 등록 성공(사진 2장, 첫번째만 대표사진 체크)', r.status === 200 && r.json.data.photos.length === 2, r);
-    const portfolioProjectId = r.json.data.id;
-
-    r = await api('GET', '/api/partners/me', null, p2);
-    const profileImagesBeforeApprove = JSON.parse(r.json.data.portfolio_images || '[]');
-    check('승인 전에는 대표사진에 아직 반영 안 됨(미승인 사진 유출 방지)', profileImagesBeforeApprove.length === 0, profileImagesBeforeApprove);
-
-    r = await api('PUT', `/api/admin/portfolio/${portfolioProjectId}/approve`, null, admin);
-    check('관리자 포트폴리오 승인 성공', r.status === 200, r);
-
-    r = await api('GET', '/api/partners/me', null, p2);
-    const profileImagesAfterApprove = JSON.parse(r.json.data.portfolio_images || '[]');
-    check('승인 즉시 체크했던 대표사진(1장)만 상세페이지 대표사진에 자동 반영됨', profileImagesAfterApprove.length === 1, profileImagesAfterApprove);
-
-    // ---- 어뷰징(반복 노쇼) ----
-    r = await api('GET', '/api/admin/abuse/queue', null, admin);
-    check('노쇼 2회 업체가 어뷰징 큐에 노출', r.status === 200 && r.json.data.some(x => x.roomId === roomId && x.partnerName.includes('노쇼업체') && x.noshowCount === 2), r);
-
-    r = await api('GET', '/api/admin/dashboard/counts', null, admin);
-    check('대시보드 abuse 카운트=1', r.status === 200 && r.json.data.abuse === 1, r);
-
-    r = await api('POST', `/api/admin/abuse/${roomId}/action`, { action: 'suspend', note: '반복 노쇼 확인됨' }, admin);
-    check('어뷰징 정지 조치', r.status === 200 && r.json.data.action === 'suspend', r);
-
-    r = await api('GET', '/api/admin/abuse/queue', null, admin);
-    check('조치 후 큐에서 제외', r.status === 200 && !r.json.data.some(x => x.roomId === roomId), r);
-
-    r = await api('POST', '/api/otp/email/verify', { email: 'p3@test.dev', code: '000000', forPartner: true, partnerMode: 'login' });
-    // 이 호출은 OTP 미발급이라 400이 나겠지만, 그보다 먼저 partner_not_found/suspended 체크가 오면 안됨(로그인 로직상 OTP 검증이 선행되므로 400 OTP_NOT_FOUND가 정상)
-    check('정지업체 로그인 시도(OTP 라우트 정상 응답)', r.status === 400, r);
-
-    r = await api('GET', '/api/partners/search?region=' + encodeURIComponent('서울 마포구'));
-    check('정지된 업체는 검색에서 제외', r.status === 200 && !r.json.data.some(x => x.id === 'p3'), r);
-
-    // authRequired 미들웨어 즉시차단 확인: p3로 서명한 토큰으로 인증필요 API 호출
-    const p3 = token('p3', 'partner');
-    r = await api('GET', '/api/partners/me', null, p3);
-    check('정지된 업체 토큰 즉시 차단(403 PARTNER_SUSPENDED)', r.status === 403 && r.json.error.code === 'PARTNER_SUSPENDED', r);
-
-    r = await api('PATCH', '/api/admin/partners/p3/unsuspend', {}, admin);
-    check('정지 해제', r.status === 200, r);
-    r = await api('GET', '/api/partners/me', null, p3);
-    check('정지 해제 후 다시 정상 접근', r.status === 200, r);
-
-    // ---- 포트폴리오 게시 승인(신규: "완공검수 승인" 화면 실연동) ----
-    const db2 = new Database(dbPath);
-    const projId = randomUUID();
-    db2.prepare("INSERT INTO portfolio_projects (id, partner_id, title, description, status) VALUES (?,?,?,?,'pending')")
-      .run(projId, 'p1', '거실 리모델링', '화이트톤 거실 시공 사례');
-    db2.close();
-
-    r = await api('GET', '/api/portfolio/feed', null);
-    check('승인 전 포트폴리오는 피드에 노출 안됨', r.status === 200 && !r.json.data.some(x => x.id === projId), r);
-
-    r = await api('GET', '/api/partners/p1/portfolio', null);
-    check('승인 전 포트폴리오는 업체 상세에도 노출 안됨', r.status === 200 && !r.json.data.some(x => x.id === projId), r);
-
-    r = await api('GET', '/api/admin/portfolio/pending', null, admin);
-    check('관리자 포트폴리오 대기열에 노출', r.status === 200 && r.json.data.some(x => x.id === projId && x.business_name.includes('승인업체1')), r);
-
-    r = await api('PUT', `/api/admin/portfolio/${projId}/approve`, {}, admin);
-    check('포트폴리오 승인', r.status === 200, r);
-
-    r = await api('GET', '/api/admin/portfolio/pending', null, admin);
-    check('승인 후 대기열에서 제외', r.status === 200 && !r.json.data.some(x => x.id === projId), r);
-
-    r = await api('GET', '/api/portfolio/feed', null);
-    check('승인 후 피드에 노출', r.status === 200 && r.json.data.some(x => x.id === projId), r);
-
-    r = await api('GET', '/api/partners/p1/portfolio', null);
-    check('승인 후 업체 상세에도 노출', r.status === 200 && r.json.data.some(x => x.id === projId), r);
-
-    const projId2 = randomUUID();
-    const db3 = new Database(dbPath);
-    db3.prepare("INSERT INTO portfolio_projects (id, partner_id, title, description, status) VALUES (?,?,?,?,'pending')")
-      .run(projId2, 'p1', '주방 리모델링', '대면형 아일랜드 주방 시공');
-    db3.close();
-    r = await api('PUT', `/api/admin/portfolio/${projId2}/reject`, { reason: '사진 품질 미달' }, admin);
-    check('포트폴리오 반려', r.status === 200, r);
-    r = await api('GET', '/api/portfolio/feed', null);
-    check('반려건은 피드에 노출 안됨', r.status === 200 && !r.json.data.some(x => x.id === projId2), r);
-    r = await api('PUT', `/api/admin/portfolio/${projId2}/reject`, { reason: '' }, admin);
-    check('빈 반려사유는 거부(400)', r.status === 400, r);
-
-    // ===== 신규(2026-09, 결제기능 전수조사 후속): 소비자 포인트충전·결제수단등록·AI감리 결제 실연동 스모크 =====
-    // TOSS_CLIENT_KEY/TOSS_SECRET_KEY가 없는 테스트 환경이라 실제 토스 승인까지는 검증할 수 없지만,
-    // (1) 결제가 필요한 순간 정확히 503(PAYMENT_NOT_CONFIGURED)으로 막히는지 — 예전처럼 가짜로 성공처리되지 않는지,
-    // (2) 크레딧만으로 전액결제가 되는 경로는 실제로 DB를 원자적으로 반영하는지,
-    // (3) 권한(본인/역할) 검증이 정확한지를 확인한다.
-    const db4 = new Database(dbPath);
-    db4.prepare("UPDATE users SET cash_balance=45000 WHERE id='u1'").run();
-    db4.prepare("INSERT INTO users(id,social_provider,social_id,nickname,cash_balance) VALUES ('u2x','qa','u2x','타인소비자',0)").run();
-    const contractId = randomUUID();
-    db4.prepare(`INSERT INTO contracts (id, consumer_id, partner_id, fee_rate_snapshot, status) VALUES (?,?,?,?,?)`)
-      .run(contractId, 'u1', 'p1', 0.05, 'confirmed');
-    db4.close();
-    const u1 = token('u1', 'consumer'), u2x = token('u2x', 'consumer');
-
-    // ---- 소비자 포인트 충전(결제키 미설정 → 503) / 권한 검증 ----
-    r = await api('POST', '/api/points/topup', { amount: 100000 }, u1);
-    check('포인트 충전(결제키 미설정 → 503)', r.status === 503, r);
-    r = await api('POST', '/api/points/topup', { amount: 100000 }, p1);
-    check('포인트 충전은 소비자 전용(파트너 403)', r.status === 403, r);
-    r = await api('POST', '/api/points/topup', { amount: 1000 }, u1);
-    check('포인트 충전 최소금액 미만 400', r.status === 400, r);
-
-    // ---- 결제수단(카드) 등록(결제키 미설정 → 503) / 권한 검증 ----
-    r = await api('POST', '/api/payment-methods/register', {}, u1);
-    check('결제수단 등록(결제키 미설정 → 503)', r.status === 503, r);
-    r = await api('POST', '/api/payment-methods/register', {}, p1);
-    check('결제수단 등록은 소비자 전용(파트너 403)', r.status === 403, r);
-    r = await api('GET', '/api/payment-methods', null, u1);
-    check('결제수단 목록 조회(빈 배열)', r.status === 200 && Array.isArray(r.json.data) && r.json.data.length === 0, r);
-    r = await api('DELETE', '/api/payment-methods/nope', null, u1);
-    check('존재하지않는 결제수단 삭제 404', r.status === 404, r);
-
-    // ---- AI 감리(사진감리) 결제: 보유크레딧(45000) >= 가격(40000) → 크레딧 전액결제(즉시, 실제 DB원자처리) ----
-    r = await api('POST', '/api/inspections', { contractId, plan: 'photo', photoCount: 5 }, u1);
-    check('사진감리 신청 성공(가격 40000)', r.status === 200 && r.json.data.price === 40000 && r.json.data.status === 'unpaid', r);
-    const inspId1 = r.json.data.id;
-
-    r = await api('POST', `/api/inspections/${inspId1}/pay`, {}, p1);
-    check('감리결제는 계약 소비자 본인만(파트너 403)', r.status === 403, r);
-    r = await api('POST', `/api/inspections/${inspId1}/pay`, {}, u2x);
-    check('감리결제는 계약 소비자 본인만(타인 403)', r.status === 403, r);
-
-    r = await api('POST', `/api/inspections/${inspId1}/pay`, { useCreditFull: true }, u1);
-    check('크레딧 전액결제 성공(즉시 paid)', r.status === 200 && r.json.data.status === 'paid' && r.json.data.creditUsed === 40000 && r.json.data.remainderAmount === 0, r);
-
-    r = await api('GET', '/api/users/me', null, u1);
-    check('크레딧 전액결제 후 잔액 정확히 차감(45000-40000=5000)', r.status === 200 && r.json.data.cash_balance === 5000, r);
-
-    r = await api('POST', `/api/inspections/${inspId1}/pay`, { useCreditFull: true }, u1);
-    check('이미 결제완료된 감리 재결제 차단(400)', r.status === 400 && r.json.error.code === 'ALREADY_PAID', r);
-
-    // ---- 두번째 감리: 보유크레딧(5000) < 가격(40000) → 크레딧 자동 일부사용 + 나머지는 토스 결제 필요(결제키 미설정 → 503) ----
-    r = await api('POST', '/api/inspections', { contractId, plan: 'photo', photoCount: 5 }, u1);
-    check('두번째 사진감리 신청 성공', r.status === 200, r);
-    const inspId2 = r.json.data.id;
-
-    r = await api('POST', `/api/inspections/${inspId2}/pay`, {}, u1);
-    check('잔액 부족분 결제 시도(결제키 미설정 → 503, 가짜성공 아님)', r.status === 503 && r.json.error.code === 'PAYMENT_NOT_CONFIGURED', r);
-
-    r = await api('GET', '/api/users/me', null, u1);
-    check('결제키 미설정으로 실패했을 때 크레딧은 아직 차감되지 않음(여전히 5000)', r.status === 200 && r.json.data.cash_balance === 5000, r);
-
-    r = await api('POST', `/api/inspections/${inspId2}/pay/confirm`, { paymentKey: 'fake-key' }, u1);
-    check('토스 주문 생성 전(order_id 없음) 결제승인 시도 차단(400)', r.status === 400 && r.json.error.code === 'INVALID_STATE', r);
-
-    // ===== 신규(2026-09, 운영콘솔 전수조사 후속): 관리자 "정책 설정"이 실제 계약·결제 계산에
-    // 반영되는지, 그리고 새로 실연동한 분쟁/정산/이벤트 관리자 API가 정상 동작하는지 검증 =====
-    const db5 = new Database(dbPath);
-    const reqId1 = randomUUID(), quoteId1 = randomUUID();
-    db5.prepare(`INSERT INTO quote_requests (id, user_id, partner_id, status) VALUES (?,?,?,?)`).run(reqId1, 'u1', 'p2', 'quoted');
-    db5.prepare(`INSERT INTO quotes (id, request_id, partner_id, total_amount, status) VALUES (?,?,?,?,?)`).run(quoteId1, reqId1, 'p2', 1000000, 'accepted');
-    db5.close();
-
-    // ---- 정책 설정: 등급별 수수료율을 관리자가 바꾸면 "새로 확정되는 계약"에 실제로 반영돼야 함
-    // (사용자 제보: "2%로 저장해도 파트너 가입시 자동되는 설정값이 변화가 없다") ----
-    r = await api('PUT', '/api/admin/policy', { key: 'tier_fee_rates', value: { '면허 파트너': 0.05 } }, admin);
-    check('관리자 정책저장: 등급별 수수료율 오버라이드 저장 성공', r.status === 200, r);
-    r = await api('GET', '/api/admin/policy/tier_fee_rates', null, admin);
-    check('저장한 수수료율 정책이 그대로 다시 조회됨', r.status === 200 && r.json.data.value['면허 파트너'] === 0.05, r);
-
-    r = await api('POST', '/api/contracts', { quoteId: quoteId1, deposit: 100000, down: 300000, middle: 300000, final: 300000 }, u1);
-    check('계약 확정 시 관리자가 바꾼 수수료율(5%)이 하드코딩 기본값(1.5%) 대신 실제로 적용됨', r.status === 200 && r.json.data.feeRateSnapshot === 0.05, r);
-    const contractId1 = r.json.data.id;
-
-    r = await api('GET', '/api/admin/settlements', null, admin);
-    const settle1 = r.json.data && r.json.data.find(s => s.contractId === contractId1);
-    check('신규: 관리자 정산목록 API — 업체명 조인 포함, 수수료율도 오버라이드값 그대로', r.status === 200 && !!settle1 && settle1.partnerName === '승인업체2(광고주)' && settle1.feeRate === 0.05, r);
-
-    // ---- AI 공사감리 요금제 오버라이드: 사진감리 장당가를 바꾸면 실제 결제금액에 반영돼야 함 ----
-    r = await api('PUT', '/api/admin/policy', { key: 'inspect_plan_pricing', value: { photo: { unitPrice: 10000 } } }, admin);
-    check('관리자 정책저장: 사진감리 장당가 오버라이드 저장 성공', r.status === 200, r);
-    r = await api('POST', '/api/inspections', { contractId: contractId1, plan: 'photo', photoCount: 5 }, u1);
-    check('사진감리 가격이 관리자가 바꾼 장당가(5장×1만원=5만원)로 계산됨(기본 8천원 아님)', r.status === 200 && r.json.data.price === 50000, r);
-    await api('PUT', '/api/admin/policy', { key: 'inspect_plan_pricing', value: { photo: { unitPrice: 8000 } } }, admin); // 원복
-
-    // ---- 광고 정원·단가 오버라이드(재설계 2026-09): 실제 예약(POST /api/ads/reservations)에 반영돼야 함 ----
-    // (0 이하는 "정책 미설정"으로 간주해 기본값 6으로 폴백하는 서버쪽 안전장치가 있어, 1로 낮춰서 검증)
-    r = await api('PUT', '/api/admin/policy', { key: 'ad_capacity_per_region', value: 1 }, admin);
-    check('관리자 정책저장: 지역당 정원 오버라이드 저장 성공', r.status === 200, r);
-    const polStart = addDaysStr(20), polEnd = addDaysStr(20);
-    r = await api('POST', '/api/ads/reservations', { region: '서울 강남구', startDate: polStart, endDate: polEnd }, p2);
-    check('정원 1로 낮춘 뒤 첫 예약은 성공', r.status === 200, r);
-    r = await api('POST', '/api/ads/reservations', { region: '서울 강남구', startDate: polStart, endDate: polEnd }, p2);
-    check('지역당 정원을 1로 낮추면 크레딧이 있어도 두번째 예약은 즉시 정원마감으로 차단됨(서버 기본값 6 무시하고 정책값 적용 확인)', r.status === 400 && r.json.error.code === 'CAPACITY_FULL', r);
-    await api('PUT', '/api/admin/policy', { key: 'ad_capacity_per_region', value: 6 }, admin);
-    r = await api('PUT', '/api/admin/policy', { key: 'ad_price_per_day', value: 1 }, admin);
-    check('관리자 정책저장: 1일 단가 오버라이드 저장 성공', r.status === 200, r);
-    r = await api('POST', '/api/ads/reservations', { region: '서울 서초구', startDate: polStart, endDate: polEnd }, p2);
-    check('1일 단가를 1크레딧으로 낮추면 실제로 1크레딧만 차감됨(기본 9,900원 아님)', r.status === 200 && r.json.data.cost === 1 && r.json.data.pricePerDay === 1, r);
-    await api('PUT', '/api/admin/policy', { key: 'ad_price_per_day', value: 9900 }, admin); // 원복
-
-    // ---- 분쟁 유형 '기타' 접수 차단 결함 수정 확인 (전수조사 발견) ----
-    r = await api('POST', '/api/disputes', { contractId: contractId1, type: 'etc', reason: '스모크테스트 기타분쟁' }, u1);
-    check('분쟁유형 "기타"가 더 이상 서버에서 거부되지 않음(예전엔 INVALID_TYPE 400)', r.status === 200, r);
-    const disputeId1 = r.json.data.id;
-    await api('POST', `/api/disputes/${disputeId1}/ai-judge`, {}, u1);
-
-    // ---- 관리자 분쟁 큐 실연동: 목록에 실제 뜨는지, 조정 시 서버에 실제 반영되는지 ----
-    r = await api('GET', '/api/admin/disputes', null, admin);
-    const disputeRow = r.json.data && r.json.data.find(d => d.id === disputeId1);
-    check('신규: 관리자 분쟁목록 API — 방금 접수한 분쟁이 실제로 조회됨(예전엔 세션로컬이라 항상 안 보임)', r.status === 200 && !!disputeRow && disputeRow.partnerName === '승인업체2(광고주)', r);
-
-    // 정산을 분쟁으로 보류시킨 상태를 흉내내어 "기각" 조정 시 실제로 해제되는지 확인
-    const db6 = new Database(dbPath);
-    db6.prepare(`UPDATE settlements SET status='hold', hold_reason='분쟁 조정 중' WHERE contract_id=?`).run(contractId1);
-    db6.close();
-    r = await api('PUT', `/api/disputes/${disputeId1}/resolve`, { decision: 'reject' }, admin);
-    check('분쟁 "기각" 조정 시 보류된 정산이 실제로 해제됨(서버가 로컬상태만 바꾸던 결함 수정)', r.status === 200, r);
-    r = await api('GET', '/api/admin/settlements', null, admin);
-    const settleAfterReject = r.json.data.find(s => s.contractId === contractId1);
-    check('기각 조정 후 정산 status가 received로 복구되고 hold_reason도 지워짐', settleAfterReject && settleAfterReject.status === 'received' && !settleAfterReject.holdReason, settleAfterReject);
-    r = await api('PUT', `/api/disputes/${disputeId1}/resolve`, { decision: 'reject' }, admin);
-    check('이미 조정 완료된 분쟁은 재조정 차단(409)', r.status === 409, r);
-
-    // ---- 업체책임 조정 + 정산조정액 반영(별도 계약으로 재현) ----
-    const reqId2 = randomUUID(), quoteId2 = randomUUID();
-    const db7 = new Database(dbPath);
-    db7.prepare(`INSERT INTO quote_requests (id, user_id, partner_id, status) VALUES (?,?,?,?)`).run(reqId2, 'u1', 'p2', 'quoted');
-    db7.prepare(`INSERT INTO quotes (id, request_id, partner_id, total_amount, status) VALUES (?,?,?,?,?)`).run(quoteId2, reqId2, 'p2', 500000, 'accepted');
-    db7.close();
-    r = await api('POST', '/api/contracts', { quoteId: quoteId2, deposit: 500000 }, u1);
-    const contractId2 = r.json.data.id;
-    r = await api('POST', '/api/disputes', { contractId: contractId2, type: 'payment', reason: '정산 조정 스모크테스트' }, u1);
-    const disputeId2 = r.json.data.id;
-    await api('POST', `/api/disputes/${disputeId2}/ai-judge`, {}, u1);
-    r = await api('PUT', `/api/disputes/${disputeId2}/resolve`, { decision: 'partner', settlementAdjustment: 50000 }, admin);
-    check('분쟁 "업체책임" 조정 성공', r.status === 200, r);
-    r = await api('GET', '/api/admin/settlements', null, admin);
-    const settle2 = r.json.data.find(s => s.contractId === contractId2);
-    check('업체책임 조정 시 정산은 계속 보류 상태로 남고 조정액(5만원)만큼 정산금액이 차감됨(50만→45만)', settle2 && settle2.status === 'hold' && settle2.amount === 450000, settle2);
-
-    // ---- 이벤트 관리 실연동: 생성한 이벤트가 실제로 저장·조회·상태변경되는지 ----
-    r = await api('POST', '/api/admin/events', { name: '스모크테스트 이벤트', start: '2026-09-01', end: '2026-09-30', target: 'all', benefit: '테스트 혜택' }, admin);
-    check('신규: 관리자 이벤트 생성 API 성공(예전엔 새로고침하면 사라지던 프로토타입)', r.status === 200, r);
-    const eventId1 = r.json.data.id;
-    r = await api('GET', '/api/admin/events', null, admin);
-    const eventRow = r.json.data.find(e => e.id === eventId1);
-    check('생성한 이벤트가 목록에서 실제로 조회됨(참여자·전환은 가짜숫자 없이 0)', !!eventRow && eventRow.participants === 0 && eventRow.conversions === 0, eventRow);
-    r = await api('PATCH', `/api/admin/events/${eventId1}/status`, { status: 'ended' }, admin);
-    check('이벤트 상태 변경(종료) API 성공', r.status === 200, r);
-
-    // ---- 신규: 소비자 회원관리(전체 목록·검색·정지/해제) ----
-    r = await api('GET', '/api/admin/consumers?status=all', null, admin);
-    const consumerRow = r.json.data && r.json.data.list.find(u => u.id === 'u1');
-    check('소비자 전체 목록에 u1이 정상 조회됨(status=active)', r.status === 200 && !!consumerRow && consumerRow.status === 'active', r);
-    r = await api('GET', '/api/admin/consumers?q=소비자1', null, admin);
-    check('소비자 검색(닉네임)이 실제로 동작함', r.status === 200 && r.json.data.list.some(u => u.id === 'u1'), r);
-    r = await api('PUT', '/api/admin/consumers/u1/suspend', { reason: '' }, admin);
-    check('정지 사유 미입력시 400 차단', r.status === 400, r);
-    r = await api('PUT', '/api/admin/consumers/u1/suspend', { reason: '스모크테스트 정지사유' }, admin);
-    check('소비자 정지 처리 성공', r.status === 200, r);
-    r = await api('GET', '/api/admin/consumers/u1', null, admin);
-    check('정지 후 소비자 상세에 status=suspended·정지사유·처리이력이 반영됨', r.status === 200 && r.json.data.status === 'suspended' && r.json.data.suspendReason === '스모크테스트 정지사유' && r.json.data.actionHistory.some(a => a.action === 'suspend'), r.json.data);
-    r = await api('GET', '/api/users/me', null, u1);
-    check('정지된 소비자는 토큰이 남아있어도 즉시 차단됨(ACCOUNT_SUSPENDED)', r.status === 403 && r.json.error.code === 'ACCOUNT_SUSPENDED', r);
-    r = await api('PUT', '/api/admin/consumers/u1/unsuspend', {}, admin);
-    check('소비자 정지 해제 성공', r.status === 200, r);
-    r = await api('GET', '/api/users/me', null, u1);
-    check('정지 해제 후 다시 정상 이용 가능', r.status === 200, r);
-
-    // ---- 신규: 파트너 회원관리(전체 목록·검색·필터·정지/해제) ----
-    r = await api('GET', '/api/admin/partners?status=approved', null, admin);
-    check('파트너 전체 목록(승인됨 필터)에 p2가 조회됨', r.status === 200 && r.json.data.list.some(p => p.id === 'p2'), r);
-    r = await api('GET', '/api/admin/partners?q=승인업체2', null, admin);
-    check('파트너 검색(상호명)이 실제로 동작함', r.status === 200 && r.json.data.list.some(p => p.id === 'p2'), r);
-    r = await api('GET', '/api/admin/partners?tier=' + encodeURIComponent('면허 파트너'), null, admin);
-    check('파트너 등급 필터가 실제로 동작함(면허 파트너만)', r.status === 200 && r.json.data.list.every(p => p.tier === '면허 파트너') && r.json.data.list.some(p => p.id === 'p2'), r);
-    r = await api('GET', '/api/admin/partners/p2/detail', null, admin);
-    check('파트너 상세(연관활동 포함)가 정상 조회됨', r.status === 200 && r.json.data.businessName === '승인업체2(광고주)' && typeof r.json.data.activity.contracts === 'number', r.json.data);
-    r = await api('PUT', '/api/admin/partners/p2/suspend', { reason: '스모크테스트 업체정지' }, admin);
-    check('파트너 정지(회원관리 화면 경로) 성공', r.status === 200, r);
-    r = await api('GET', '/api/admin/partners/p2/detail', null, admin);
-    check('정지 후 파트너 상세에 status=suspended·처리이력이 반영됨', r.status === 200 && r.json.data.status === 'suspended' && r.json.data.actionHistory.some(a => a.action === 'suspend'), r.json.data);
-    r = await api('GET', '/api/partners/me', null, p2);
-    check('정지된 파트너는 토큰이 남아있어도 즉시 차단됨(PARTNER_SUSPENDED)', r.status === 403 && r.json.error.code === 'PARTNER_SUSPENDED', r);
-    r = await api('PATCH', '/api/admin/partners/p2/unsuspend', {}, admin);
-    check('파트너 정지 해제(기존 어뷰징 해제 API 재사용) 성공', r.status === 200, r);
-    r = await api('GET', '/api/partners/me', null, p2);
-    check('정지 해제 후 파트너 다시 정상 이용 가능', r.status === 200, r);
-
-    // ---- CSV 다운로드(엑셀) ----
-    r = await api('GET', '/api/admin/consumers/export.csv', null, admin);
-    check('소비자 CSV 다운로드 200 + text/csv', r.status === 200, r);
-    r = await api('GET', '/api/admin/partners/export.csv', null, admin);
-    check('파트너 CSV 다운로드 200', r.status === 200, r);
-
-    // ---- 신규: 지역기반 서비스 — GEO_TEST_MODE 스텁으로 좌표→지역 변환 전체 흐름 검증 ----
-    // (실제 카카오 API 호출 자체는 tests/integration.js에서 "키 미설정시 정직하게 503" 경로로 별도 검증함)
-    r = await api('GET', '/api/geo/reverse?lat=37.4979&lng=127.0276', null, null);
-    check('좌표→지역 변환(강남 인근 좌표)이 실제로 서울 강남구를 반환함', r.status === 200 && r.json.data.regionCode === '서울 강남구' && r.json.data.source === 'test-stub', r);
-    r = await api('GET', '/api/geo/reverse?lat=37.3595&lng=127.1052', null, null);
-    check('좌표→지역 변환(성남 인근 좌표)이 실제로 경기 성남시를 반환함(다른 좌표엔 다른 지역이 나옴을 확인)', r.status === 200 && r.json.data.regionCode === '경기 성남시', r);
-    r = await api('PUT', '/api/users/me/region', { region: '경기 성남시' }, u1);
-    check('위치조회 결과를 실제로 소비자 프로필에 저장 가능', r.status === 200 && r.json.data.region === '경기 성남시', r);
-    r = await api('GET', '/api/users/me', null, u1);
-    check('저장된 활성지역이 재조회시에도 그대로 유지됨(세션 새로고침 시나리오)', r.status === 200 && r.json.data.region === '경기 성남시', r);
-
-    console.log(`\n결과: ${pass} 성공 / ${fail} 실패`);
-    server.kill();
-    process.exit(fail ? 1 : 0);
-  } catch (e) {
-    console.error('스모크테스트 예외:', e);
-    server.kill();
-    process.exit(1);
   }
-})();
+})); // 결함수정: 기본 보안헤더(X-Frame-Options 등) 전혀 없었음
+// 공개 서버의 임의 origin 접근을 막고, 같은 서비스와 명시한 프론트 주소만 허용한다.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || 'https://roomer-backend.onrender.com').split(',').map(v => v.trim()).filter(Boolean);
+app.use(cors({ origin(origin, callback) { callback(null, !origin || ALLOWED_ORIGINS.includes(origin)); } }));
+// 심사용 사진·PDF data URL이 함께 전송되는 현재 단일-HTML 구조용 제한이다.
+app.use(express.json({ limit: '8mb' }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
+// 결함수정(사용자 지적 — 객체 저장소 미설정 환경의 파일첨부 오류 개선): OBJECT_STORAGE_BUCKET이 없을 때
+// storage.js가 공개 파일(포트폴리오 사진 등)을 로컬 디스크(uploads/private-store/public)에 저장하는데,
+// 그 파일을 브라우저가 <img src="...">로 바로 열 수 있어야 하므로 public/ 하위만 정적 서빙한다.
+// private/ 하위(사업자등록증 등 비공개 증빙)는 여기서 절대 공개하지 않고, 지금까지처럼 인증이 필요한
+// /api/files/:fileId, /api/admin/files/:fileId 라우트를 통해서만 접근 가능하다.
+// 신규(사용자요청 — DB 영속성 점검 후속): storage.js와 반드시 동일한 기준(LOCAL_STORAGE_DIR)으로
+// 폴더를 찾아야 한다. 여기서만 예전처럼 __dirname을 그대로 쓰면, 실제 저장은 영구 디스크에
+// 되는데 서빙은 옛 임시 폴더를 봐서 이미지가 깨지는 불일치가 생긴다.
+const LOCAL_STORE_PUBLIC_DIR = path.join(process.env.LOCAL_STORAGE_DIR || path.join(__dirname, 'uploads', 'private-store'), 'public');
+app.use('/storage-local/public', express.static(LOCAL_STORE_PUBLIC_DIR, { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
+// 신규(사용자요청 — 푸시알림 인프라 완성): 서비스워커(sw.js)는 반드시 origin 루트 경로에서
+// 서빙되어야 전체 사이트를 제어할 수 있음(scope 규칙). 알림 아이콘도 함께 공개 정적 제공.
+app.use(express.static(path.join(__dirname, 'public'), { dotfiles: 'deny', maxAge: '1h' }));
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.sendFile(path.join(__dirname, 'sw.js'));
+});
+
+// 결함수정: 관리자 로그인에 무차별대입(brute-force) 방지가 전혀 없었음 → IP당 15분에 10회로 제한
+const adminLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '로그인 시도가 너무 많습니다. 15분 후 다시 시도해주세요' } }
+});
+// 신규(사용자요청 — 최초 관리자 부트스트랩 API 보호): 관리자가 아직 없는 짧은 시간 동안
+// 공격자가 먼저 이 API를 호출해서 관리자 계정을 선점하는 것을 막기 위해 매우 엄격하게 제한
+const adminBootstrapLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '시도가 너무 많습니다. 1시간 후 다시 시도해주세요' } }
+});
+// 결함수정: 소셜로그인도 무제한 호출 가능해서 대량 계정생성 남용 위험 → IP당 15분에 30회로 완만하게 제한
+const socialAuthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '요청이 너무 많습니다. 잠시 후 다시 시도해주세요' } }
+});
+const otpSendLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '인증코드 요청이 너무 많습니다. 15분 후 다시 시도해주세요' } }
+});
+const otpVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '인증 시도가 너무 많습니다. 15분 후 다시 시도해주세요' } }
+});
+const portfolioUploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_UPLOADS', message: '사진 업로드가 너무 많습니다. 잠시 후 다시 시도해주세요' } }
+});
+// 신규(사용자요청 — 메신저 사진·파일 전송 API 실제 구현): 첨부 업로드 전용 rate limit
+const chatAttachmentUploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_UPLOADS', message: '사진 업로드가 너무 많습니다. 잠시 후 다시 시도해주세요' } }
+});
+// 신규(사용자요청 — "추천 검색어"를 진짜 검색 로그 기반으로): 검색 1회당 로그 1건이라 남용 방지용으로 넉넉하게 제한
+const searchLogLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_ATTEMPTS', message: '요청이 너무 많습니다. 잠시 후 다시 시도해주세요' } }
+});
+
+// ===== 1-2(팀장 지시): 요청 로깅 미들웨어 =====
+// 모든 요청의 method·path·상태코드·소요시간·요청자(있으면)를 기록(콘솔 + DB 양쪽)
+// ⚡MVP-SWITCH: 실서버 → 파일/외부 로그수집기(CloudWatch, Datadog 등)로 전송하도록 교체. 지금은 콘솔+SQLite
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    let requester = null;
+    try {
+      const header = req.headers.authorization;
+      if (header) {
+        const payload = jwt.verify(header.replace('Bearer ', ''), JWT_SECRET);
+        requester = payload.role + ':' + payload.sub;
+      }
+    } catch (e) { /* 토큰 없거나 유효하지 않으면 null(익명)로 기록 */ }
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} → ${res.statusCode} (${duration}ms) by ${requester || 'anonymous'}`);
+    try {
+      db.prepare('INSERT INTO request_logs (method, path, status_code, duration_ms, user_id) VALUES (?,?,?,?,?)')
+        .run(req.method, req.originalUrl, res.statusCode, duration, requester);
+    } catch (e) { console.error('로그 DB 기록 실패:', e.message); }
+  });
+  next();
+});
+
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-only-secret-change-in-production');
+if (!JWT_SECRET) throw new Error('운영환경에서는 JWT_SECRET 환경변수가 반드시 필요합니다.');
+if (!process.env.JWT_SECRET) {
+  console.warn('⚠️  경고: JWT_SECRET 환경변수가 설정되지 않아 개발용 기본값을 사용 중입니다. 배포 전 반드시 환경변수로 강력한 값을 설정하세요.');
+}
+
+// ===== 1-1(팀장 지시): 입력값 검증 헬퍼 — 43개 API 전체에 공통 적용 =====
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_RE = /^01[016789][0-9]{7,8}$/;
+const BIZNO_RE = /^\d{3}-?\d{2}-?\d{5}$/;
+
+function isNonEmptyString(v, maxLen = 200) {
+  return typeof v === 'string' && v.trim().length > 0 && v.length <= maxLen;
+}
+function isPositiveInt(v) {
+  return Number.isInteger(v) && v >= 0;
+}
+function isPositiveAmount(v) {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100_000_000_000; // 1000억 상한(비정상값 방지)
+}
+function validationError(res, message) {
+  return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message } });
+}
+function hasRequiredConsent(consent) {
+  return !!(consent && consent.tos === true && consent.privacy === true);
+}
+
+// ===== 인증 미들웨어 =====
+function authRequired(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header) return res.status(401).json({ success: false, error: { code: 'NO_TOKEN', message: '로그인이 필요합니다' } });
+  try {
+    const token = header.replace('Bearer ', '');
+    req.user = jwt.verify(token, JWT_SECRET);
+    if (!['consumer', 'partner'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, error: { code: 'INVALID_ROLE', message: '이 API에 사용할 수 없는 인증입니다' } });
+    }
+    // 신규(2차 심층검증 중 발견): 탈퇴한 회원의 토큰이 만료 전까지 계속 유효했던 보안 문제 수정
+    // → 매 요청마다 탈퇴 여부를 확인해서, 탈퇴한 회원은 토큰이 남아있어도 즉시 차단
+    if (req.user.role === 'consumer') {
+      const u = db.prepare('SELECT withdrawn_at, suspended_at FROM users WHERE id=?').get(req.user.sub);
+      if (!u || u.withdrawn_at) return res.status(401).json({ success: false, error: { code: 'ACCOUNT_WITHDRAWN', message: '탈퇴한 계정입니다' } });
+      // 신규(2026-09, 사용자요청 — 소비자 회원관리): 파트너와 동일하게, 관리자가 정지시킨 소비자도
+      // 토큰이 남아있어도 즉시 차단
+      if (u.suspended_at) return res.status(403).json({ success: false, error: { code: 'ACCOUNT_SUSPENDED', message: '이용 제한된 계정입니다. 고객센터로 문의해주세요.' } });
+    }
+    // 신규(2026-09, 관리자 콘솔 실연동 — 어뷰징 일시정지): 정지된 업체는 토큰이 남아있어도
+    // 즉시 차단(위 탈퇴회원 차단과 동일한 원칙). rejected/pending은 기존처럼 개별 API에서 판단하므로 건드리지 않음.
+    if (req.user.role === 'partner') {
+      const p = db.prepare('SELECT verify_status FROM partners WHERE id=?').get(req.user.sub);
+      if (p && p.verify_status === 'suspended') return res.status(403).json({ success: false, error: { code: 'PARTNER_SUSPENDED', message: '반복 노쇼로 계정이 일시 정지되었습니다. 고객센터로 문의해주세요.' } });
+    }
+    next();
+  } catch (e) {
+    res.status(401).json({ success: false, error: { code: 'INVALID_TOKEN', message: '유효하지 않은 토큰입니다' } });
+  }
+}
+
+function partnerSignupRequired(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header) return res.status(401).json({ success: false, error: { code: 'OTP_REQUIRED', message: '파트너 이메일 인증이 필요합니다' } });
+  try {
+    const payload = jwt.verify(header.replace('Bearer ', ''), JWT_SECRET);
+    if (payload.role !== 'partner_signup' || !payload.loginId || payload.loginProvider !== 'email') {
+      return res.status(403).json({ success: false, error: { code: 'INVALID_SIGNUP_TOKEN', message: '유효한 파트너 가입 인증이 아닙니다' } });
+    }
+    req.partnerSignup = payload;
+    next();
+  } catch (e) {
+    res.status(401).json({ success: false, error: { code: 'INVALID_SIGNUP_TOKEN', message: '파트너 가입 인증이 만료되었거나 유효하지 않습니다' } });
+  }
+}
+
+// ===== 관리자 인증 미들웨어 =====
+// 결함수정(팀장 지시 반영 — 코드 내 최우선 경고사항):
+// 기존 프론트엔드는 클라이언트측 PIN 코드(2486) 하나로 관리자 진입이 가능했음.
+// "이 클라이언트측 PIN 검증을 절대 그대로 쓰지 말 것"이라고 코드에 명시돼 있던 부분 →
+// 서버측 이메일+비밀번호 로그인 + JWT(role 포함) + 역할기반 권한(RBAC)으로 완전히 교체
+function adminAuthRequired(requiredRole) {
+  return function (req, res, next) {
+    const header = req.headers.authorization;
+    if (!header) return res.status(401).json({ success: false, error: { code: 'NO_TOKEN', message: '관리자 로그인이 필요합니다' } });
+    try {
+      const token = header.replace('Bearer ', '');
+      const payload = jwt.verify(token, JWT_SECRET);
+      if (payload.role !== 'admin_super' && payload.role !== 'admin_operator' && payload.role !== 'admin_cs') {
+        return res.status(403).json({ success: false, error: { code: 'NOT_ADMIN', message: '관리자 권한이 없습니다' } });
+      }
+      if (requiredRole && payload.role !== requiredRole && payload.role !== 'admin_super') {
+        return res.status(403).json({ success: false, error: { code: 'INSUFFICIENT_ROLE', message: '이 작업에 필요한 권한이 없습니다' } });
+      }
+      req.admin = payload;
+      next();
+    } catch (e) {
+      res.status(401).json({ success: false, error: { code: 'INVALID_TOKEN', message: '유효하지 않은 토큰입니다' } });
+    }
+  };
+}
+
+// ===== 0. 관리자 인증 =====
+app.post('/api/admin/auth/login', adminLoginLimiter, (req, res) => {
+  const { email, password } = req.body;
+  if (!isNonEmptyString(email) || !EMAIL_RE.test(email)) return validationError(res, '올바른 이메일 형식이 아닙니다');
+  if (!isNonEmptyString(password, 100)) return validationError(res, '비밀번호를 입력해주세요');
+  const admin = db.prepare('SELECT * FROM admins WHERE email=?').get(email);
+  if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
+    return res.status(401).json({ success: false, error: { code: 'INVALID_CREDENTIALS', message: '이메일 또는 비밀번호가 올바르지 않습니다' } });
+  }
+  db.prepare("UPDATE admins SET last_login_at=datetime('now') WHERE id=?").run(admin.id);
+  const token = jwt.sign({ sub: admin.id, role: 'admin_' + admin.role }, JWT_SECRET, { expiresIn: '4h' });
+  res.json({ success: true, data: { token, role: admin.role } });
+});
+
+// 개발 전용: 최초 관리자 계정 생성(실서비스 배포 시 이 엔드포인트는 반드시 제거하고 DB에 직접 시딩할 것)
+app.post('/api/admin/auth/seed-dev-only', blockInProduction, (req, res) => {
+  const { email, password, role } = req.body;
+  if (!isNonEmptyString(email) || !EMAIL_RE.test(email)) return validationError(res, '올바른 이메일 형식이 아닙니다');
+  if (!isNonEmptyString(password) || password.length < 8) return validationError(res, '비밀번호는 8자 이상이어야 합니다');
+  if (role && !['super', 'operator', 'cs'].includes(role)) return validationError(res, '올바른 역할이 아닙니다');
+  const existing = db.prepare('SELECT id FROM admins WHERE email=?').get(email);
+  if (existing) return res.status(400).json({ success: false, error: { code: 'ALREADY_EXISTS', message: '이미 존재하는 관리자입니다' } });
+  const id = randomUUID();
+  const hash = bcrypt.hashSync(password, 10);
+  db.prepare('INSERT INTO admins (id, email, password_hash, role) VALUES (?,?,?,?)').run(id, email, hash, role || 'super');
+  res.json({ success: true, data: { id, message: '개발용 관리자 계정이 생성됐습니다(실배포 전 이 엔드포인트 제거 필수)' } });
+});
+
+// 결함정리(사용자요청 — 운영환경에서 관리자 계정을 만들 방법이 전혀 없던 문제 발견):
+// seed-dev-only는 blockInProduction이 걸려있어 운영에서 쓸 수 없는데, 관리자 계정을 만드는
+// 다른 경로가 전혀 없었음. DB에 관리자가 "1명도 없을 때만" 동작하는 안전한 최초설정 API를
+// 신규 추가. 관리자가 1명이라도 생기면 이후 영구적으로 403 차단되므로 운영에 남겨둬도 안전함.
+app.post('/api/admin/auth/bootstrap', adminBootstrapLimiter, (req, res) => {
+  const existingCount = db.prepare('SELECT COUNT(*) c FROM admins').get().c;
+  if (existingCount > 0) return res.status(403).json({ success: false, error: { code: 'ALREADY_BOOTSTRAPPED', message: '이미 관리자 계정이 존재합니다. 이 API는 최초 1회만 사용할 수 있습니다.' } });
+  const { email, password } = req.body;
+  if (!isNonEmptyString(email) || !EMAIL_RE.test(email)) return validationError(res, '올바른 이메일 형식이 아닙니다');
+  if (!isNonEmptyString(password) || password.length < 10) return validationError(res, '비밀번호는 10자 이상이어야 합니다(최초 관리자 계정이므로 더 엄격하게 검증)');
+  const id = randomUUID();
+  const hash = bcrypt.hashSync(password, 10);
+  db.prepare('INSERT INTO admins (id, email, password_hash, role) VALUES (?,?,?,?)').run(id, email, hash, 'super');
+  res.json({ success: true, data: { id, message: '최초 관리자 계정이 생성됐습니다. 이 API는 이제 영구적으로 비활성화됩니다.' } });
+});
+// 신규(사용자요청 — 개발자도구 없이 화면에서 바로 관리자 계정을 만들 수 있어야 함):
+// 간단한 입력폼 화면을 서버가 직접 제공. 관리자가 이미 존재하면 안내문구만 보여주고
+// 폼 자체를 숨김(중복 시도 방지, API 자체도 어차피 403으로 막지만 UX상 미리 알려줌).
+app.get('/admin-setup', (req, res) => {
+  const existingCount = db.prepare('SELECT COUNT(*) c FROM admins').get().c;
+  const alreadyDone = existingCount > 0;
+  res.type('html').send(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ROOMER 관리자 최초설정</title>
+<style>body{font-family:-apple-system,sans-serif;background:#F5F1E8;margin:0;padding:24px;display:flex;justify-content:center}
+.card{background:#fff;border-radius:16px;padding:28px;max-width:380px;width:100%;box-shadow:0 2px 12px rgba(0,0,0,0.08)}
+h1{font-size:19px;margin:0 0 8px}p{font-size:13.5px;color:#6B6255;line-height:1.6;margin:0 0 20px}
+input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #D8D2C4;border-radius:10px;font-size:15px;margin-bottom:12px;font-family:inherit}
+button{width:100%;padding:13px;background:#2B2621;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+#result{margin-top:14px;font-size:13.5px;line-height:1.6;padding:12px;border-radius:10px;display:none}
+.ok{background:#E8F3EA;color:#1E7B34}.err{background:#FBEAEA;color:#C0392B}</style></head>
+<body><div class="card">
+<h1>ROOMER 관리자 최초설정</h1>
+${alreadyDone
+  ? '<p style="color:#C0392B">이미 관리자 계정이 생성되어 있습니다. 이 화면은 더 이상 사용할 수 없습니다. 기존 관리자 계정으로 로그인해주세요.</p>'
+  : '<p>최초 1번만 사용할 수 있는 화면입니다. 이메일과 비밀번호(10자 이상)를 입력하고 버튼을 누르면 관리자 계정이 만들어집니다.</p>'
+    + '<input type="email" id="email" placeholder="관리자로 쓸 이메일">'
+    + '<input type="password" id="password" placeholder="비밀번호(10자 이상)">'
+    + '<button id="submitBtn" onclick="createAdmin()">관리자 계정 만들기</button>'
+}
+<div id="result"></div>
+</div>
+<script>
+async function createAdmin(){
+  var btn=document.getElementById('submitBtn'), result=document.getElementById('result');
+  var email=document.getElementById('email').value.trim();
+  var password=document.getElementById('password').value;
+  btn.disabled=true; btn.textContent='처리 중...';
+  try{
+    var res=await fetch('/api/admin/auth/bootstrap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,password:password})});
+    var data=await res.json();
+    result.style.display='block';
+    if(data.success){
+      result.className='ok';
+      result.textContent='완료! 관리자 계정이 만들어졌습니다. 이제 이 화면은 다시 못 씁니다. 앱으로 돌아가서 방금 만든 이메일/비밀번호로 로그인해주세요.';
+      document.getElementById('email').disabled=true; document.getElementById('password').disabled=true; btn.style.display='none';
+    } else {
+      result.className='err';
+      result.textContent=(data.error&&data.error.message)||'실패했습니다. 다시 시도해주세요.';
+      btn.disabled=false; btn.textContent='관리자 계정 만들기';
+    }
+  }catch(e){
+    result.style.display='block'; result.className='err'; result.textContent='네트워크 오류: '+e.message;
+    btn.disabled=false; btn.textContent='관리자 계정 만들기';
+  }
+}
+</script></body></html>`);
+});
+
+// 신규(사용자요청 — 런칭 전 테스트 단계 전용 관리자 자동시딩): Persistent Disk 없이 배포하면
+// 재배포마다 SQLite 파일이 초기화되어(위 DB_PATH 설명 참고) 그때마다 /admin-setup으로 관리자
+// 계정을 새로 만들어야 하는 번거로움이 있었다. 서버가 뜰 때 딱 한 번, "관리자가 0명일 때만"
+// 아래 두 환경변수로 자동으로 관리자 계정을 만들어서 이 번거로움을 없앤다.
+// - 이미 관리자가 1명이라도 있으면 절대 덮어쓰지 않는다(기존 계정 보호, /admin-setup과 동일한 안전장치).
+// - 두 환경변수 중 하나라도 없으면 완전히 조용히 아무 일도 하지 않는다(기존 동작과 100% 동일).
+// - 런칭 후에는 Render 환경변수에서 이 두 값을 지우기만 하면 이 로직 자체가 꺼진다(코드 변경 불필요).
+// - 정직성 원칙: 가짜 계정이 아니라, 사용자가 직접 정한 실제 이메일/비밀번호로 실제 admins 테이블에
+//   생성되는 진짜 계정이다 — /api/admin/auth/bootstrap과 동일한 검증(이메일 형식, 비밀번호 10자 이상)을 거친다.
+function seedAdminFromEnvIfEmpty() {
+  const email = process.env.ADMIN_BOOTSTRAP_EMAIL;
+  const password = process.env.ADMIN_BOOTSTRAP_PASSWORD;
+  if (!email || !password) return;
+  const existingCount = db.prepare('SELECT COUNT(*) c FROM admins').get().c;
+  if (existingCount > 0) return;
+  if (!EMAIL_RE.test(email)) { console.warn('[관리자 자동시딩] ADMIN_BOOTSTRAP_EMAIL 형식이 올바르지 않아 건너뜁니다'); return; }
+  if (password.length < 10) { console.warn('[관리자 자동시딩] ADMIN_BOOTSTRAP_PASSWORD는 10자 이상이어야 합니다 — 건너뜁니다'); return; }
+  const id = randomUUID();
+  const hash = bcrypt.hashSync(password, 10);
+  db.prepare('INSERT INTO admins (id, email, password_hash, role) VALUES (?,?,?,?)').run(id, email, hash, 'super');
+  console.log('[관리자 자동시딩] ADMIN_BOOTSTRAP_EMAIL/PASSWORD로 관리자 계정을 생성했습니다:', email);
+}
+seedAdminFromEnvIfEmpty();
+
+// ===== 1. 인증 (소셜로그인은 데모용으로 간소화 — 실제로는 카카오/네이버 API와 통신해야 함) =====
+app.post('/api/auth/social/:provider', blockInProduction, socialAuthLimiter, (req, res) => {
+  const { provider } = req.params;
+  const { socialId, nickname } = req.body;
+  if (!['kakao', 'naver', 'google'].includes(provider)) return validationError(res, '지원하지 않는 로그인 방식입니다');
+  if (!isNonEmptyString(socialId, 100)) return validationError(res, 'socialId가 필요합니다');
+  if (nickname && !isNonEmptyString(nickname, 30)) return validationError(res, '닉네임은 30자 이내여야 합니다');
+
+  let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get(provider, socialId);
+  if (!user) {
+    const id = randomUUID();
+    // 신규(사용자요청 — 캐시→크레딧 명칭통일 + 실제 가입혜택 지급): 첫화면 배너("가입시 29,000크레딧")가
+    // 실제로는 지급되지 않던 문제 발견·수정. 가입 즉시 29,000크레딧을 실제로 적립.
+    db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, cash_balance) VALUES (?,?,?,?,?)')
+      .run(id, provider, socialId, nickname || '회원', 29000);
+    user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+  }
+  const token = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
+  res.json({ success: true, data: { token, user } });
+});
+
+// 신규(사용자요청 — 카카오 REST API 키 발급 완료, 실연동 구현): 실제 카카오 OAuth 콜백.
+// 인가코드(code)를 카카오 토큰 API로 교환 → 액세스 토큰으로 사용자 정보 조회 → users upsert → JWT 발급.
+app.post('/api/auth/social/kakao/callback', socialAuthLimiter, async (req, res) => {
+  const { code, redirectUri, consent } = req.body;
+  if (!isNonEmptyString(code, 500)) return validationError(res, 'code가 필요합니다');
+  if (!hasRequiredConsent(consent)) return validationError(res, '필수 이용약관과 개인정보 수집 동의가 필요합니다');
+  const restApiKey = process.env.KAKAO_REST_API_KEY;
+  if (!restApiKey) {
+    return res.status(501).json({ success: false, error: { code: 'KAKAO_NOT_CONFIGURED', message: '카카오 로그인이 아직 설정되지 않았어요.' } });
+  }
+  // 결함정리(회귀버그 수정 — 이 카카오 앱은 "클라이언트 시크릿" 활성화 상태로 발급되어 있어서,
+  // 토큰교환시 client_secret이 없으면 반드시 실패함): 환경변수로만 관리(하드코딩 금지)
+  const kakaoClientSecret = process.env.KAKAO_CLIENT_SECRET;
+  try {
+    // 1) 인가코드 → 액세스 토큰 교환
+    const kakaoTokenParams = {
+      grant_type: 'authorization_code',
+      client_id: restApiKey,
+      redirect_uri: redirectUri || 'https://roomer-backend.onrender.com/oauth/kakao/callback',
+      code: code
+    };
+    if (kakaoClientSecret) kakaoTokenParams.client_secret = kakaoClientSecret;
+    const tokenRes = await fetch('https://kauth.kakao.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
+      body: new URLSearchParams(kakaoTokenParams)
+    });
+    const tokenBody = await tokenRes.json();
+    if (!tokenRes.ok || !tokenBody.access_token) {
+      console.error('카카오 토큰 교환 실패:', tokenBody);
+      return res.status(400).json({ success: false, error: { code: 'KAKAO_TOKEN_ERROR', message: '카카오 인증에 실패했어요. 다시 로그인해주세요.' } });
+    }
+    // 2) 액세스 토큰으로 사용자 정보 조회
+    const profileRes = await fetch('https://kapi.kakao.com/v2/user/me', {
+      headers: { 'Authorization': 'Bearer ' + tokenBody.access_token }
+    });
+    const profileBody = await profileRes.json();
+    if (!profileRes.ok || !profileBody.id) {
+      console.error('카카오 사용자정보 조회 실패:', profileBody);
+      return res.status(400).json({ success: false, error: { code: 'KAKAO_PROFILE_ERROR', message: '카카오 사용자 정보를 가져오지 못했어요.' } });
+    }
+    const kakaoId = String(profileBody.id);
+    const nickname = (profileBody.kakao_account && profileBody.kakao_account.profile && profileBody.kakao_account.profile.nickname) || '카카오회원';
+    const email = (profileBody.kakao_account && profileBody.kakao_account.email) || null;
+    // 3) users 테이블 upsert(기존 회원이면 그대로, 신규면 29,000크레딧 지급)
+    let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get('kakao', kakaoId);
+    if (!user) {
+      const id = randomUUID();
+      db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, email, cash_balance) VALUES (?,?,?,?,?,?)')
+        .run(id, 'kakao', kakaoId, nickname, email, 29000);
+      user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+    }
+    db.prepare('UPDATE users SET consent_marketing=?, consent_location=? WHERE id=?').run(consent.marketing === true ? 1 : 0, consent.location === true ? 1 : 0, user.id);
+    user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+    const jwtToken = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
+    res.json({ success: true, data: { token: jwtToken, user, providerUserId: kakaoId, nickname, email } });
+  } catch (e) {
+    console.error('카카오 로그인 처리 중 오류:', e.message);
+    res.status(500).json({ success: false, error: { code: 'KAKAO_CALLBACK_ERROR', message: '카카오 로그인 처리 중 오류가 발생했어요.' } });
+  }
+});
+
+// 신규(사용자요청 — 네이버도 카카오처럼 실연동): 네이버 OAuth 콜백. 카카오와 동일한 구조(인가코드→
+// 토큰교환→사용자정보조회→users upsert→JWT발급), 네이버 API 스펙에 맞춰 구현.
+app.post('/api/auth/social/naver/callback', socialAuthLimiter, async (req, res) => {
+  const { code, state, redirectUri, consent } = req.body;
+  if (!isNonEmptyString(code, 500)) return validationError(res, 'code가 필요합니다');
+  if (!hasRequiredConsent(consent)) return validationError(res, '필수 이용약관과 개인정보 수집 동의가 필요합니다');
+  const clientId = process.env.NAVER_CLIENT_ID;
+  const clientSecret = process.env.NAVER_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    return res.status(501).json({ success: false, error: { code: 'NOT_IMPLEMENTED', message: '네이버 로그인 연동이 아직 준비 중이에요.' } });
+  }
+  try {
+    // 1) 인가코드 → 액세스 토큰 교환
+    const tokenRes = await fetch('https://nid.naver.com/oauth2.0/token?' + new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      client_secret: clientSecret,
+      code: code,
+      state: state || ''
+    }));
+    const tokenBody = await tokenRes.json();
+    if (!tokenRes.ok || !tokenBody.access_token) {
+      console.error('네이버 토큰 교환 실패:', tokenBody);
+      return res.status(400).json({ success: false, error: { code: 'NAVER_TOKEN_ERROR', message: '네이버 인증에 실패했어요. 다시 로그인해주세요.' } });
+    }
+    // 2) 액세스 토큰으로 사용자 정보 조회
+    const profileRes = await fetch('https://openapi.naver.com/v1/nid/me', {
+      headers: { 'Authorization': 'Bearer ' + tokenBody.access_token }
+    });
+    const profileBody = await profileRes.json();
+    if (!profileRes.ok || !profileBody.response || !profileBody.response.id) {
+      console.error('네이버 사용자정보 조회 실패:', profileBody);
+      return res.status(400).json({ success: false, error: { code: 'NAVER_PROFILE_ERROR', message: '네이버 사용자 정보를 가져오지 못했어요.' } });
+    }
+    const naverId = String(profileBody.response.id);
+    const nickname = profileBody.response.nickname || profileBody.response.name || '네이버회원';
+    const email = profileBody.response.email || null;
+    // 3) users 테이블 upsert(기존 회원이면 그대로, 신규면 29,000크레딧 지급)
+    let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get('naver', naverId);
+    if (!user) {
+      const id = randomUUID();
+      db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, email, cash_balance) VALUES (?,?,?,?,?,?)')
+        .run(id, 'naver', naverId, nickname, email, 29000);
+      user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+    }
+    db.prepare('UPDATE users SET consent_marketing=?, consent_location=? WHERE id=?').run(consent.marketing === true ? 1 : 0, consent.location === true ? 1 : 0, user.id);
+    user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+    const jwtToken = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
+    res.json({ success: true, data: { token: jwtToken, user, providerUserId: naverId, nickname, email } });
+  } catch (e) {
+    console.error('네이버 로그인 처리 중 오류:', e.message);
+    res.status(500).json({ success: false, error: { code: 'NAVER_CALLBACK_ERROR', message: '네이버 로그인 처리 중 오류가 발생했어요.' } });
+  }
+});
+
+// 신규(사용자요청 — 실제 이메일 인증코드 발송): Resend API로 실제 이메일 발송.
+// 6자리 코드를 생성해 DB에 5분 만료로 저장하고, 실제 이메일을 보낸다.
+app.post('/api/otp/email/send', otpSendLimiter, async (req, res) => {
+  const { email, forPartner, partnerMode, consumerMode } = req.body;
+  if (!isNonEmptyString(email, 200) || !EMAIL_RE.test(email)) return validationError(res, '올바른 이메일 형식이 아닙니다');
+  if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
+  if (!forPartner && !['signup', 'login'].includes(consumerMode)) return validationError(res, '소비자 인증 목적이 올바르지 않습니다');
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const codeHash = bcrypt.hashSync(code, 10);
+  const id = randomUUID();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer_' + consumerMode;
+  db.prepare('UPDATE otp_codes SET consumed_at=datetime(\'now\') WHERE target=? AND purpose=? AND consumed_at IS NULL').run(email.toLowerCase(), purpose);
+  db.prepare('INSERT INTO otp_codes (id, target, code, expires_at, purpose) VALUES (?,?,?,?,?)').run(id, email.toLowerCase(), codeHash, expiresAt, purpose);
+  const resendKey = process.env.RESEND_API_KEY;
+  if (!resendKey) {
+    db.prepare('DELETE FROM otp_codes WHERE id=?').run(id);
+    return res.status(503).json({ success: false, error: { code: 'EMAIL_NOT_CONFIGURED', message: '이메일 인증 서비스 설정이 필요합니다' } });
+  }
+  try {
+    const emailRes = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + resendKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        // Resend 운영 발신주소는 검증된 도메인의 주소를 Render 환경변수로 지정한다.
+        // 미지정 시 Resend 시험용 주소를 사용하며, 이 경우 수신자가 제한될 수 있다.
+        from: process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
+        to: email,
+        subject: '[루머 ROOMER] 인증코드 안내',
+        html: '<p>안녕하세요, 루머(ROOMER)입니다.</p><p>인증코드는 <strong style="font-size:20px">' + code + '</strong> 입니다.<br>5분 이내에 입력해주세요.</p>'
+      })
+    });
+    if (!emailRes.ok) {
+      const errBody = await emailRes.text();
+      console.error('이메일 발송 실패:', errBody);
+      db.prepare('DELETE FROM otp_codes WHERE id=?').run(id);
+      return res.status(500).json({ success: false, error: { code: 'EMAIL_SEND_ERROR', message: '이메일 발송에 실패했어요. 잠시 후 다시 시도해주세요.' } });
+    }
+    res.json({ success: true, data: { sent: true } });
+  } catch (e) {
+    console.error('이메일 발송 오류:', e.message);
+    db.prepare('DELETE FROM otp_codes WHERE id=?').run(id);
+    res.status(500).json({ success: false, error: { code: 'EMAIL_SEND_ERROR', message: '이메일 발송 중 오류가 발생했어요.' } });
+  }
+});
+
+// 신규(사용자요청): 이메일 인증코드 확인. 일치하면 users upsert(신규면 29,000크레딧) 후 JWT 발급.
+// 파트너 가입 흐름에서는 단순 확인(verified)만 쓰고, 유저 생성은 프론트에서 별도 처리.
+app.post('/api/otp/email/verify', otpVerifyLimiter, (req, res) => {
+  const { email, code, forPartner, partnerMode, consumerMode } = req.body;
+  if (!isNonEmptyString(email, 200) || !isNonEmptyString(code, 10)) return validationError(res, 'email과 code가 필요합니다');
+  if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
+  if (!forPartner && !['signup', 'login'].includes(consumerMode)) return validationError(res, '소비자 인증 목적이 올바르지 않습니다');
+  const normalizedEmail = email.toLowerCase();
+  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer_' + consumerMode;
+  const row = db.prepare('SELECT * FROM otp_codes WHERE target=? AND purpose=? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1').get(normalizedEmail, purpose);
+  if (!row) return res.status(400).json({ success: false, error: { code: 'OTP_NOT_FOUND', message: '인증코드를 먼저 요청해주세요.' } });
+  if (new Date(row.expires_at) < new Date()) return res.status(400).json({ success: false, error: { code: 'OTP_EXPIRED', message: '인증코드가 만료됐어요. 다시 요청해주세요.' } });
+  if (row.attempts >= 5) return res.status(429).json({ success: false, error: { code: 'OTP_LOCKED', message: '인증 시도 횟수를 초과했습니다. 코드를 다시 요청해주세요.' } });
+  if (!bcrypt.compareSync(code, row.code)) {
+    db.prepare('UPDATE otp_codes SET attempts=attempts+1 WHERE id=?').run(row.id);
+    return res.status(400).json({ success: false, error: { code: 'OTP_MISMATCH', message: '인증코드가 일치하지 않아요.' } });
+  }
+  db.prepare("UPDATE otp_codes SET verified=1, consumed_at=datetime('now') WHERE id=?").run(row.id);
+  if (forPartner) {
+    if (partnerMode === 'login') {
+      const partner = db.prepare('SELECT * FROM partners WHERE login_provider=? AND login_id=?').get('email', normalizedEmail);
+      if (!partner) return res.status(404).json({ success: false, error: { code: 'PARTNER_NOT_FOUND', message: '이 이메일로 가입된 파트너를 찾을 수 없습니다' } });
+      if (partner.verify_status === 'suspended') return res.status(403).json({ success: false, error: { code: 'PARTNER_SUSPENDED', message: '반복 노쇼로 계정이 일시 정지되었습니다. 고객센터로 문의해주세요.' } });
+      const partnerToken = jwt.sign({ sub: partner.id, role: 'partner' }, JWT_SECRET, { expiresIn: '4h' });
+      return res.json({ success: true, data: { token: partnerToken, partner: omitPartnerSecrets(withPartnerServiceRegions(partner), true), verified: true } });
+    }
+    const signupToken = jwt.sign({ role: 'partner_signup', loginId: normalizedEmail, loginProvider: 'email' }, JWT_SECRET, { expiresIn: '1h' });
+    return res.json({ success: true, data: { token: signupToken, verified: true } });
+  }
+  let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get('email', normalizedEmail);
+  if (consumerMode === 'login' && !user) {
+    return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: '이 이메일로 가입된 소비자 계정을 찾을 수 없습니다.' } });
+  }
+  if (!user) {
+    const id = randomUUID();
+    db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, email, cash_balance) VALUES (?,?,?,?,?,?)')
+      .run(id, 'email', normalizedEmail, normalizedEmail.split('@')[0], normalizedEmail, 29000);
+    user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+  }
+  const token = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
+  res.json({ success: true, data: { token, user, verified: true } });
+});
+
+// ===== 2. 회원 =====
+
+// 신규(2026-09 — 알리고 고정IP 문제 해결용 중계 프록시 연동):
+// [배경] 알리고는 "API 발송 허용 IP"에 단일 IPv4 하나만 등록 가능한데, Render의 발신 IP는
+// 고정이 아니라 공유 대역(계속 바뀜)이라 알리고에 그대로 등록할 수 없음(-101 인증오류-IP 발생).
+// [해결] 고정 공인IP를 가진 별도 서버(Oracle Cloud Always Free)에 알리고 호출만 대신 해주는
+// 작은 중계 프록시(aligo-relay, 이 저장소의 oracle-proxy/ 폴더 참고)를 세워두고,
+// 이 서버(Render)는 알리고에 직접 요청하지 않고 그 중계 프록시에 요청 → 중계 프록시가
+// 자신의 고정 IP로 알리고 API를 호출 → 결과를 그대로 돌려받는 구조.
+// [환경변수]
+//   ALIGO_RELAY_URL    : 중계 프록시 주소 (예: http://<오라클 고정IP>:8080) — 설정 안 하면 기존처럼 알리고에 직접 호출(로컬 테스트용)
+//   ALIGO_RELAY_SECRET : 중계 프록시와 공유하는 비밀키. 중계 프록시 쪽 RELAY_SECRET과 반드시 동일해야 함.
+async function sendAligoSms(params) {
+  const relayUrl = process.env.ALIGO_RELAY_URL;
+  const relaySecret = process.env.ALIGO_RELAY_SECRET;
+  if (relayUrl) {
+    // 중계 프록시 경유 (운영 환경 — Oracle 고정IP를 통해 알리고 호출)
+    const relayRes = await fetch(relayUrl.replace(/\/$/, '') + '/relay/aligo/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(relaySecret ? { 'x-relay-secret': relaySecret } : {})
+      },
+      body: JSON.stringify(params)
+    });
+    return relayRes.json();
+  }
+  // 중계 프록시 미설정 시 기존 방식(알리고 직접 호출) — 로컬 개발/테스트용
+  const directRes = await fetch('https://apis.aligo.in/send/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
+    body: new URLSearchParams(params)
+  });
+  return directRes.json();
+}
+
+// 신규(사용자요청 — 휴대폰 인증 실연동, 알리고 SMS API 사용):
+// [메모/결정사항 — 2026-09 팀 논의] 휴대폰 인증에는 크게 두 종류가 있음:
+//   1) "전화번호 소유 확인"(OTP 문자 발송) — 지금 구현하는 것. 알리고 등 SMS 발송업체로 충분.
+//   2) "정식 본인확인"(이름·생년월일까지 실명 일치 확인, NICE/PASS, CI/DI 발급)
+//      — partners.ci_hash, partner_identity_verifications 테이블은 이 2번 목적을 위해 미리
+//        준비해둔 구조. NICE/PASS는 PG사(다날·NHN KCP) 계약이 필수이고 월정액/건당 비용이 있어
+//        지금 단계에서는 보류. 파트너 검증이 더 엄격해져야 할 시점에 포트원(PortOne) 경유로
+//        전환 검토. 지금은 알리고로 "전화번호 소유 확인"만 우선 구현.
+app.post('/api/otp/sms/send', otpSendLimiter, async (req, res) => {
+  const { phone, forPartner, partnerMode, consumerMode } = req.body;
+  const normalizedPhone = String(phone || '').replace(/[^0-9]/g, '');
+  if (!/^01[0-9]{8,9}$/.test(normalizedPhone)) return validationError(res, '올바른 휴대폰 번호 형식이 아닙니다');
+  if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
+  if (!forPartner && !['signup', 'login'].includes(consumerMode)) return validationError(res, '소비자 인증 목적이 올바르지 않습니다');
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const codeHash = bcrypt.hashSync(code, 10);
+  const id = randomUUID();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer_' + consumerMode;
+  db.prepare('UPDATE otp_codes SET consumed_at=datetime(\'now\') WHERE target=? AND purpose=? AND consumed_at IS NULL').run(normalizedPhone, purpose);
+  db.prepare('INSERT INTO otp_codes (id, target, code, expires_at, purpose) VALUES (?,?,?,?,?)').run(id, normalizedPhone, codeHash, expiresAt, purpose);
+  const aligoKey = process.env.ALIGO_API_KEY;
+  const aligoUserId = process.env.ALIGO_USER_ID;
+  const aligoSender = process.env.ALIGO_SENDER;
+  if (!aligoKey || !aligoUserId || !aligoSender) {
+    db.prepare('DELETE FROM otp_codes WHERE id=?').run(id);
+    return res.status(503).json({ success: false, error: { code: 'SMS_NOT_CONFIGURED', message: '휴대폰 인증 서비스 설정이 필요합니다' } });
+  }
+  try {
+    // 신규(사용자요청 — 알리고 실사용 전 테스트모드 확인): ALIGO_TEST_MODE=true 이면 testmode_yn=Y로
+    // 호출해서 실제 문자 발송·과금 없이 API 연동(인증키·형식) 자체만 검증할 수 있음.
+    // 실제 서비스 전환 시에는 이 환경변수를 제거(또는 false)하기만 하면 되고 코드 수정은 불필요.
+    const params = {
+      key: aligoKey,
+      user_id: aligoUserId,
+      sender: aligoSender,
+      receiver: normalizedPhone,
+      msg: '[루머 ROOMER] 인증코드 ' + code + ' (5분 이내 입력)'
+    };
+    if (process.env.ALIGO_TEST_MODE === 'true') params.testmode_yn = 'Y';
+    const smsBody = await sendAligoSms(params);
+    if (String(smsBody.result_code) !== '1') {
+      console.error('SMS 발송 실패:', smsBody);
+      db.prepare('DELETE FROM otp_codes WHERE id=?').run(id);
+      return res.status(500).json({ success: false, error: { code: 'SMS_SEND_ERROR', message: '문자 발송에 실패했어요. 잠시 후 다시 시도해주세요.' } });
+    }
+    res.json({ success: true, data: { sent: true } });
+  } catch (e) {
+    console.error('SMS 발송 오류:', e.message);
+    db.prepare('DELETE FROM otp_codes WHERE id=?').run(id);
+    res.status(500).json({ success: false, error: { code: 'SMS_SEND_ERROR', message: '문자 발송 중 오류가 발생했어요.' } });
+  }
+});
+
+// 신규(사용자요청): 휴대폰 인증코드 확인. 이메일 인증(/api/otp/email/verify)과 완전히 동일한 구조.
+app.post('/api/otp/sms/verify', otpVerifyLimiter, (req, res) => {
+  const { phone, code, forPartner, partnerMode, consumerMode } = req.body;
+  const normalizedPhone = String(phone || '').replace(/[^0-9]/g, '');
+  if (!/^01[0-9]{8,9}$/.test(normalizedPhone) || !isNonEmptyString(code, 10)) return validationError(res, 'phone과 code가 필요합니다');
+  if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
+  if (!forPartner && !['signup', 'login'].includes(consumerMode)) return validationError(res, '소비자 인증 목적이 올바르지 않습니다');
+  const purpose = forPartner ? 'partner_' + partnerMode : 'consumer_' + consumerMode;
+  const row = db.prepare('SELECT * FROM otp_codes WHERE target=? AND purpose=? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1').get(normalizedPhone, purpose);
+  if (!row) return res.status(400).json({ success: false, error: { code: 'OTP_NOT_FOUND', message: '인증코드를 먼저 요청해주세요.' } });
+  if (new Date(row.expires_at) < new Date()) return res.status(400).json({ success: false, error: { code: 'OTP_EXPIRED', message: '인증코드가 만료됐어요. 다시 요청해주세요.' } });
+  if (row.attempts >= 5) return res.status(429).json({ success: false, error: { code: 'OTP_LOCKED', message: '인증 시도 횟수를 초과했습니다. 코드를 다시 요청해주세요.' } });
+  if (!bcrypt.compareSync(code, row.code)) {
+    db.prepare('UPDATE otp_codes SET attempts=attempts+1 WHERE id=?').run(row.id);
+    return res.status(400).json({ success: false, error: { code: 'OTP_MISMATCH', message: '인증코드가 일치하지 않아요.' } });
+  }
+  db.prepare("UPDATE otp_codes SET verified=1, consumed_at=datetime('now') WHERE id=?").run(row.id);
+  if (forPartner) {
+    if (partnerMode === 'login') {
+      const partner = db.prepare('SELECT * FROM partners WHERE login_provider=? AND login_id=?').get('phone', normalizedPhone);
+      if (!partner) return res.status(404).json({ success: false, error: { code: 'PARTNER_NOT_FOUND', message: '이 번호로 가입된 파트너를 찾을 수 없습니다' } });
+      if (partner.verify_status === 'suspended') return res.status(403).json({ success: false, error: { code: 'PARTNER_SUSPENDED', message: '반복 노쇼로 계정이 일시 정지되었습니다. 고객센터로 문의해주세요.' } });
+      const partnerToken = jwt.sign({ sub: partner.id, role: 'partner' }, JWT_SECRET, { expiresIn: '4h' });
+      return res.json({ success: true, data: { token: partnerToken, partner: omitPartnerSecrets(withPartnerServiceRegions(partner), true), verified: true } });
+    }
+    const signupToken = jwt.sign({ role: 'partner_signup', loginId: normalizedPhone, loginProvider: 'phone' }, JWT_SECRET, { expiresIn: '1h' });
+    return res.json({ success: true, data: { token: signupToken, verified: true } });
+  }
+  let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get('phone', normalizedPhone);
+  if (consumerMode === 'login' && !user) {
+    return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: '이 번호로 가입된 소비자 계정을 찾을 수 없습니다.' } });
+  }
+  if (!user) {
+    const id = randomUUID();
+    // 주의: social_id는 로그인 조회(WHERE social_provider=? AND social_id=?)에 그대로 쓰이므로
+    // 암호화하지 않는다(암호화하면 매번 다른 값이 나와 조회 자체가 불가능해짐). phone 컬럼만 암호화.
+    db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, phone, cash_balance) VALUES (?,?,?,?,?,?)')
+      .run(id, 'phone', normalizedPhone, '휴대폰회원', db.encryptPii(normalizedPhone), 29000);
+    user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+  }
+  const token = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
+  res.json({ success: true, data: { token, user, verified: true } });
+});
+
+app.get('/api/users/me', authRequired, (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.sub);
+  if (!user) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '사용자를 찾을 수 없습니다' } });
+  res.json({ success: true, data: user });
+});
+
+app.patch('/api/users/me/consent', authRequired, (req, res) => {
+  const { marketing, location } = req.body;
+  if (typeof marketing !== 'boolean' || typeof location !== 'boolean') return validationError(res, 'marketing/location은 true/false 값이어야 합니다');
+  db.prepare('UPDATE users SET consent_marketing=?, consent_location=? WHERE id=?')
+    .run(marketing ? 1 : 0, location ? 1 : 0, req.user.sub);
+  res.json({ success: true, data: { marketing, location } });
+});
+
+// 신규(사용자요청 — 카카오/네이버 로그인 시 닉네임 선택동의 미체크로 "카카오회원"/"네이버회원"으로만
+// 표시되고 고칠 방법이 없던 문제): 소비자가 언제든 직접 닉네임을 수정할 수 있는 API.
+app.patch('/api/users/me/nickname', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 닉네임을 변경할 수 있습니다' } });
+  const { nickname } = req.body;
+  if (!isNonEmptyString(nickname, 30)) return validationError(res, '닉네임은 1자 이상 30자 이내여야 합니다');
+  const trimmed = nickname.trim();
+  db.prepare('UPDATE users SET nickname=? WHERE id=?').run(trimmed, req.user.sub);
+  const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.sub);
+  res.json({ success: true, data: { nickname: trimmed, user } });
+});
+
+app.get('/api/users/me/data-export', authRequired, (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.sub);
+  res.setHeader('Content-Disposition', 'attachment; filename="my-data.json"');
+  res.json(user);
+});
+
+app.delete('/api/users/me', authRequired, (req, res) => {
+  // 결함정리(사용자요청 — 인증 보안 강화 점검 중 발견: 탈퇴시 개인정보가 삭제되지 않고
+  // 그대로 남아있던 문제): withdrawn_at만 찍는 게 아니라 실제 개인식별정보(닉네임/이메일/
+  // 전화/지역)를 익명화 처리. social_id도 고유값으로 바꿔서 같은 소셜계정으로 재가입 가능하게 유지.
+  // 계약/정산 등 다른 테이블과의 참조무결성을 위해 id 자체는 보존.
+  db.prepare(`UPDATE users SET
+    withdrawn_at=datetime('now'),
+    nickname='탈퇴한 회원',
+    email=NULL,
+    phone=NULL,
+    region=NULL,
+    social_id=('withdrawn_' || id || '_' || strftime('%s','now'))
+    WHERE id=?`).run(req.user.sub);
+  res.json({ success: true, data: { message: '탈퇴 처리되었습니다' } });
+});
+
+app.delete('/api/partners/me', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'업체 계정만 탈퇴할 수 있습니다' } });
+  const partner = db.prepare('SELECT id FROM partners WHERE id=?').get(req.user.sub);
+  if (!partner) return res.status(404).json({ success:false, error:{ code:'NOT_FOUND', message:'업체 정보를 찾을 수 없습니다' } });
+  db.transaction(() => {
+    db.prepare(`UPDATE partners SET
+      verify_status='withdrawn', approved_at=NULL, business_name='탈퇴한 업체', login_id=('withdrawn_' || id || '_' || strftime('%s','now')),
+      phone=NULL, applicant_name=NULL, ci_hash=NULL, address=NULL, postal_code=NULL, road_address=NULL, address_detail=NULL,
+      business_reg_number=('withdrawn-' || id), license_number=NULL, ceo_name=NULL, reject_reason=NULL,
+      doc_image_url=NULL, ext_image_url=NULL, int_image_url=NULL, authorization_doc_url=NULL
+      WHERE id=?`).run(req.user.sub);
+    db.prepare('DELETE FROM partner_service_regions WHERE partner_id=?').run(req.user.sub);
+    db.prepare(`UPDATE stored_files SET retention_until=datetime('now','+30 days')
+      WHERE owner_type='partner' AND owner_id=? AND visibility='private'`).run(req.user.sub);
+  })();
+  res.json({ success:true, data:{ message:'파트너 탈퇴가 접수되었으며 개인정보는 익명화되었습니다. 증빙자료는 30일 후 파기됩니다.' } });
+});
+const partnerRegistrationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
+  message: { success:false, error:{ code:'TOO_MANY_REGISTRATIONS', message:'파트너 등록 요청이 너무 많습니다. 15분 후 다시 시도해주세요' } }
+});
+
+// ===== 3. 업체 가입·검증 =====
+function normalizePartnerServiceRegions(value, fallbackRegion) {
+  const source = Array.isArray(value) && value.length ? value : (fallbackRegion ? [fallbackRegion] : []);
+  const normalized = source.map(item => String(item || '').trim().replace(/\s+/g, ' ')).filter(Boolean);
+  return [...new Set(normalized)];
+}
+function partnerServiceRegions(partnerId) {
+  return db.prepare(`SELECT region_code AS regionCode, sido, sigungu, is_primary AS isPrimary
+    FROM partner_service_regions WHERE partner_id=? ORDER BY is_primary DESC, created_at ASC`).all(partnerId);
+}
+function withPartnerServiceRegions(partner) {
+  if (!partner) return partner;
+  return { ...partner, serviceRegions: partnerServiceRegions(partner.id) };
+}
+function omitPartnerSecrets(partner, includePrivateProfile) {
+  if (!partner) return partner;
+  const safe = { ...partner };
+  [
+    'ci_hash', 'authorization_doc_url', 'doc_image_url', 'ext_image_url', 'int_image_url'
+  ].forEach(key => delete safe[key]);
+  if (!includePrivateProfile) {
+    ['login_id', 'login_provider', 'business_reg_number', 'phone', 'applicant_name', 'address_detail',
+      'reject_reason'].forEach(key => delete safe[key]);
+  }
+  return safe;
+}
+// 결함수정(팀장 지시 반영): 기존엔 등록 즉시 승인(approved_at)되어 관리자 검수 절차 자체가 없었음
+// → 프론트엔드(루머02.html) 정책과 일치하도록 pending 상태로 시작, 관리자 승인 후에만 검색·노출되게 수정
+app.post('/api/partners/register', partnerRegistrationLimiter, partnerSignupRequired, (req, res) => {
+  const { businessName, businessRegNumber, licenseNumber, ceoName, address, postalCode, roadAddress, addressDetail, region, docImageUrl, extImageUrl, intImageUrl,
+    intro, strengthTags, portfolioImages, availableHours, spaceCategories, serviceRegions, businessVerificationToken,
+    identityVerificationToken, applicantRole, authorizationDocUrl, verificationConsents, loginId, loginProvider } = req.body;
+  if (!isNonEmptyString(businessName, 100)) return validationError(res, '상호명을 입력해주세요(100자 이내)');
+  if (!isNonEmptyString(businessRegNumber) || !BIZNO_RE.test(businessRegNumber)) return validationError(res, '사업자등록번호 형식이 올바르지 않습니다(예: 123-45-67890)');
+  if (ceoName && !isNonEmptyString(ceoName, 30)) return validationError(res, '대표자명은 30자 이내여야 합니다');
+  if (address && !isNonEmptyString(address, 200)) return validationError(res, '주소는 200자 이내여야 합니다');
+  if (!/^\d{5}$/.test(String(postalCode || ''))) return validationError(res, '우편번호 찾기로 5자리 우편번호를 선택해주세요');
+  if (!isNonEmptyString(roadAddress, 180)) return validationError(res, '우편번호 찾기로 사업장 주소를 선택해주세요');
+  if (addressDetail && !isNonEmptyString(addressDetail, 100)) return validationError(res, '상세주소는 100자 이내여야 합니다');
+  // 신규(사용자요청 — 2단계: 가입폼 확장) 필드 검증
+  if (intro && !isNonEmptyString(intro, 50)) return validationError(res, '한줄소개는 50자 이내여야 합니다');
+  if (strengthTags && (!Array.isArray(strengthTags) || strengthTags.length > 5)) return validationError(res, '강점 키워드는 최대 5개까지 선택 가능합니다');
+  if (portfolioImages && (!Array.isArray(portfolioImages) || portfolioImages.length > 6)) return validationError(res, '대표 시공사진은 최대 6장까지 등록 가능합니다');
+  if (spaceCategories && !Array.isArray(spaceCategories)) return validationError(res, '전문분야 형식이 올바르지 않습니다');
+  // 결함정리(사용자요청 — 본인확인 정책 온오프): identity 동의는 본인확인이 활성화된 경우에만 필수
+  const identityVerificationRequiredForConsent = getAdminPolicy('identity_verification_required', false);
+  if (!verificationConsents || verificationConsents.business !== true || verificationConsents.review !== true || (identityVerificationRequiredForConsent && verificationConsents.identity !== true)) {
+    return validationError(res, '파트너 검증을 위한 필수 동의가 필요합니다');
+  }
+  const normalizedRegions = normalizePartnerServiceRegions(serviceRegions, region);
+  if (normalizedRegions.length < 1 || normalizedRegions.length > 5) return validationError(res, '활동지역은 1개 이상 5개 이하로 등록해주세요');
+  if (normalizedRegions.some(item => item.length > 60 || item.split(' ').length < 2)) return validationError(res, '활동지역 형식이 올바르지 않습니다');
+  // 운영환경에서는 브라우저가 보낸 Base64/임의 URL을 신뢰하지 않고, 같은 가입계정이
+  // 객체저장소에 먼저 업로드해 발급받은 비공개 fileId만 가입자료로 인정한다.
+  const businessDocument = requireSignupFile(docImageUrl, req.partnerSignup.loginId, 'business_registration');
+  const officeExterior = extImageUrl ? requireSignupFile(extImageUrl, req.partnerSignup.loginId, 'office_exterior') : null;
+  const officeInterior = intImageUrl ? requireSignupFile(intImageUrl, req.partnerSignup.loginId, 'office_interior') : null;
+  if (!businessDocument) {
+    return res.status(400).json({ success: false, error: { code: 'DOC_REQUIRED', message: '사업자등록증을 올려야 등록할 수 있습니다' } });
+  }
+  if ((extImageUrl && !officeExterior) || (intImageUrl && !officeInterior)) return validationError(res, '사무실 사진 업로드 정보가 올바르지 않습니다');
+  let verifiedBusiness;
+  try {
+    verifiedBusiness = jwt.verify(String(businessVerificationToken || ''), JWT_SECRET);
+  } catch (error) {
+    return res.status(403).json({ success:false, error:{ code:'BUSINESS_VERIFICATION_REQUIRED', message:'국세청 사업자 진위확인을 다시 완료해주세요' } });
+  }
+  const normalizedBizNo = String(businessRegNumber).replace(/\D/g, '');
+  if (verifiedBusiness.role !== 'partner_business_verification' || verifiedBusiness.bizNo !== normalizedBizNo || verifiedBusiness.ceoName !== String(ceoName || '').trim()) {
+    return res.status(403).json({ success:false, error:{ code:'BUSINESS_VERIFICATION_MISMATCH', message:'검증받은 사업자 정보와 가입정보가 일치하지 않습니다' } });
+  }
+  // 결함정리(사용자요청 — 본인확인은 코드 삭제 대신 관리자가 언제든 온/오프할 수 있는
+  // 정책으로 전환): 기본값은 false(비활성화) — 지금은 본인확인 없이도 가입 다음단계 진행 가능.
+  // 관리자가 정책설정 화면에서 identity_verification_required 를 true로 바꾸면 다시 필수화됨.
+  const identityVerificationRequired = getAdminPolicy('identity_verification_required', false);
+  const normalizedApplicantRole = applicantRole === 'manager' ? 'manager' : 'representative';
+  let identityRow = null;
+  if (identityVerificationRequired) {
+    let identityClaim;
+    try { identityClaim = jwt.verify(String(identityVerificationToken || ''), JWT_SECRET); }
+    catch (error) { return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_REQUIRED', message:'휴대폰 본인확인을 다시 완료해주세요' } }); }
+    if (identityClaim.role !== 'partner_identity_verification' || identityClaim.loginId !== req.partnerSignup.loginId) {
+      return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_MISMATCH', message:'본인확인 계정과 가입 이메일이 일치하지 않습니다' } });
+    }
+    identityRow = db.prepare(`SELECT * FROM partner_identity_verifications
+      WHERE id=? AND login_id=? AND status='verified' AND consumed_at IS NULL`).get(identityClaim.verificationId, req.partnerSignup.loginId);
+    if (!identityRow) return res.status(403).json({ success:false, error:{ code:'IDENTITY_VERIFICATION_USED', message:'본인확인을 다시 완료해주세요' } });
+    const normalizePersonName = value => String(value || '').replace(/\s+/g, '');
+    if (normalizedApplicantRole === 'representative' && normalizePersonName(identityRow.applicant_name) !== normalizePersonName(ceoName)) {
+      return res.status(403).json({ success:false, error:{ code:'REPRESENTATIVE_NAME_MISMATCH', message:'휴대폰 본인확인 이름과 사업자 대표자명이 일치하지 않습니다' } });
+    }
+  }
+  const authorizationDocument = normalizedApplicantRole === 'manager'
+    ? requireSignupFile(authorizationDocUrl, req.partnerSignup.loginId, 'authorization') : null;
+  if (normalizedApplicantRole === 'manager' && !authorizationDocument) {
+    return res.status(400).json({ success:false, error:{ code:'AUTHORIZATION_REQUIRED', message:'담당자는 대표자 위임 또는 재직 증빙이 필요합니다' } });
+  }
+  const verifiedLoginId = req.partnerSignup.loginId;
+  const verifiedLoginProvider = req.partnerSignup.loginProvider;
+  if ((loginId && loginId.toLowerCase() !== verifiedLoginId) || (loginProvider && loginProvider !== verifiedLoginProvider)) {
+    return res.status(403).json({ success: false, error: { code: 'LOGIN_ID_MISMATCH', message: '인증한 이메일과 가입 이메일이 일치하지 않습니다' } });
+  }
+  const duplicateLogin = db.prepare('SELECT id FROM partners WHERE login_provider=? AND login_id=?').get(verifiedLoginProvider, verifiedLoginId);
+  if (duplicateLogin) return res.status(409).json({ success: false, error: { code: 'ALREADY_EXISTS', message: '이미 가입된 파트너 이메일입니다' } });
+  const id = randomUUID();
+  const tier = licenseNumber ? '면허 파트너' : '부분공사가능업체';
+  const insertPartner = db.transaction(() => {
+    db.prepare(`INSERT INTO partners (id, login_provider, login_id, business_name, business_reg_number, license_number, ceo_name, address, postal_code, road_address, address_detail, tier, region, doc_image_url, ext_image_url, int_image_url, verify_status, cert_license, intro, strength_tags, portfolio_images, available_hours, space_categories)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?,?,?,?,?,?)`)
+      .run(id, verifiedLoginProvider, verifiedLoginId, businessName, db.encryptPii(businessRegNumber), licenseNumber || null, db.encryptPii(ceoName || null), address || null, postalCode, roadAddress, addressDetail || null, tier, normalizedRegions[0], businessDocument.id, officeExterior ? officeExterior.id : null, officeInterior ? officeInterior.id : null, tier === '면허 파트너' ? 1 : 0,
+        intro || null, JSON.stringify(strengthTags || []), JSON.stringify(portfolioImages || []), availableHours || null, JSON.stringify(spaceCategories || []));
+    const insertRegion = db.prepare(`INSERT INTO partner_service_regions
+      (id, partner_id, region_code, sido, sigungu, is_primary) VALUES (?,?,?,?,?,?)`);
+    normalizedRegions.forEach((regionCode, index) => {
+      const parts = regionCode.split(' ');
+      insertRegion.run(randomUUID(), id, regionCode, parts[0], parts.slice(1).join(' '), index === 0 ? 1 : 0);
+    });
+    // identityRow.phone/applicant_name은 db.prepare().get()이 이미 자동 복호화해서 돌려준 평문이므로,
+    // 여기서 partners 테이블에 다시 쓸 때는 db.encryptPii()로 다시 암호화해야 한다.
+    db.prepare(`UPDATE partners SET phone=?, applicant_name=?, applicant_role=?, identity_verified_at=?, ci_hash=?, authorization_doc_url=? WHERE id=?`)
+      .run(db.encryptPii(identityRow ? identityRow.phone : null), db.encryptPii(identityRow ? identityRow.applicant_name : (normalizedApplicantRole==='representative' ? ceoName : null)), normalizedApplicantRole, identityRow ? identityRow.verified_at : null, identityRow ? identityRow.ci_hash : null, authorizationDocument ? authorizationDocument.id : null, id);
+    db.prepare("UPDATE stored_files SET owner_type='partner', owner_id=? WHERE owner_type='partner_signup' AND owner_id=?")
+      .run(id, verifiedLoginId);
+    db.prepare(`UPDATE partners SET business_verified_at=?, business_status=?, business_tax_type=? WHERE id=?`)
+      .run(verifiedBusiness.verifiedAt || new Date().toISOString(), verifiedBusiness.businessStatus || '계속사업자', verifiedBusiness.taxType || null, id);
+    const consentInsert = db.prepare(`INSERT INTO partner_verification_consents
+      (id, partner_id, consent_type, policy_version, agreed_at) VALUES (?,?,?,?,?)`);
+    const policyVersion = String(verificationConsents.policyVersion || '2026-09-05').slice(0,30);
+    ['business','identity','review'].forEach(type => consentInsert.run(randomUUID(), id, type, policyVersion, new Date().toISOString()));
+    if (identityRow) db.prepare("UPDATE partner_identity_verifications SET consumed_at=datetime('now') WHERE id=?").run(identityRow.id);
+  });
+  insertPartner();
+  const token = jwt.sign({ sub: id, role: 'partner' }, JWT_SECRET, { expiresIn: '1h' });
+  const partner = omitPartnerSecrets(withPartnerServiceRegions(db.prepare('SELECT * FROM partners WHERE id=?').get(id)), true);
+  res.json({ success: true, data: { id, tier, verifyStatus: 'pending', token, partner, licenseLimitNotice: tier === '부분공사가능업체' ? '무면허 업체는 1,500만원 이상 종합공사를 진행할 수 없습니다.' : null } });
+});
+
+app.get('/api/partners/search', (req, res) => {
+  const { region, category } = req.query;
+  // 결함수정: 승인된(approved) 업체만 검색 노출되도록 verify_status 조건 추가(기존 approved_at만 보던 것 정리)
+  let query = "SELECT * FROM partners WHERE verify_status='approved'";
+  const params = [];
+  if (region) {
+    query += ` AND (region LIKE ? OR EXISTS (
+      SELECT 1 FROM partner_service_regions psr WHERE psr.partner_id=partners.id AND psr.region_code LIKE ?
+    ))`;
+    params.push(`%${region}%`, `%${region}%`);
+  }
+  const partners = db.prepare(query).all(...params).map(withPartnerServiceRegions).map(partner => omitPartnerSecrets(partner, false));
+  res.json({ success: true, data: partners });
+});
+
+// 신규(사용자요청 — 지역기반 서비스: 위치공유 시 근처 업체/지역광고 노출):
+// 카카오 로컬 API가 돌려주는 공식 행정구역명("서울특별시" 등)을, 파트너 활동지역·광고 region
+// 필드가 실제로 쓰는 앱 내부 축약형("서울")으로 맞춰준다. 이 매핑이 없으면 좌표로 구한 지역명과
+// DB에 저장된 지역코드("서울 강남구")가 절대 일치하지 않아 필터링 자체가 항상 0건이 된다.
+const KAKAO_SIDO_TO_APP_SIDO = {
+  '서울특별시': '서울', '부산광역시': '부산', '대구광역시': '대구', '인천광역시': '인천',
+  '광주광역시': '광주', '대전광역시': '대전', '울산광역시': '울산', '세종특별자치시': '세종',
+  '경기도': '경기', '강원도': '강원', '강원특별자치도': '강원', '충청북도': '충북', '충청남도': '충남',
+  '전라북도': '전북', '전북특별자치도': '전북', '전라남도': '전남', '경상북도': '경북', '경상남도': '경남',
+  '제주특별자치도': '제주', '제주도': '제주'
+};
+function normalizeAppSido(kakaoSido) {
+  return KAKAO_SIDO_TO_APP_SIDO[kakaoSido] || kakaoSido;
+}
+// 실제 카카오 로컬 API(coord2regioncode) 호출. KAKAO_REST_API_KEY가 없으면 아예 호출하지 않고
+// 에러를 던진다 — 키 없이 임의의 지역을 지어내지 않는다(허수 데이터 금지 원칙).
+async function kakaoReverseGeocode(lat, lng) {
+  const apiKey = process.env.KAKAO_REST_API_KEY;
+  if (!apiKey) { const e = new Error('카카오 API 키가 설정되지 않았습니다'); e.code = 'GEO_NOT_CONFIGURED'; throw e; }
+  const url = `https://dapi.kakao.com/v2/local/geo/coord2regioncode.json?x=${lng}&y=${lat}`;
+  const kakaoRes = await fetch(url, { headers: { Authorization: `KakaoAK ${apiKey}` } });
+  if (!kakaoRes.ok) { const e = new Error('카카오 위치 조회에 실패했습니다'); e.code = 'GEO_LOOKUP_FAILED'; throw e; }
+  const body = await kakaoRes.json();
+  // region_type 'H'(행정동) 우선, 없으면 첫 결과로 대체
+  const region = (body.documents || []).find(d => d.region_type === 'H') || (body.documents || [])[0];
+  if (!region) { const e = new Error('해당 좌표의 지역 정보를 찾을 수 없습니다'); e.code = 'GEO_NO_RESULT'; throw e; }
+  const sido = normalizeAppSido(region.region_1depth_name);
+  const sigungu = region.region_2depth_name;
+  const dong = region.region_3depth_name || null;
+  return { sido, sigungu, dong, regionCode: (sido + ' ' + sigungu).trim() };
+}
+// 신규(테스트 전용 — 실제 카카오 API 호출 없이 결정론적 값 반환): 이 샌드박스는 카카오 서버로
+// 나가는 외부망 자체가 막혀 있고 실제 API 키도 없어, 카카오 좌표변환 "그 자체"는 이 환경에서
+// 검증이 불가능하다(정직하게 기록). 대신 GEO_TEST_MODE=true일 때만 활성화되는 이 스텁으로
+// 좌표변환 앞뒤의 나머지 로직(입력검증·지역코드 정규화·회원프로필 저장·하위 필터링 연동)은
+// 전부 실제로 돌려서 검증한다. 운영 환경에서는 이 환경변수를 절대 설정하지 않는다.
+const GEO_TEST_FIXTURES = [
+  { lat: 37.4979, lng: 127.0276, sido: '서울', sigungu: '강남구', dong: '역삼동' },
+  { lat: 37.3595, lng: 127.1052, sido: '경기', sigungu: '성남시', dong: '정자동' }
+];
+function geoTestModeStub(lat, lng) {
+  let best = GEO_TEST_FIXTURES[0], bestDist = Infinity;
+  for (const f of GEO_TEST_FIXTURES) {
+    const d = Math.pow(f.lat - lat, 2) + Math.pow(f.lng - lng, 2);
+    if (d < bestDist) { bestDist = d; best = f; }
+  }
+  return { sido: best.sido, sigungu: best.sigungu, dong: best.dong, regionCode: best.sido + ' ' + best.sigungu };
+}
+app.get('/api/geo/reverse', async (req, res) => {
+  const lat = parseFloat(req.query.lat), lng = parseFloat(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return validationError(res, '좌표(lat, lng)가 올바르지 않습니다');
+  if (lat < 33 || lat > 39 || lng < 124 || lng > 132) return validationError(res, '대한민국 범위 밖의 좌표입니다');
+  try {
+    if (process.env.GEO_TEST_MODE === 'true') {
+      return res.json({ success: true, data: { ...geoTestModeStub(lat, lng), source: 'test-stub' } });
+    }
+    const region = await kakaoReverseGeocode(lat, lng);
+    return res.json({ success: true, data: { ...region, source: 'kakao' } });
+  } catch (e) {
+    const code = e.code || 'GEO_LOOKUP_FAILED';
+    const status = code === 'GEO_NOT_CONFIGURED' ? 503 : 502;
+    const message = code === 'GEO_NOT_CONFIGURED'
+      ? '위치를 지역으로 변환하는 기능이 아직 설정되지 않았습니다(관리자: KAKAO_REST_API_KEY 필요)'
+      : '현재 위치를 지역으로 변환하지 못했습니다. 지역을 직접 선택해주세요.';
+    return res.status(status).json({ success: false, error: { code, message } });
+  }
+});
+
+// 신규(사용자요청 — 지역기반 서비스): 소비자가 선택/감지한 "현재 활성 지역"을 프로필에 저장해서
+// 다음 방문 때 재로그인마다 위치를 다시 묻지 않도록 한다. region=null로 보내면 전국(선택 해제)으로 되돌린다.
+app.put('/api/users/me/region', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 이용할 수 있습니다' } });
+  const { region } = req.body || {};
+  if (region !== null && region !== undefined) {
+    if (!isNonEmptyString(region, 60) || region.trim().split(/\s+/).length < 2) {
+      return validationError(res, '지역 형식이 올바르지 않습니다(예: 서울 강남구)');
+    }
+  }
+  const normalized = (region === null || region === undefined) ? null : region.trim();
+  db.prepare('UPDATE users SET region=? WHERE id=?').run(normalized, req.user.sub);
+  res.json({ success: true, data: { region: normalized } });
+});
+
+// 결함수정(사용자요청 — "추천 검색어"가 실제 통계 없이 하드코딩값이었던 문제 발견 후 수정): 지금까지
+// 검색은 브라우저 안에서만 처리돼서 서버에 아무 기록도 안 남았다 — "가장 많이 검색된 단어"라는 게
+// 애초에 존재하지 않는 데이터였음. 프론트가 실제 검색을 실행할 때마다 이 API로 검색어를 남기고,
+// 아래 /api/search/popular가 그 실제 로그를 집계해서 진짜 인기 검색어를 돌려준다.
+app.post('/api/search/log', searchLogLimiter, (req, res) => {
+  const raw = req.body && req.body.query;
+  if (!isNonEmptyString(raw, 100)) return validationError(res, '검색어가 필요합니다(100자 이내)');
+  const normalized = raw.trim().replace(/\s+/g, ' ');
+  if (!normalized) return validationError(res, '검색어가 필요합니다');
+  db.prepare('INSERT INTO search_queries (query) VALUES (?)').run(normalized);
+  res.json({ success: true, data: { logged: true } });
+});
+// 최근 30일 검색 로그를 검색어별로 집계해 상위 5개를 반환. 로그가 너무 적을 때(예: 서비스 초기)는
+// 우연히 1~2번 검색된 단어가 "인기 검색어"인 것처럼 보이는 걸 막기 위해 최소 3회 이상 검색된
+// 단어만 포함한다 — 이 조건을 만족하는 단어가 하나도 없으면 빈 배열을 반환하고, 프론트는 그 경우
+// 안내용 기본 문구를 그대로 보여준다(가짜로 순위를 채우지 않음).
+app.get('/api/search/popular', (req, res) => {
+  const rows = db.prepare(`SELECT query AS kw, COUNT(*) AS cnt FROM search_queries
+    WHERE created_at >= datetime('now','-30 days')
+    GROUP BY query HAVING COUNT(*) >= 3
+    ORDER BY cnt DESC, query ASC LIMIT 5`).all();
+  res.json({ success: true, data: rows });
+});
+
+// 신규(사용자요청 — ChatGPT 협업 병합): 로그인한 파트너 본인의 프로필 조회.
+// 주의: 반드시 아래의 '/api/partners/:id'보다 먼저 등록해야 함(Express는 등록순서대로 매칭하므로,
+// 순서가 바뀌면 'me'라는 문자열이 :id 파라미터로 잘못 매칭되어버림)
+app.get('/api/partners/me', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 접근할 수 있습니다' } });
+  const partner = omitPartnerSecrets(withPartnerServiceRegions(db.prepare('SELECT * FROM partners WHERE id=?').get(req.user.sub)), true);
+  if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체 정보를 찾을 수 없습니다' } });
+  res.json({ success: true, data: partner });
+});
+
+app.put('/api/partners/me/service-regions', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'업체 계정만 수정할 수 있습니다' } });
+  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.user.sub);
+  if (!partner) return res.status(404).json({ success:false, error:{ code:'NOT_FOUND', message:'업체 정보를 찾을 수 없습니다' } });
+  const normalizedRegions = normalizePartnerServiceRegions(req.body && req.body.serviceRegions, null);
+  if (normalizedRegions.length < 1 || normalizedRegions.length > 5) return validationError(res, '활동지역은 1개 이상 5개 이하로 등록해주세요');
+  if (normalizedRegions.some(item => item.length > 60 || item.split(' ').length < 2)) return validationError(res, '활동지역 형식이 올바르지 않습니다');
+  db.transaction(() => {
+    db.prepare('DELETE FROM partner_service_regions WHERE partner_id=?').run(req.user.sub);
+    const insert = db.prepare(`INSERT INTO partner_service_regions
+      (id, partner_id, region_code, sido, sigungu, is_primary) VALUES (?,?,?,?,?,?)`);
+    normalizedRegions.forEach((regionCode, index) => {
+      const parts = regionCode.split(' ');
+      insert.run(randomUUID(), req.user.sub, regionCode, parts[0], parts.slice(1).join(' '), index === 0 ? 1 : 0);
+    });
+    db.prepare('UPDATE partners SET region=? WHERE id=?').run(normalizedRegions[0], req.user.sub);
+  })();
+  const updated = omitPartnerSecrets(withPartnerServiceRegions(db.prepare('SELECT * FROM partners WHERE id=?').get(req.user.sub)), true);
+  res.json({ success:true, data:updated });
+});
+
+// 신규(사용자요청 — 파트너 셀프 상세페이지 수정): 가입 때 딱 한 번만 저장되던 소개문구·강점키워드·
+// 연락가능시간·전문분야를 언제든 스스로 수정할 수 있게 하는 범용 PUT. 상호명·주소·사업자번호 등
+// 심사와 직결된 항목은 여기서 다루지 않는다(오용 방지 — 필요해지면 관리자 재검수 플로우로 별도 설계).
+app.put('/api/partners/me', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 수정할 수 있습니다' } });
+  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.user.sub);
+  if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체 정보를 찾을 수 없습니다' } });
+  const { intro, strengthTags, availableHours, spaceCategories } = req.body;
+  if (intro != null && !isNonEmptyString(intro, 50) && intro !== '') return validationError(res, '한줄소개는 50자 이내여야 합니다');
+  if (strengthTags != null && (!Array.isArray(strengthTags) || strengthTags.length > 5 || strengthTags.some(t => typeof t !== 'string' || t.length > 20))) {
+    return validationError(res, '강점 키워드는 최대 5개, 각 20자 이내여야 합니다');
+  }
+  if (availableHours != null && !isNonEmptyString(availableHours, 60) && availableHours !== '') return validationError(res, '연락 가능 시간대는 60자 이내여야 합니다');
+  if (spaceCategories != null && (!Array.isArray(spaceCategories) || spaceCategories.some(c => typeof c !== 'string' || c.length > 20))) {
+    return validationError(res, '전문분야 형식이 올바르지 않습니다');
+  }
+  db.prepare(`UPDATE partners SET
+    intro = COALESCE(?, intro),
+    strength_tags = COALESCE(?, strength_tags),
+    available_hours = COALESCE(?, available_hours),
+    space_categories = COALESCE(?, space_categories)
+    WHERE id=?`)
+    .run(
+      intro != null ? intro.trim() : null,
+      strengthTags != null ? JSON.stringify(strengthTags) : null,
+      availableHours != null ? availableHours.trim() : null,
+      spaceCategories != null ? JSON.stringify(spaceCategories) : null,
+      req.user.sub
+    );
+  const updated = omitPartnerSecrets(withPartnerServiceRegions(db.prepare('SELECT * FROM partners WHERE id=?').get(req.user.sub)), true);
+  res.json({ success: true, data: updated });
+});
+
+// 신규(사용자요청 — 파트너 셀프 상세페이지 수정): 가입 때 등록한 "대표 시공사진"(상세페이지 상단 노출,
+// 최대 6장)을 언제든 직접 교체·삭제·추가할 수 있게 한다. 가입 때와 동일하게 관리자 검수 없이 즉시 반영
+// (완공사례 프로젝트 기반 포트폴리오는 별도로 계속 검수를 거침 — 이 필드만 원래부터 즉시반영 정책이었음).
+app.put('/api/partners/me/hero-photos', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 수정할 수 있습니다' } });
+  const partner = db.prepare('SELECT id FROM partners WHERE id=?').get(req.user.sub);
+  if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체 정보를 찾을 수 없습니다' } });
+  const { portfolioImages } = req.body;
+  if (!Array.isArray(portfolioImages) || portfolioImages.length > 6) return validationError(res, '대표 시공사진은 최대 6장까지 등록 가능합니다');
+  if (portfolioImages.some(src => typeof src !== 'string' || !src.trim() || src.length > 8_000_000)) {
+    return validationError(res, '사진 형식이 올바르지 않거나 용량이 너무 큽니다');
+  }
+  db.prepare('UPDATE partners SET portfolio_images=? WHERE id=?').run(JSON.stringify(portfolioImages), req.user.sub);
+  res.json({ success: true, data: { portfolioImages } });
+});
+
+app.get('/api/partners/:id', (req, res) => {
+  const partner = omitPartnerSecrets(withPartnerServiceRegions(db.prepare("SELECT * FROM partners WHERE id=? AND verify_status='approved'").get(req.params.id)), false);
+  if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
+  res.json({ success: true, data: partner });
+});
+
+// ===== 3-1. 관리자 — 업체 가입심사 큐 =====
+function maskPhone(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length < 8) return '';
+  return digits.replace(/(\d{3})(\d+)(\d{4})$/, (_, a, middle, c) => `${a}-${'*'.repeat(Math.min(middle.length, 4))}-${c}`);
+}
+function adminPartnerReviewSummary(partner) {
+  const consentRows = db.prepare(`SELECT consent_type AS consentType, policy_version AS policyVersion, agreed_at AS agreedAt
+    FROM partner_verification_consents WHERE partner_id=? ORDER BY agreed_at ASC`).all(partner.id);
+  return {
+    id: partner.id,
+    businessName: partner.business_name,
+    businessRegNumber: partner.business_reg_number,
+    ceoName: partner.ceo_name,
+    tier: partner.tier,
+    address: partner.address,
+    postalCode: partner.postal_code,
+    roadAddress: partner.road_address,
+    addressDetail: partner.address_detail,
+    serviceRegions: partnerServiceRegions(partner.id),
+    applicantName: partner.applicant_name,
+    applicantRole: partner.applicant_role,
+    maskedPhone: maskPhone(partner.phone),
+    verifyStatus: partner.verify_status,
+    businessVerified: Boolean(partner.business_verified_at),
+    businessVerifiedAt: partner.business_verified_at,
+    businessStatus: partner.business_status,
+    businessTaxType: partner.business_tax_type,
+    identityVerified: Boolean(partner.identity_verified_at),
+    identityVerifiedAt: partner.identity_verified_at,
+    documents: {
+      businessRegistration: Boolean(partner.doc_image_url),
+      officeExterior: Boolean(partner.ext_image_url),
+      officeInterior: Boolean(partner.int_image_url),
+      authorization: Boolean(partner.authorization_doc_url)
+    },
+    consents: consentRows,
+    createdAt: partner.created_at,
+    rejectReason: partner.reject_reason || null
+  };
+}
+function adminPartnerReviewDetail(partner) {
+  const summary = adminPartnerReviewSummary(partner);
+  return {
+    ...summary,
+    documentFiles: {
+      businessRegistration: partner.doc_image_url ? { fileId:partner.doc_image_url } : null,
+      officeExterior: partner.ext_image_url ? { fileId:partner.ext_image_url } : null,
+      officeInterior: partner.int_image_url ? { fileId:partner.int_image_url } : null,
+      authorization: partner.authorization_doc_url ? { fileId:partner.authorization_doc_url } : null
+    }
+  };
+}
+app.get('/api/admin/partners/pending', adminAuthRequired(), (req, res) => {
+  const list = db.prepare("SELECT * FROM partners WHERE verify_status='pending' ORDER BY created_at DESC").all().map(adminPartnerReviewSummary);
+  res.json({ success: true, data: list });
+});
+
+app.get('/api/admin/partners/:id/review', adminAuthRequired(), (req, res) => {
+  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
+  if (!partner) return res.status(404).json({ success:false, error:{ code:'NOT_FOUND', message:'업체를 찾을 수 없습니다' } });
+  res.set('Cache-Control', 'no-store');
+  res.json({ success:true, data:adminPartnerReviewDetail(partner) });
+});
+
+app.get('/api/admin/files/:fileId', adminAuthRequired(), async (req, res, next) => {
+  const file = db.prepare("SELECT * FROM stored_files WHERE id=? AND visibility='private' AND deleted_at IS NULL").get(req.params.fileId);
+  if (!file) return res.status(404).json({ success:false, error:{ code:'NOT_FOUND', message:'증빙파일을 찾을 수 없습니다' } });
+  try {
+    const stored = await objectStorage.getObject(file.storage_key);
+    logAdminAccess(req, 'stored_file', file.id, file.purpose);
+    res.set('Content-Type', file.mime_type);
+    res.set('Content-Disposition', `inline; filename="${normalizeUploadFilename(file.original_name)}"`);
+    res.set('Cache-Control', 'private,no-store');
+    if (stored.ContentLength) res.set('Content-Length', String(stored.ContentLength));
+    stored.Body.pipe(res);
+  } catch (error) { next(error); }
+});
+
+// 신규(강남언니 벤치마킹 검토 후속 — 1단계): 관리자가 증빙서류를 열람한 감사로그 조회.
+// admin_super만 볼 수 있게 제한(오남용 여부를 감사하는 로그 자체를 아무 관리자나 보면 의미가 약해짐).
+app.get('/api/admin/access-logs', adminAuthRequired('admin_super'), (req, res) => {
+  const { resourceType, resourceId, adminId } = req.query;
+  let sql = `SELECT l.*, a.email AS admin_email FROM admin_access_logs l LEFT JOIN admins a ON a.id = l.admin_id WHERE 1=1`;
+  const params = [];
+  if (resourceType && isNonEmptyString(resourceType, 50)) { sql += ' AND l.resource_type=?'; params.push(resourceType); }
+  if (resourceId && isNonEmptyString(resourceId, 100)) { sql += ' AND l.resource_id=?'; params.push(resourceId); }
+  if (adminId && isNonEmptyString(adminId, 100)) { sql += ' AND l.admin_id=?'; params.push(adminId); }
+  sql += ' ORDER BY l.created_at DESC LIMIT 200';
+  const rows = db.prepare(sql).all(...params);
+  res.json({ success: true, data: rows.map(r => ({
+    id: r.id, adminId: r.admin_id, adminEmail: r.admin_email, resourceType: r.resource_type,
+    resourceId: r.resource_id, purpose: r.purpose, ipAddress: r.ip_address, createdAt: r.created_at
+  })) });
+});
+
+app.put('/api/admin/partners/:id/approve', adminAuthRequired(), (req, res) => {
+  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
+  if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
+  // 결함정리(사용자요청 — 본인확인 정책 온오프 반영): identity_verification_required가 꺼져있으면
+  // 승인 조건에서도 본인확인 완료 여부를 요구하지 않음(사업자검증은 계속 필수)
+  const identityVerificationRequired = getAdminPolicy('identity_verification_required', false);
+  if (!partner.business_verified_at || (identityVerificationRequired && !partner.identity_verified_at)) {
+    return res.status(409).json({ success:false, error:{ code:'VERIFICATION_INCOMPLETE', message: identityVerificationRequired ? '국세청 사업자 검증과 휴대폰 본인확인이 모두 완료된 업체만 승인할 수 있습니다' : '국세청 사업자 검증이 완료된 업체만 승인할 수 있습니다' } });
+  }
+  const requiredConsentTypes = identityVerificationRequired ? ['business','identity','review'] : ['business','review'];
+  const consentCount = db.prepare(`SELECT COUNT(DISTINCT consent_type) AS count FROM partner_verification_consents
+    WHERE partner_id=? AND consent_type IN (${requiredConsentTypes.map(()=>'?').join(',')})`).get(req.params.id, ...requiredConsentTypes).count;
+  if (consentCount !== requiredConsentTypes.length) {
+    return res.status(409).json({ success:false, error:{ code:'CONSENT_INCOMPLETE', message:'필수 검증 동의 이력이 완전하지 않아 승인할 수 없습니다' } });
+  }
+  db.prepare(`UPDATE partners SET verify_status='approved', approved_at=datetime('now'), reject_reason=NULL,
+    cert_business=1, cert_location=1, cert_contact=1 WHERE id=?`).run(req.params.id);
+  db.prepare(`UPDATE stored_files SET retention_until=datetime('now','+1 year')
+    WHERE owner_type='partner' AND owner_id=? AND visibility='private' AND purpose IN ('business_registration','office_exterior','office_interior','authorization')`).run(req.params.id);
+  res.json({ success: true, data: { message: '승인되었습니다' } });
+});
+
+app.put('/api/admin/partners/:id/reject', adminAuthRequired(), (req, res) => {
+  const { reason } = req.body;
+  if (!isNonEmptyString(reason, 500)) return validationError(res, '반려 사유를 500자 이내로 입력해주세요');
+  const result = db.prepare("UPDATE partners SET verify_status='rejected', reject_reason=?, approved_at=NULL, cert_business=0, cert_location=0, cert_contact=0 WHERE id=?").run(reason.trim(), req.params.id);
+  if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
+  db.prepare(`UPDATE stored_files SET retention_until=datetime('now','+90 days')
+    WHERE owner_type='partner' AND owner_id=? AND visibility='private'`).run(req.params.id);
+  res.json({ success: true, data: { message: '반려되었습니다' } });
+});
+
+// 신규(2026-09, 관리자 콘솔 실연동 — 어뷰징 정지 해제): 반복 노쇼로 일시정지된 업체를 다시 활동 가능 상태로 되돌린다.
+// 사업자검증(business_verified_at)·동의이력은 정지 시점에 건드리지 않으므로 그대로 유지되어 있어 별도 재검증 없이 복원 가능.
+app.patch('/api/admin/partners/:id/unsuspend', adminAuthRequired(), (req, res) => {
+  const result = db.prepare("UPDATE partners SET verify_status='approved' WHERE id=? AND verify_status='suspended'").run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '정지 상태인 업체를 찾을 수 없습니다' } });
+  logMemberAction('partner', req.params.id, 'unsuspend', null, req.admin.sub);
+  res.json({ success: true, data: { message: '정지가 해제되었습니다' } });
+});
+
+// ===== 3-1-b. 회원관리: 소비자/파트너 전체 목록·검색·상태변경 (2026-09, 사용자요청) =====
+// 지금까지는 "신규 업체 등록"(승인대기), "승급 심사", "어뷰징 관리" 같은 개별 처리큐만 있고
+// 전체 소비자·파트너를 검색해서 한눈에 보는 회원 목록 화면이 없었음 — 이 구멍을 메운다.
+// (다른 사이트 조사 결과 반영: 상태변경엔 반드시 사유를 남기고, 처리자·시각과 함께 감사로그로 기록)
+function logMemberAction(targetType, targetId, action, reason, adminId) {
+  db.prepare(`INSERT INTO admin_member_actions (id, target_type, target_id, action, reason, admin_id) VALUES (?,?,?,?,?,?)`)
+    .run(randomUUID(), targetType, targetId, action, reason || null, adminId || null);
+}
+// 신규(강남언니 벤치마킹 검토 후속 — 1단계: 관리자 접근 감사로그): 관리자가 업체의 증빙서류
+// (사업자등록증 사본 등 private stored_files)를 열람할 때마다 남긴다. 누가·언제·무엇을 봤는지
+// 기록해두면, 민감정보 오남용 의심 상황이 생겼을 때 사후 추적이 가능하다.
+function logAdminAccess(req, resourceType, resourceId, purpose) {
+  try {
+    db.prepare(`INSERT INTO admin_access_logs (id, admin_id, resource_type, resource_id, purpose, ip_address) VALUES (?,?,?,?,?,?)`)
+      .run(randomUUID(), (req.admin && req.admin.sub) || null, resourceType, String(resourceId), purpose || null, req.ip || null);
+  } catch (e) { console.error('[접근로그 기록 실패]', e.message); } // 로그 기록 실패로 실제 파일 열람 자체가 막히면 안 됨
+}
+function memberStatusOfConsumer(u) {
+  if (u.withdrawn_at) return 'withdrawn';
+  if (u.suspended_at) return 'suspended';
+  return 'active';
+}
+function toCsv(rows, columns) {
+  const esc = v => { const s = (v == null ? '' : String(v)); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const header = columns.map(c => esc(c.label)).join(',');
+  const body = rows.map(r => columns.map(c => esc(c.get(r))).join(',')).join('\n');
+  return '﻿' + header + '\n' + body; // 엑셀 한글 깨짐 방지용 BOM
+}
+function filterConsumers(query) {
+  const { q, status } = query;
+  let rows = db.prepare('SELECT * FROM users ORDER BY created_at DESC').all();
+  if (q && isNonEmptyString(q, 100)) {
+    const needle = q.trim().toLowerCase();
+    rows = rows.filter(u => (u.nickname || '').toLowerCase().includes(needle) || (u.email || '').toLowerCase().includes(needle) || (u.phone || '').includes(needle));
+  }
+  if (status && status !== 'all') rows = rows.filter(u => memberStatusOfConsumer(u) === status);
+  return rows;
+}
+app.get('/api/admin/consumers', adminAuthRequired(), (req, res) => {
+  const rows = filterConsumers(req.query);
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const total = rows.length;
+  const list = rows.slice((page - 1) * limit, page * limit).map(u => ({
+    id: u.id, nickname: u.nickname, socialProvider: u.social_provider, maskedPhone: maskPhone(u.phone),
+    cashBalance: u.cash_balance, createdAt: u.created_at, status: memberStatusOfConsumer(u), suspendReason: u.suspend_reason
+  }));
+  res.json({ success: true, data: { list, total, page, limit } });
+});
+app.get('/api/admin/consumers/export.csv', adminAuthRequired(), (req, res) => {
+  const rows = filterConsumers(req.query);
+  const csv = toCsv(rows, [
+    { label: '닉네임', get: u => u.nickname },
+    { label: '가입경로', get: u => u.social_provider },
+    { label: '가입일', get: u => u.created_at },
+    { label: '캐시잔액', get: u => u.cash_balance },
+    { label: '상태', get: u => memberStatusOfConsumer(u) },
+    { label: '정지사유', get: u => u.suspend_reason }
+  ]);
+  res.set('Content-Type', 'text/csv; charset=utf-8');
+  res.set('Content-Disposition', 'attachment; filename="consumers.csv"');
+  res.send(csv);
+});
+app.get('/api/admin/consumers/:id', adminAuthRequired(), (req, res) => {
+  const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
+  if (!u) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '회원을 찾을 수 없습니다' } });
+  const quoteCount = db.prepare('SELECT COUNT(*) c FROM quote_requests WHERE user_id=?').get(u.id).c;
+  const contractCount = db.prepare('SELECT COUNT(*) c FROM contracts WHERE consumer_id=?').get(u.id).c;
+  const disputeCount = db.prepare('SELECT COUNT(*) c FROM disputes WHERE contract_id IN (SELECT id FROM contracts WHERE consumer_id=?)').get(u.id).c;
+  const actions = db.prepare('SELECT action, reason, created_at FROM admin_member_actions WHERE target_type=? AND target_id=? ORDER BY created_at DESC').all('consumer', u.id);
+  res.json({ success: true, data: {
+    id: u.id, nickname: u.nickname, socialProvider: u.social_provider, email: u.email, maskedPhone: maskPhone(u.phone),
+    region: u.region, cashBalance: u.cash_balance, createdAt: u.created_at, status: memberStatusOfConsumer(u),
+    suspendedAt: u.suspended_at, suspendReason: u.suspend_reason, withdrawnAt: u.withdrawn_at,
+    activity: { quoteRequests: quoteCount, contracts: contractCount, disputes: disputeCount },
+    actionHistory: actions
+  } });
+});
+app.put('/api/admin/consumers/:id/suspend', adminAuthRequired(), (req, res) => {
+  const { reason } = req.body;
+  if (!isNonEmptyString(reason, 500)) return validationError(res, '정지 사유를 입력해주세요');
+  const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
+  if (!u) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '회원을 찾을 수 없습니다' } });
+  if (u.withdrawn_at) return res.status(409).json({ success: false, error: { code: 'ALREADY_WITHDRAWN', message: '이미 탈퇴한 회원입니다' } });
+  db.prepare("UPDATE users SET suspended_at=datetime('now'), suspend_reason=? WHERE id=?").run(reason.trim(), u.id);
+  logMemberAction('consumer', u.id, 'suspend', reason.trim(), req.admin.sub);
+  createNotification('consumer', u.id, 'account_suspended', '이용이 제한되었습니다', reason.trim());
+  res.json({ success: true, data: { message: '정지 처리됐어요' } });
+});
+app.put('/api/admin/consumers/:id/unsuspend', adminAuthRequired(), (req, res) => {
+  const result = db.prepare("UPDATE users SET suspended_at=NULL, suspend_reason=NULL WHERE id=? AND suspended_at IS NOT NULL").run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '정지 상태인 회원을 찾을 수 없습니다' } });
+  logMemberAction('consumer', req.params.id, 'unsuspend', null, req.admin.sub);
+  createNotification('consumer', req.params.id, 'account_unsuspended', '이용 제한이 해제되었습니다', null);
+  res.json({ success: true, data: { message: '정지가 해제됐어요' } });
+});
+
+// ---- 파트너 회원관리: 전체 목록(모든 상태) — 기존 /pending(대기중만)과 별개로 검색·필터를 지원 ----
+function filterPartners(query) {
+  const { q, status, tier, region } = query;
+  let rows = db.prepare('SELECT * FROM partners ORDER BY created_at DESC').all();
+  if (q && isNonEmptyString(q, 100)) {
+    const needle = q.trim().toLowerCase();
+    rows = rows.filter(p => (p.business_name || '').toLowerCase().includes(needle) || (p.business_reg_number || '').includes(needle) || (p.phone || '').includes(needle));
+  }
+  if (status && status !== 'all') rows = rows.filter(p => p.verify_status === status);
+  if (tier && tier !== 'all') rows = rows.filter(p => p.tier === tier);
+  if (region && isNonEmptyString(region, 50)) rows = rows.filter(p => (p.region || '').includes(region));
+  return rows;
+}
+app.get('/api/admin/partners', adminAuthRequired(), (req, res) => {
+  const rows = filterPartners(req.query);
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const total = rows.length;
+  const list = rows.slice((page - 1) * limit, page * limit).map(p => ({
+    id: p.id, businessName: p.business_name, tier: p.tier, region: p.region, businessRegNumber: p.business_reg_number,
+    creditBalance: p.credit_balance, contractsCount: p.contracts_count, createdAt: p.approved_at || p.created_at, status: p.verify_status
+  }));
+  res.json({ success: true, data: { list, total, page, limit } });
+});
+app.get('/api/admin/partners/export.csv', adminAuthRequired(), (req, res) => {
+  const rows = filterPartners(req.query);
+  const csv = toCsv(rows, [
+    { label: '상호명', get: p => p.business_name },
+    { label: '등급', get: p => p.tier },
+    { label: '지역', get: p => p.region },
+    { label: '사업자번호', get: p => p.business_reg_number },
+    { label: '크레딧잔액', get: p => p.credit_balance },
+    { label: '계약건수', get: p => p.contracts_count },
+    { label: '가입일', get: p => p.approved_at || p.created_at },
+    { label: '상태', get: p => p.verify_status }
+  ]);
+  res.set('Content-Type', 'text/csv; charset=utf-8');
+  res.set('Content-Disposition', 'attachment; filename="partners.csv"');
+  res.send(csv);
+});
+app.get('/api/admin/partners/:id/detail', adminAuthRequired(), (req, res) => {
+  const p = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
+  if (!p) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
+  const contractCount = db.prepare('SELECT COUNT(*) c FROM contracts WHERE partner_id=?').get(p.id).c;
+  const settleCount = db.prepare('SELECT COUNT(*) c FROM settlements WHERE partner_id=?').get(p.id).c;
+  const disputeCount = db.prepare('SELECT COUNT(*) c FROM disputes WHERE contract_id IN (SELECT id FROM contracts WHERE partner_id=?)').get(p.id).c;
+  const portfolioCount = db.prepare("SELECT COUNT(*) c FROM portfolio_projects WHERE partner_id=? AND status='approved'").get(p.id).c;
+  const actions = db.prepare('SELECT action, reason, created_at FROM admin_member_actions WHERE target_type=? AND target_id=? ORDER BY created_at DESC').all('partner', p.id);
+  res.json({ success: true, data: {
+    id: p.id, businessName: p.business_name, tier: p.tier, region: p.region, businessRegNumber: p.business_reg_number,
+    ceoName: p.ceo_name, maskedPhone: maskPhone(p.phone), creditBalance: p.credit_balance, rating: p.rating,
+    contractsCount: p.contracts_count, reviewsCount: p.reviews_count, createdAt: p.approved_at || p.created_at,
+    status: p.verify_status, rejectReason: p.reject_reason,
+    activity: { contracts: contractCount, settlements: settleCount, disputes: disputeCount, approvedPortfolio: portfolioCount },
+    actionHistory: actions
+  } });
+});
+app.put('/api/admin/partners/:id/suspend', adminAuthRequired(), (req, res) => {
+  const { reason } = req.body;
+  if (!isNonEmptyString(reason, 500)) return validationError(res, '정지 사유를 입력해주세요');
+  const result = db.prepare("UPDATE partners SET verify_status='suspended' WHERE id=? AND verify_status='approved'").run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '정지 가능한(승인됨) 업체를 찾을 수 없습니다' } });
+  logMemberAction('partner', req.params.id, 'suspend', reason.trim(), req.admin.sub);
+  createNotification('partner', req.params.id, 'abuse_suspended', '계정이 일시 정지되었습니다', reason.trim());
+  res.json({ success: true, data: { message: '정지 처리됐어요' } });
+});
+
+// ===== 3-2. 포트폴리오(프로젝트 단위: 제목+여러사진+설명) =====
+function parseMultipartBody(req) {
+  const contentType = req.headers['content-type'] || '';
+  const match = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  if (!match || !Buffer.isBuffer(req.body)) throw new Error('MULTIPART_REQUIRED');
+  const boundary = Buffer.from('--' + (match[1] || match[2]).trim());
+  const fields = {};
+  const files = [];
+  let cursor = req.body.indexOf(boundary);
+  while (cursor !== -1) {
+    cursor += boundary.length;
+    if (req.body.slice(cursor, cursor + 2).toString() === '--') break;
+    if (req.body.slice(cursor, cursor + 2).toString() === '\r\n') cursor += 2;
+    const next = req.body.indexOf(boundary, cursor);
+    if (next === -1) break;
+    const headerEnd = req.body.indexOf(Buffer.from('\r\n\r\n'), cursor);
+    if (headerEnd === -1 || headerEnd > next) throw new Error('INVALID_MULTIPART');
+    const headerText = req.body.slice(cursor, headerEnd).toString('utf8');
+    let dataEnd = next;
+    if (req.body.slice(dataEnd - 2, dataEnd).toString() === '\r\n') dataEnd -= 2;
+    const data = req.body.slice(headerEnd + 4, dataEnd);
+    const nameMatch = headerText.match(/name="([^"]+)"/i);
+    const filenameMatch = headerText.match(/filename="([^"]*)"/i);
+    const typeMatch = headerText.match(/content-type:\s*([^\r\n]+)/i);
+    if (nameMatch) {
+      if (filenameMatch) files.push({ field: nameMatch[1], filename: filenameMatch[1], declaredType: (typeMatch && typeMatch[1].trim().toLowerCase()) || '', data });
+      else fields[nameMatch[1]] = data.toString('utf8');
+    }
+    cursor = next;
+  }
+  return { fields, files };
+}
+
+function detectPortfolioImage(file) {
+  const b = file.data;
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return { mime: 'image/jpeg', ext: 'jpg' };
+  if (b.length >= 8 && b.slice(0, 8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]))) return { mime: 'image/png', ext: 'png' };
+  if (b.length >= 12 && b.slice(0, 4).toString() === 'RIFF' && b.slice(8, 12).toString() === 'WEBP') return { mime: 'image/webp', ext: 'webp' };
+  return null;
+}
+
+const portfolioMultipart = express.raw({ type: 'multipart/form-data', limit: '105mb' });
+app.post('/api/partners/me/portfolio', authRequired, portfolioUploadLimiter, portfolioMultipart, async (req, res, next) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 등록할 수 있습니다' } });
+  let parsed;
+  try { parsed = parseMultipartBody(req); }
+  catch (e) { return validationError(res, 'multipart/form-data 형식의 사진 업로드가 필요합니다'); }
+  const { title, description } = parsed.fields;
+  const photoFiles = parsed.files.filter(file => file.field === 'photos');
+  if (!isNonEmptyString(title, 60)) return validationError(res, '제목은 1~60자여야 합니다');
+  if (description && !isNonEmptyString(description, 1000)) return validationError(res, '설명은 1000자 이내여야 합니다');
+  if (photoFiles.length === 0) return validationError(res, '사진을 1장 이상 올려주세요');
+  if (photoFiles.length > 10) return validationError(res, '사진은 최대 10장까지 올릴 수 있습니다');
+  // 신규(사용자요청 — 포트폴리오→상세페이지 반영): 사진마다 "상세페이지 대표사진으로도 쓰기" 체크값을
+  // photos와 같은 순서의 boolean 배열로 받는다. 형식이 안 맞으면 전부 false로 안전하게 무시한다.
+  let profilePhotoFlags = [];
+  if (parsed.fields.useAsProfilePhoto) {
+    try { profilePhotoFlags = JSON.parse(parsed.fields.useAsProfilePhoto); } catch (e) { profilePhotoFlags = []; }
+  }
+  if (!Array.isArray(profilePhotoFlags)) profilePhotoFlags = [];
+  const validated = [];
+  for (const file of photoFiles) {
+    if (file.data.length === 0 || file.data.length > 10 * 1024 * 1024) return validationError(res, '사진 1장당 최대 10MB까지 올릴 수 있습니다');
+    const detected = detectPortfolioImage(file);
+    if (!detected || file.declaredType !== detected.mime) return validationError(res, 'JPG, PNG, WebP 이미지 파일만 올릴 수 있습니다');
+    validated.push({ ...file, ...detected });
+  }
+  const projectId = randomUUID();
+  const savedObjects = [];
+  try {
+    const photos = [];
+    for (let i=0;i<validated.length;i++) {
+      const file=validated[i], fileId=randomUUID();
+      const key=`public/portfolio/${req.user.sub}/${projectId}/${fileId}.${file.ext}`;
+      const url=await objectStorage.putObject({key,body:file.data,contentType:file.mime,isPublic:true});
+      savedObjects.push({key,fileId});photos.push(url);
+      db.prepare(`INSERT INTO stored_files (id,storage_key,owner_type,owner_id,purpose,original_name,mime_type,size_bytes,public_url,visibility)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(fileId,key,'partner',req.user.sub,'portfolio',normalizeUploadFilename(file.filename),file.mime,file.data.length,url,'public');
+    }
+    const saveProject = db.transaction(() => {
+      db.prepare("INSERT INTO portfolio_projects (id, partner_id, title, description, status) VALUES (?,?,?,?,'pending')").run(projectId, req.user.sub, title.trim(), description ? description.trim() : null);
+      const insertPhoto = db.prepare('INSERT INTO portfolio_photos (id, project_id, image_url, sort_order, use_as_profile_photo) VALUES (?,?,?,?,?)');
+      photos.forEach((url, i) => insertPhoto.run(randomUUID(), projectId, url, i, profilePhotoFlags[i] ? 1 : 0));
+    });
+    saveProject();
+    res.json({ success: true, data: { id: projectId, title: title.trim(), description: description ? description.trim() : '', photos, status: 'pending' } });
+  } catch (e) {
+    for (const item of savedObjects) {
+      try { await objectStorage.deleteObject(item.key); } catch (_) {}
+      try { db.prepare('DELETE FROM stored_files WHERE id=?').run(item.fileId); } catch (_) {}
+    }
+    next(e);
+  }
+});
+
+// 신규(사용자요청 — 포트폴리오관리 탭 실제 동작하게 고치기): 파트너 본인의 포트폴리오 전체(심사중·승인·
+// 반려 전부)를 불러온다. 기존 "/api/partners/:id/portfolio"는 승인된 것만 보여주는 공개 라우트라
+// 관리 화면에는 맞지 않았음(새로고침하면 화면이 통째로 비던 원인).
+app.get('/api/partners/me/portfolio', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 조회할 수 있습니다' } });
+  const projects = db.prepare('SELECT * FROM portfolio_projects WHERE partner_id=? ORDER BY created_at DESC').all(req.user.sub);
+  const getPhotos = db.prepare('SELECT id, image_url, use_as_profile_photo FROM portfolio_photos WHERE project_id=? ORDER BY sort_order');
+  const withPhotos = projects.map(p => ({
+    ...p,
+    photos: getPhotos.all(p.id).map(r => ({ id: r.id, url: r.image_url, useAsProfilePhoto: !!r.use_as_profile_photo }))
+  }));
+  res.json({ success: true, data: withPhotos });
+});
+
+// 신규(사용자요청 — "수정" 기능): 제목·설명을 고치거나 사진을 통째로 교체할 수 있게 한다.
+// 사진이 바뀌면(내용이 달라지므로) 다시 검수를 받도록 status를 pending으로 되돌린다 — 텍스트만
+// 바꾸는 경우도 보수적으로 동일하게 재검수를 받게 해서, 이미 승인된 문구를 검수 없이 몰래 바꿔치기하는
+// 경로가 생기지 않도록 막는다.
+app.put('/api/partners/me/portfolio/:id', authRequired, portfolioUploadLimiter, portfolioMultipart, async (req, res, next) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 수정할 수 있습니다' } });
+  const project = db.prepare('SELECT * FROM portfolio_projects WHERE id=?').get(req.params.id);
+  if (!project) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '포트폴리오를 찾을 수 없습니다' } });
+  if (project.partner_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인 포트폴리오만 수정할 수 있습니다' } });
+  let parsed;
+  try { parsed = parseMultipartBody(req); }
+  catch (e) { return validationError(res, 'multipart/form-data 형식으로 보내주세요'); }
+  const { title, description } = parsed.fields;
+  if (!isNonEmptyString(title, 60)) return validationError(res, '제목은 1~60자여야 합니다');
+  if (description && !isNonEmptyString(description, 1000)) return validationError(res, '설명은 1000자 이내여야 합니다');
+  const photoFiles = parsed.files.filter(file => file.field === 'photos');
+  let profilePhotoFlags = [];
+  if (parsed.fields.useAsProfilePhoto) {
+    try { profilePhotoFlags = JSON.parse(parsed.fields.useAsProfilePhoto); } catch (e) { profilePhotoFlags = []; }
+  }
+  if (!Array.isArray(profilePhotoFlags)) profilePhotoFlags = [];
+  let newPhotoUrls = null;
+  const savedObjects = [];
+  if (photoFiles.length) {
+    if (photoFiles.length > 10) return validationError(res, '사진은 최대 10장까지 올릴 수 있습니다');
+    const validated = [];
+    for (const file of photoFiles) {
+      if (file.data.length === 0 || file.data.length > 10 * 1024 * 1024) return validationError(res, '사진 1장당 최대 10MB까지 올릴 수 있습니다');
+      const detected = detectPortfolioImage(file);
+      if (!detected || file.declaredType !== detected.mime) return validationError(res, 'JPG, PNG, WebP 이미지 파일만 올릴 수 있습니다');
+      validated.push({ ...file, ...detected });
+    }
+    try {
+      newPhotoUrls = [];
+      for (let i = 0; i < validated.length; i++) {
+        const file = validated[i], fileId = randomUUID();
+        const key = `public/portfolio/${req.user.sub}/${project.id}/${fileId}.${file.ext}`;
+        const url = await objectStorage.putObject({ key, body: file.data, contentType: file.mime, isPublic: true });
+        savedObjects.push({ key, fileId }); newPhotoUrls.push(url);
+        db.prepare(`INSERT INTO stored_files (id,storage_key,owner_type,owner_id,purpose,original_name,mime_type,size_bytes,public_url,visibility)
+          VALUES (?,?,?,?,?,?,?,?,?,?)`).run(fileId, key, 'partner', req.user.sub, 'portfolio', normalizeUploadFilename(file.filename), file.mime, file.data.length, url, 'public');
+      }
+    } catch (e) {
+      for (const item of savedObjects) {
+        try { await objectStorage.deleteObject(item.key); } catch (_) {}
+        try { db.prepare('DELETE FROM stored_files WHERE id=?').run(item.fileId); } catch (_) {}
+      }
+      return next(e);
+    }
+  }
+  const needsReview = project.status === 'approved';
+  const previousHeroUrls = newPhotoUrls
+    ? db.prepare('SELECT image_url FROM portfolio_photos WHERE project_id=? AND use_as_profile_photo=1').all(project.id).map(r => r.image_url)
+    : [];
+  db.transaction(() => {
+    db.prepare(`UPDATE portfolio_projects SET title=?, description=?, status=?, reject_reason=NULL, reviewed_at=CASE WHEN ? THEN NULL ELSE reviewed_at END WHERE id=?`)
+      .run(title.trim(), description ? description.trim() : null, needsReview ? 'pending' : project.status, needsReview ? 1 : 0, project.id);
+    if (newPhotoUrls) {
+      db.prepare('DELETE FROM portfolio_photos WHERE project_id=?').run(project.id);
+      const insertPhoto = db.prepare('INSERT INTO portfolio_photos (id, project_id, image_url, sort_order, use_as_profile_photo) VALUES (?,?,?,?,?)');
+      newPhotoUrls.forEach((url, i) => insertPhoto.run(randomUUID(), project.id, url, i, profilePhotoFlags[i] ? 1 : 0));
+      // 사진을 통째로 교체했으면, 예전 사진 중 대표사진으로 이미 반영돼있던 것들은 상세페이지에서도 함께 내린다.
+      if (previousHeroUrls.length) {
+        const partnerRow = db.prepare('SELECT portfolio_images FROM partners WHERE id=?').get(req.user.sub);
+        let hero = []; try { hero = JSON.parse((partnerRow && partnerRow.portfolio_images) || '[]'); } catch (e) { hero = []; }
+        if (Array.isArray(hero) && hero.length) {
+          const filtered = hero.filter(u => !previousHeroUrls.includes(u));
+          if (filtered.length !== hero.length) db.prepare('UPDATE partners SET portfolio_images=? WHERE id=?').run(JSON.stringify(filtered), req.user.sub);
+        }
+      }
+    }
+  })();
+  const updated = db.prepare('SELECT * FROM portfolio_projects WHERE id=?').get(project.id);
+  const getPhotos = db.prepare('SELECT id, image_url, use_as_profile_photo FROM portfolio_photos WHERE project_id=? ORDER BY sort_order');
+  res.json({ success: true, data: { ...updated, photos: getPhotos.all(project.id).map(r => ({ id: r.id, url: r.image_url, useAsProfilePhoto: !!r.use_as_profile_photo })) } });
+});
+
+// 신규(사용자요청 — "관리" 기능): 포트폴리오 프로젝트를 실제로 삭제한다. 기존 화면의 "삭제" 버튼은
+// 서버 호출 자체가 없어 새로고침하면 되살아나는 가짜 삭제였음(전수조사 발견).
+app.delete('/api/partners/me/portfolio/:id', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 삭제할 수 있습니다' } });
+  const project = db.prepare('SELECT * FROM portfolio_projects WHERE id=?').get(req.params.id);
+  if (!project) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '포트폴리오를 찾을 수 없습니다' } });
+  if (project.partner_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인 포트폴리오만 삭제할 수 있습니다' } });
+  const heroUrls = db.prepare('SELECT image_url FROM portfolio_photos WHERE project_id=? AND use_as_profile_photo=1').all(project.id).map(r => r.image_url);
+  db.transaction(() => {
+    db.prepare('DELETE FROM portfolio_photos WHERE project_id=?').run(project.id);
+    db.prepare('DELETE FROM portfolio_projects WHERE id=?').run(project.id);
+    if (heroUrls.length) {
+      const partnerRow = db.prepare('SELECT portfolio_images FROM partners WHERE id=?').get(req.user.sub);
+      let hero = []; try { hero = JSON.parse((partnerRow && partnerRow.portfolio_images) || '[]'); } catch (e) { hero = []; }
+      if (Array.isArray(hero) && hero.length) {
+        const filtered = hero.filter(u => !heroUrls.includes(u));
+        if (filtered.length !== hero.length) db.prepare('UPDATE partners SET portfolio_images=? WHERE id=?').run(JSON.stringify(filtered), req.user.sub);
+      }
+    }
+  })();
+  res.json({ success: true, data: { message: '삭제되었습니다' } });
+});
+
+// 결함정리(2026-09, 완공사례 피드 운영검수 게이트): 운영자 승인(status='approved') 전에는
+// 업체 본인 외에는 아무도 볼 수 없도록 변경(이 라우트는 인증이 없는 공개 라우트라 '본인'도 구분하지 않음 —
+// 지금은 승인된 것만 보여주고, 파트너 본인의 대기중 사진을 보여주는 화면은 아직 없음)
+app.get('/api/partners/:id/portfolio', (req, res) => {
+  const visiblePartner = db.prepare("SELECT id FROM partners WHERE id=? AND verify_status='approved'").get(req.params.id);
+  if (!visiblePartner) return res.status(404).json({ success:false, error:{ code:'NOT_FOUND', message:'업체를 찾을 수 없습니다' } });
+  const projects = db.prepare("SELECT * FROM portfolio_projects WHERE partner_id=? AND status='approved' ORDER BY created_at DESC").all(req.params.id);
+  const getPhotos = db.prepare('SELECT image_url FROM portfolio_photos WHERE project_id=? ORDER BY sort_order');
+  const withPhotos = projects.map(p => ({ ...p, photos: getPhotos.all(p.id).map(r => r.image_url) }));
+  res.json({ success: true, data: withPhotos });
+});
+
+// 신규(사용자요청 — 완성도리포트 개선: REALCASES 색상placeholder를 실제사진으로 대체):
+// 승인된(verify_status='approved') 모든 업체의 포트폴리오 프로젝트를 최신순으로 모아
+// 소비자 피드(완공사례)에 실제 데이터로 노출하기 위한 API. 사진이 없으면 빈 배열 반환(정직).
+// 결함정리(2026-09): 업체가 올리면 즉시 노출되던 것을 운영자 승인건(status='approved')만 노출되도록 변경.
+app.get('/api/portfolio/feed', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 30, 60);
+  const projects = db.prepare(`
+    SELECT pp.id, pp.title, pp.description, pp.created_at, p.business_name, p.region, p.tier
+    FROM portfolio_projects pp
+    JOIN partners p ON p.id = pp.partner_id
+    WHERE p.verify_status = 'approved' AND pp.status = 'approved'
+    ORDER BY pp.created_at DESC
+    LIMIT ?
+  `).all(limit);
+  const getPhotos = db.prepare('SELECT image_url FROM portfolio_photos WHERE project_id=? ORDER BY sort_order');
+  const withPhotos = projects.map(p => ({ ...p, photos: getPhotos.all(p.id).map(r => r.image_url) }));
+  res.json({ success: true, data: withPhotos });
+});
+
+// 신규(2026-09, 관리자 콘솔 실연동 — "완공검수 승인" 화면이 이제 이 큐를 봄): 포트폴리오 게시 승인 대기열
+app.get('/api/admin/portfolio/pending', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare(`SELECT pp.id, pp.title, pp.description, pp.created_at, p.business_name
+    FROM portfolio_projects pp JOIN partners p ON p.id = pp.partner_id
+    WHERE pp.status='pending' ORDER BY pp.created_at ASC LIMIT 200`).all();
+  res.json({ success: true, data: rows });
+});
+app.put('/api/admin/portfolio/:id/approve', adminAuthRequired(), (req, res) => {
+  const result = db.prepare("UPDATE portfolio_projects SET status='approved', reviewed_at=datetime('now'), reject_reason=NULL WHERE id=? AND status='pending'").run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '심사 대기중인 포트폴리오를 찾을 수 없습니다' } });
+  const project = db.prepare('SELECT partner_id FROM portfolio_projects WHERE id=?').get(req.params.id);
+  if (project) {
+    createNotification('partner', project.partner_id, 'portfolio_approved', '포트폴리오가 승인되었습니다', '완공사례 피드에 공개되었습니다', 'portfolio', req.params.id);
+    // 신규(사용자요청 — 포트폴리오→상세페이지 반영): 업로드 당시 "상세페이지 대표사진으로도 쓰기"로
+    // 체크된 사진만, 관리자가 이 프로젝트를 승인하는 지금 시점에 상세페이지 대표사진(portfolio_images)에
+    // 합쳐넣는다. 미승인 사진이 먼저 새어나가지 않도록 승인 시점에만 반영하는 게 핵심.
+    const flaggedPhotos = db.prepare('SELECT image_url FROM portfolio_photos WHERE project_id=? AND use_as_profile_photo=1 ORDER BY sort_order').all(req.params.id).map(r => r.image_url);
+    if (flaggedPhotos.length) {
+      const partner = db.prepare('SELECT portfolio_images FROM partners WHERE id=?').get(project.partner_id);
+      let existing = [];
+      try { existing = JSON.parse((partner && partner.portfolio_images) || '[]'); } catch (e) { existing = []; }
+      if (!Array.isArray(existing)) existing = [];
+      // 새로 승인된 사진을 앞쪽(최신순)에 두고, 기존 사진 중 중복이 아닌 것만 이어붙인 뒤 최대 6장으로 자른다
+      const merged = flaggedPhotos.concat(existing.filter(u => !flaggedPhotos.includes(u))).slice(0, 6);
+      db.prepare('UPDATE partners SET portfolio_images=? WHERE id=?').run(JSON.stringify(merged), project.partner_id);
+    }
+  }
+  res.json({ success: true, data: { message: '승인되었습니다' } });
+});
+app.put('/api/admin/portfolio/:id/reject', adminAuthRequired(), (req, res) => {
+  const { reason } = req.body;
+  if (!isNonEmptyString(reason, 500)) return validationError(res, '반려 사유를 500자 이내로 입력해주세요');
+  const result = db.prepare("UPDATE portfolio_projects SET status='rejected', reviewed_at=datetime('now'), reject_reason=? WHERE id=? AND status='pending'").run(reason.trim(), req.params.id);
+  if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '심사 대기중인 포트폴리오를 찾을 수 없습니다' } });
+  const project = db.prepare('SELECT partner_id FROM portfolio_projects WHERE id=?').get(req.params.id);
+  if (project) createNotification('partner', project.partner_id, 'portfolio_rejected', '포트폴리오가 반려되었습니다', reason.trim(), 'portfolio', req.params.id);
+  res.json({ success: true, data: { message: '반려되었습니다' } });
+});
+
+// ===== 4. 견적 요청 =====
+app.post('/api/quote-requests', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'소비자 계정에서만 견적을 요청할 수 있습니다' } });
+  const { partnerId, address, pyeong, spaceType } = req.body;
+  if (!isNonEmptyString(partnerId, 100)) return validationError(res, '업체를 선택해주세요');
+  if (!isNonEmptyString(address, 200)) return validationError(res, '주소를 입력해주세요');
+  if (!Number.isInteger(pyeong) || pyeong <= 0 || pyeong > 1000) return validationError(res, '평수는 1~1000 사이의 정수여야 합니다');
+  if (!isNonEmptyString(spaceType, 30)) return validationError(res, '공간유형을 입력해주세요');
+  const partnerExists = db.prepare("SELECT id FROM partners WHERE id=? AND verify_status='approved'").get(partnerId);
+  if (!partnerExists) return res.status(409).json({ success:false, error:{ code:'PARTNER_NOT_APPROVED', message:'승인된 업체에만 견적을 요청할 수 있습니다' } });
+  const id = randomUUID();
+  db.prepare('INSERT INTO quote_requests (id, user_id, partner_id, address, pyeong, space_type) VALUES (?,?,?,?,?,?)')
+    .run(id, req.user.sub, partnerId, address, pyeong, spaceType);
+  // 신규(사용자요청 — 견적요청 알림): 견적요청 시 소비자-업체 채팅방을 자동으로 찾거나 만들고,
+  // 그 방에 "견적요청" 타입의 특수 메시지를 남겨서 업체가 메신저에서 바로 확인·구분할 수 있게 함
+  let room = db.prepare('SELECT * FROM chat_rooms WHERE consumer_id=? AND partner_id=?').get(req.user.sub, partnerId);
+  if (!room) {
+    const roomId = randomUUID();
+    db.prepare('INSERT INTO chat_rooms (id, consumer_id, partner_id) VALUES (?,?,?)').run(roomId, req.user.sub, partnerId);
+    db.prepare('INSERT INTO meas_jobs (room_id) VALUES (?)').run(roomId);
+    room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(roomId);
+  }
+  const quoteMsgText = JSON.stringify({ requestId: id, address, pyeong, spaceType });
+  db.prepare('INSERT INTO chat_messages (id, room_id, sender_role, sender_id, text, msg_type) VALUES (?,?,?,?,?,?)')
+    .run(randomUUID(), room.id, 'consumer', req.user.sub, quoteMsgText, 'quote_request');
+  createNotification('partner',partnerId,'quote_request','새 견적요청이 도착했습니다',`${address} · ${pyeong}평 · ${spaceType}`,'quote_request',id);
+  res.json({ success: true, data: { id, status: 'requested', roomId: room.id } });
+});
+
+app.get('/api/quote-requests/mine', authRequired, (req, res) => {
+  const list = db.prepare('SELECT * FROM quote_requests WHERE user_id=? ORDER BY created_at DESC').all(req.user.sub);
+  res.json({ success: true, data: list });
+});
+
+// ===== 4-1. 견적서(업체 → 소비자, 공정별 상세내역 필수) =====
+function getQuoteWithItems(quoteId){
+  const quote=db.prepare('SELECT * FROM quotes WHERE id=?').get(quoteId);if(!quote)return null;
+  return {...quote,items:db.prepare('SELECT phase_label,item_name,price FROM quote_items WHERE quote_id=? ORDER BY rowid').all(quoteId)};
+}
+function quoteRoom(quote){
+  const request=quote&&db.prepare('SELECT * FROM quote_requests WHERE id=?').get(quote.request_id);
+  if(!request)return null;
+  return db.prepare('SELECT * FROM chat_rooms WHERE consumer_id=? AND partner_id=?').get(request.user_id,request.partner_id);
+}
+function emitQuoteEvent(quote,msgType,text,actorRole,actorId){
+  const room=quoteRoom(quote);if(!room)return;
+  const id=randomUUID();
+  db.prepare('INSERT INTO chat_messages(id,room_id,sender_role,sender_id,text,msg_type) VALUES(?,?,?,?,?,?)').run(id,room.id,actorRole||'system',actorId||'roomer',text,msgType);
+  const saved=db.prepare('SELECT * FROM chat_messages WHERE id=?').get(id);broadcastNewMessage(room.id,saved);
+}
+function validateQuoteItems(items,res){
+  if(!Array.isArray(items)||items.length===0){res.status(400).json({success:false,error:{code:'ITEMS_REQUIRED',message:'공정별 항목이 1개 이상 필요합니다(총액만 보내는 것 금지)'}});return false;}
+  if(items.length>100){validationError(res,'항목은 최대 100개까지 가능합니다');return false;}
+  for(const it of items){if(!isNonEmptyString(it.name,100)||!isPositiveAmount(it.price)||it.price<=0|| (it.phaseLabel&&!isNonEmptyString(it.phaseLabel,50))){validationError(res,'견적 항목명·공정명·가격을 확인해주세요');return false;}}
+  return true;
+}
+// 결함 재발 방지(프론트엔드에서 실제 발견된 버그): 공정별 항목명+단가(items)가 누락되면
+// 소비자에게 총액만 전달되고 상세내역이 안 보이는 문제가 있었음 — items 필수값으로 강제
+app.post('/api/quotes', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 견적서를 보낼 수 있습니다' } });
+  const { requestId, pyeong, items, type } = req.body;
+  if(!validateQuoteItems(items,res))return;
+  if (type && !['initial', 'additional'].includes(type)) return validationError(res, '올바른 견적서 유형이 아닙니다');
+  const request = db.prepare('SELECT * FROM quote_requests WHERE id=?').get(requestId);
+  if (!request) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '견적요청을 찾을 수 없습니다' } });
+  if (request.partner_id !== req.user.sub) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인 업체에 접수된 견적요청만 처리할 수 있습니다' } });
+  const approvedPartner = db.prepare("SELECT id FROM partners WHERE id=? AND verify_status='approved'").get(req.user.sub);
+  if (!approvedPartner) return res.status(403).json({ success:false, error:{ code:'PARTNER_NOT_APPROVED', message:'관리자 승인을 받은 업체만 견적서를 발송할 수 있습니다' } });
+  if(db.prepare("SELECT id FROM quotes WHERE request_id=? AND status NOT IN ('rejected','expired','superseded')").get(requestId))return res.status(409).json({success:false,error:{code:'ACTIVE_QUOTE_EXISTS',message:'진행 중인 견적이 있습니다. 기존 견적에서 수정본을 작성해주세요'}});
+
+  const total = items.reduce((sum, it) => sum + (Number(it.price) || 0), 0);
+  const quoteId = randomUUID();
+  db.prepare("INSERT INTO quotes (id, request_id, partner_id, type, pyeong, total_amount,version,status,expires_at) VALUES (?,?,?,?,?,?,1,'sent',datetime('now','+30 days'))")
+    .run(quoteId, requestId, req.user.sub, type || 'initial', pyeong || request.pyeong || null, total);
+  const insertItem = db.prepare('INSERT INTO quote_items (id, quote_id, phase_label, item_name, price) VALUES (?,?,?,?,?)');
+  items.forEach(it => insertItem.run(randomUUID(), quoteId, it.phaseLabel || null, it.name, it.price));
+  createNotification('consumer',request.user_id,'quote_received','새 견적서가 도착했습니다',`견적 총액 ${total.toLocaleString()}원`,'quote',quoteId);
+  const created=getQuoteWithItems(quoteId);emitQuoteEvent(created,'quote_sent',`견적서 v1이 도착했습니다 · ${total.toLocaleString()}원`,'partner',req.user.sub);
+  res.json({ success: true, data: { ...created,total } });
+});
+
+app.post('/api/quotes/:id/revisions',authRequired,(req,res)=>{
+  if(req.user.role!=='partner')return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'업체만 수정견적을 발송할 수 있습니다'}});
+  const parent=getQuoteWithItems(req.params.id);if(!parent)return res.status(404).json({success:false,error:{code:'NOT_FOUND',message:'기존 견적서를 찾을 수 없습니다'}});
+  if(parent.partner_id!==req.user.sub)return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인 업체의 견적서만 수정할 수 있습니다'}});
+  if(!['sent','viewed','revision_requested'].includes(parent.status))return res.status(409).json({success:false,error:{code:'QUOTE_LOCKED',message:'현재 상태의 견적서는 수정할 수 없습니다'}});
+  const items=req.body.items;if(!validateQuoteItems(items,res))return;
+  const request=db.prepare('SELECT * FROM quote_requests WHERE id=?').get(parent.request_id);
+  const latest=db.prepare('SELECT * FROM quotes WHERE request_id=? ORDER BY version DESC LIMIT 1').get(parent.request_id);
+  if(!latest||latest.id!==parent.id)return res.status(409).json({success:false,error:{code:'NOT_LATEST_QUOTE',message:'가장 최신 견적서에서만 수정본을 만들 수 있습니다'}});
+  const total=items.reduce((sum,it)=>sum+Number(it.price),0),id=randomUUID(),version=parent.version+1;
+  db.transaction(()=>{
+    db.prepare("UPDATE quotes SET status='superseded' WHERE id=?").run(parent.id);
+    db.prepare("INSERT INTO quotes(id,request_id,partner_id,type,pyeong,total_amount,version,parent_quote_id,status,expires_at) VALUES(?,?,?,?,?,?,?,?, 'sent',datetime('now','+30 days'))")
+      .run(id,parent.request_id,req.user.sub,'revised',req.body.pyeong||parent.pyeong,total,version,parent.id);
+    const insert=db.prepare('INSERT INTO quote_items(id,quote_id,phase_label,item_name,price) VALUES(?,?,?,?,?)');items.forEach(it=>insert.run(randomUUID(),id,it.phaseLabel||null,it.name,it.price));
+    db.prepare("UPDATE quote_requests SET status='quoted' WHERE id=?").run(parent.request_id);
+    createNotification('consumer',request.user_id,'quote_revised',`수정견적서 v${version}이 도착했습니다`,`${total.toLocaleString()}원`,'quote',id);
+  })();
+  const created=getQuoteWithItems(id);emitQuoteEvent(created,'quote_sent',`수정견적서 v${version}이 도착했습니다 · ${total.toLocaleString()}원`,'partner',req.user.sub);
+  res.json({success:true,data:created});
+});
+
+app.get('/api/quotes/:id',authRequired,(req,res)=>{
+  const quote=getQuoteWithItems(req.params.id);if(!quote)return res.status(404).json({success:false,error:{code:'NOT_FOUND',message:'견적서를 찾을 수 없습니다'}});
+  const request=db.prepare('SELECT * FROM quote_requests WHERE id=?').get(quote.request_id);
+  if(!request||(req.user.role==='consumer'?request.user_id!==req.user.sub:quote.partner_id!==req.user.sub))return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인의 견적서만 볼 수 있습니다'}});
+  res.json({success:true,data:quote});
+});
+
+app.post('/api/quotes/:id/view',authRequired,(req,res)=>{
+  const quote=getQuoteWithItems(req.params.id);if(!quote)return res.status(404).json({success:false,error:{code:'NOT_FOUND',message:'견적서를 찾을 수 없습니다'}});
+  const request=db.prepare('SELECT * FROM quote_requests WHERE id=?').get(quote.request_id);
+  if(req.user.role!=='consumer'||!request||request.user_id!==req.user.sub)return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'견적을 받은 소비자만 열람할 수 있습니다'}});
+  if(quote.status==='sent')db.prepare("UPDATE quotes SET status='viewed',viewed_at=datetime('now') WHERE id=?").run(quote.id);
+  res.json({success:true,data:getQuoteWithItems(quote.id)});
+});
+
+function consumerQuoteDecision(req,res,decision){
+  const quote=getQuoteWithItems(req.params.id);if(!quote)return res.status(404).json({success:false,error:{code:'NOT_FOUND',message:'견적서를 찾을 수 없습니다'}});
+  const request=db.prepare('SELECT * FROM quote_requests WHERE id=?').get(quote.request_id);
+  if(req.user.role!=='consumer'||!request||request.user_id!==req.user.sub)return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'견적을 받은 소비자만 처리할 수 있습니다'}});
+  const latest=db.prepare('SELECT id FROM quotes WHERE request_id=? ORDER BY version DESC LIMIT 1').get(quote.request_id);
+  if(!latest||latest.id!==quote.id)return res.status(409).json({success:false,error:{code:'NOT_LATEST_QUOTE',message:'최신 견적서만 처리할 수 있습니다'}});
+  if(quote.expires_at&&new Date(quote.expires_at)<=new Date()){db.prepare("UPDATE quotes SET status='expired' WHERE id=?").run(quote.id);return res.status(409).json({success:false,error:{code:'QUOTE_EXPIRED',message:'만료된 견적서입니다'}});}
+  if(!['sent','viewed'].includes(quote.status))return res.status(409).json({success:false,error:{code:'QUOTE_ALREADY_DECIDED',message:'이미 처리된 견적서입니다'}});
+  if(decision==='accepted'){
+    const room=quoteRoom(quote),measurement=room&&db.prepare('SELECT status FROM meas_jobs WHERE room_id=?').get(room.id);
+    if(!measurement||measurement.status!=='quote_finalized')return res.status(409).json({success:false,error:{code:'MEASUREMENT_NOT_FINALIZED',message:'실측과 최종견적 확정이 끝난 후 수락할 수 있습니다'}});
+  }
+  const reason=String(req.body.reason||'').trim();if(['revision_requested','rejected'].includes(decision)&&(!reason||reason.length>500))return validationError(res,'사유를 1~500자로 입력해주세요');
+  const timeColumn=decision==='accepted'?'accepted_at':decision==='rejected'?'rejected_at':'revision_requested_at';
+  db.transaction(()=>{
+    db.prepare(`UPDATE quotes SET status=?,${timeColumn}=datetime('now') WHERE id=?`).run(decision,quote.id);
+    db.prepare('INSERT INTO quote_decisions(id,quote_id,actor_role,actor_id,decision,reason) VALUES(?,?,?,?,?,?)').run(randomUUID(),quote.id,'consumer',req.user.sub,decision,reason||null);
+    db.prepare('UPDATE quote_requests SET status=? WHERE id=?').run(decision==='accepted'?'quote_accepted':decision,quote.request_id);
+    createNotification('partner',quote.partner_id,`quote_${decision}`,decision==='accepted'?'견적이 수락되었습니다':decision==='rejected'?'견적이 거절되었습니다':'견적 수정요청이 도착했습니다',reason||`견적 v${quote.version}`,'quote',quote.id);
+  })();
+  const updated=getQuoteWithItems(quote.id);emitQuoteEvent(updated,`quote_${decision}`,decision==='accepted'?`소비자가 견적서 v${quote.version}을 수락했습니다`:decision==='rejected'?`소비자가 견적서 v${quote.version}을 거절했습니다`:`소비자가 견적서 v${quote.version}의 수정을 요청했습니다: ${reason}`,'consumer',req.user.sub);
+  return res.json({success:true,data:updated});
+}
+app.post('/api/quotes/:id/accept',authRequired,(req,res)=>consumerQuoteDecision(req,res,'accepted'));
+app.post('/api/quotes/:id/reject',authRequired,(req,res)=>consumerQuoteDecision(req,res,'rejected'));
+app.post('/api/quotes/:id/revision-request',authRequired,(req,res)=>consumerQuoteDecision(req,res,'revision_requested'));
+
+// 소비자가 본인 견적요청에 대해 받은 견적서 전체(공정별 상세 포함) 조회
+app.get('/api/quote-requests/:id/quotes', authRequired, (req, res) => {
+  const request = db.prepare('SELECT * FROM quote_requests WHERE id=?').get(req.params.id);
+  if (!request) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '견적요청을 찾을 수 없습니다' } });
+  if (request.user_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인 견적요청만 조회할 수 있습니다' } });
+  const quotes = db.prepare('SELECT * FROM quotes WHERE request_id=? ORDER BY sent_at DESC').all(req.params.id);
+  const getItems = db.prepare('SELECT phase_label, item_name, price FROM quote_items WHERE quote_id=?');
+  const withItems = quotes.map(q => ({ ...q, items: getItems.all(q.id) }));
+  res.json({ success: true, data: withItems });
+});
+
+// ===== 4-2. 계약 확정 =====
+// 등급별 수수료율 기본값(프론트엔드 루머02.html의 window.TIER_FEE와 정확히 동일하게 유지할 것)
+// 결함정리(2026-09, 전수조사 발견 — 운영콘솔): 관리자 콘솔 "정책 설정"에서 수수료율을 바꿔도
+// 그 화면(브라우저 메모리)만 바뀔 뿐 여기 이 상수는 그대로였음 → 실제 계약 확정 시 적용되는
+// 수수료율이 관리자가 뭘 설정하든 항상 기본값(1.5/2.5/3%)으로 고정되는 심각한 결함이었다.
+// admin_policies 테이블(getAdminPolicy, 아래 정의)에 관리자가 저장한 값이 있으면 그것을 우선
+// 적용하고, 없으면 이 기본값으로 폴백한다.
+const TIER_FEE = { '면허 파트너': 0.015, '인증사업자': 0.025, '부분공사가능업체': 0.03 };
+function getTierFeeRate(tier) {
+  const overrides = getAdminPolicy('tier_fee_rates', {});
+  const rate = (overrides && typeof overrides[tier] === 'number') ? overrides[tier] : TIER_FEE[tier];
+  return (typeof rate === 'number') ? rate : 0.03;
+}
+
+app.post('/api/contracts', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 계약을 확정할 수 있습니다' } });
+  const { quoteId, deposit, down, middle, final } = req.body;
+  if (!isNonEmptyString(quoteId, 100)) return validationError(res, '견적서를 선택해주세요');
+  for (const [label, v] of [['계약금', deposit], ['선금', down], ['중도금', middle], ['잔금', final]]) {
+    if (v !== undefined && !isPositiveAmount(v)) return validationError(res, `${label}은 0 이상의 숫자여야 합니다`);
+  }
+  const quote = db.prepare('SELECT * FROM quotes WHERE id=?').get(quoteId);
+  if (!quote) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '견적서를 찾을 수 없습니다' } });
+  if(quote.status!=='accepted')return res.status(409).json({success:false,error:{code:'QUOTE_NOT_ACCEPTED',message:'소비자가 수락한 최신 견적서로만 계약할 수 있습니다'}});
+  const quoteRequest = db.prepare('SELECT * FROM quote_requests WHERE id=?').get(quote.request_id);
+  if (!quoteRequest || quoteRequest.user_id !== req.user.sub) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인 견적요청에 도착한 견적서만 계약할 수 있습니다' } });
+  if (quoteRequest.partner_id !== quote.partner_id) return res.status(409).json({ success:false, error:{ code:'QUOTE_CHAIN_INVALID', message:'견적요청과 견적서의 업체 연결이 올바르지 않습니다' } });
+  const partner = db.prepare("SELECT * FROM partners WHERE id=? AND verify_status='approved'").get(quote.partner_id);
+  if (!partner) return res.status(409).json({ success:false, error:{ code:'PARTNER_NOT_APPROVED', message:'승인 상태인 업체와만 계약할 수 있습니다' } });
+  if (db.prepare('SELECT id FROM contracts WHERE quote_id=?').get(quoteId)) return res.status(409).json({ success:false, error:{ code:'CONTRACT_ALREADY_EXISTS', message:'이미 계약이 생성된 견적서입니다' } });
+
+  // 결함방지(사용자요청 반영): 확정 시점의 수수료율을 스냅샷으로 고정 저장 — 이후 업체 등급이 바뀌어도
+  // 이미 확정된 이 계약의 수수료율은 절대 바뀌지 않아야 함(정산 정합성의 핵심)
+  const feeRateSnapshot = getTierFeeRate(partner.tier);
+
+  const totalAmount = (deposit || 0) + (down || 0) + (middle || 0) + (final || 0);
+  if (totalAmount !== quote.total_amount) return res.status(400).json({ success:false, error:{ code:'PAYMENT_SCHEDULE_MISMATCH', message:'계약금·선금·중도금·잔금 합계가 견적 총액과 일치해야 합니다' } });
+  const contractId = randomUUID();
+  const quoteSnapshot=getQuoteWithItems(quoteId);
+  db.transaction(() => {
+    db.prepare(`INSERT INTO contracts (id, quote_id, consumer_id, partner_id, fee_rate_snapshot, deposit_amount, down_amount, middle_amount, final_amount,quote_version,quote_snapshot)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(contractId, quoteId, req.user.sub, quote.partner_id, feeRateSnapshot, deposit || 0, down || 0, middle || 0, final || 0,quote.version,JSON.stringify(quoteSnapshot));
+    db.prepare("UPDATE quotes SET status='contracted' WHERE id=?").run(quoteId);
+    db.prepare('UPDATE partners SET contracts_count = contracts_count + 1, cert_completed = 1 WHERE id=?').run(quote.partner_id);
+    db.prepare("UPDATE quote_requests SET status='contracted' WHERE id=?").run(quote.request_id);
+    db.prepare('INSERT INTO settlements (id, contract_id, partner_id, amount, fee_rate) VALUES (?,?,?,?,?)').run(randomUUID(), contractId, quote.partner_id, totalAmount, feeRateSnapshot);
+    createNotification('partner',quote.partner_id,'contract_confirmed','계약이 확정되었습니다',`계약금액 ${totalAmount.toLocaleString()}원`,'contract',contractId);
+  })();
+  res.json({ success: true, data: { id: contractId, feeRateSnapshot } });
+});
+
+app.get('/api/contracts/mine', authRequired, (req, res) => {
+  const column = req.user.role === 'partner' ? 'partner_id' : 'consumer_id';
+  const list = db.prepare(`SELECT * FROM contracts WHERE ${column}=? ORDER BY confirmed_at DESC`).all(req.user.sub);
+  res.json({ success: true, data: list });
+});
+
+// ===== 신규(강남언니 벤치마킹 검토 후속 — 2단계: 계약인증 리뷰 시스템) =====
+function mapReview(r) {
+  return {
+    id: r.id, contractId: r.contract_id, partnerId: r.partner_id,
+    ratingOverall: r.rating_overall, ratingQuoteAccuracy: r.rating_quote_accuracy,
+    ratingQuality: r.rating_quality, ratingSchedule: r.rating_schedule, ratingCommunication: r.rating_communication,
+    comment: r.comment, partnerReply: r.partner_reply, partnerRepliedAt: r.partner_replied_at, createdAt: r.created_at
+  };
+}
+function isValidRating(v) { return Number.isInteger(v) && v >= 1 && v <= 5; }
+
+// 특정 계약에 이미 작성된 리뷰가 있는지 조회 — 소비자는 "리뷰 쓰기" 버튼을 보여줄지, 이미 쓴 리뷰를
+// 보여줄지 판단할 때, 업체는 자신에게 달린 리뷰를 확인할 때 쓴다.
+app.get('/api/contracts/:id/review', authRequired, (req, res) => {
+  const contract = db.prepare('SELECT * FROM contracts WHERE id=?').get(req.params.id);
+  if (!contract) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '계약을 찾을 수 없습니다' } });
+  if (contract.consumer_id !== req.user.sub && contract.partner_id !== req.user.sub) {
+    return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인이 관련된 계약만 조회할 수 있습니다' } });
+  }
+  const review = db.prepare('SELECT * FROM reviews WHERE contract_id=?').get(req.params.id);
+  if (!review) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '아직 작성된 리뷰가 없습니다' } });
+  res.json({ success: true, data: mapReview(review) });
+});
+
+// 신규(사용자요청 반영 — 리뷰 작성 리워드): 관리자가 admin_policies로 금액을 조정할 수 있게
+// 기존 패턴(getAdminPolicy)을 그대로 재사용. 기본값 3000원.
+app.post('/api/reviews', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 리뷰를 작성할 수 있습니다' } });
+  const { contractId, ratingOverall, ratingQuoteAccuracy, ratingQuality, ratingSchedule, ratingCommunication, comment } = req.body;
+  if (!isNonEmptyString(contractId, 100)) return validationError(res, '계약 정보가 올바르지 않습니다');
+  for (const [label, v] of [['종합 평점', ratingOverall], ['견적 정확성', ratingQuoteAccuracy], ['시공 품질', ratingQuality], ['기한 준수', ratingSchedule], ['의사소통', ratingCommunication]]) {
+    if (!isValidRating(v)) return validationError(res, `${label}은 1~5 사이의 정수여야 합니다`);
+  }
+  if (comment !== undefined && comment !== null && (typeof comment !== 'string' || comment.length > 1000)) {
+    return validationError(res, '리뷰 내용은 1000자 이내여야 합니다');
+  }
+  const contract = db.prepare('SELECT * FROM contracts WHERE id=?').get(contractId);
+  if (!contract) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '계약을 찾을 수 없습니다' } });
+  if (contract.consumer_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인이 체결한 계약에 대해서만 리뷰를 작성할 수 있습니다' } });
+  if (db.prepare('SELECT id FROM reviews WHERE contract_id=?').get(contractId)) {
+    return res.status(409).json({ success: false, error: { code: 'REVIEW_ALREADY_EXISTS', message: '이미 이 계약에 대한 리뷰를 작성했습니다' } });
+  }
+  const id = randomUUID();
+  const rewardAmount = Number(getAdminPolicy('review_reward_amount', 3000)) || 0;
+  db.transaction(() => {
+    db.prepare(`INSERT INTO reviews (id, contract_id, consumer_id, partner_id, rating_overall, rating_quote_accuracy, rating_quality, rating_schedule, rating_communication, comment)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(id, contractId, req.user.sub, contract.partner_id, ratingOverall, ratingQuoteAccuracy, ratingQuality, ratingSchedule, ratingCommunication, (comment || '').trim() || null);
+    const agg = db.prepare('SELECT COUNT(*) c, AVG(rating_overall) a FROM reviews WHERE partner_id=?').get(contract.partner_id);
+    db.prepare('UPDATE partners SET reviews_count=?, rating=? WHERE id=?').run(agg.c, Math.round(agg.a * 10) / 10, contract.partner_id);
+    if (rewardAmount > 0) {
+      db.prepare('UPDATE users SET cash_balance = cash_balance + ? WHERE id=?').run(rewardAmount, req.user.sub);
+      createNotification('consumer', req.user.sub, 'review_reward', '리뷰 작성 감사 크레딧 지급', `리뷰를 작성해주셔서 ${rewardAmount.toLocaleString()}원이 적립됐어요.`);
+    }
+    createNotification('partner', contract.partner_id, 'review_received', '새 리뷰가 등록됐어요', `★${ratingOverall} 리뷰가 등록됐어요. 확인하고 답글을 남겨보세요.`, 'review', id);
+  })();
+  res.status(201).json({ success: true, data: { id, rewardAmount } });
+});
+
+// 업체 본인에게 달린 리뷰 목록(비공개 관리용 — 파트너 자신의 화면에서 답글을 달 때 사용)
+app.get('/api/partners/me/reviews', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 조회할 수 있습니다' } });
+  const rows = db.prepare('SELECT * FROM reviews WHERE partner_id=? ORDER BY created_at DESC').all(req.user.sub);
+  res.json({ success: true, data: rows.map(mapReview) });
+});
+
+// 공개 리뷰 목록(업체 상세페이지 — 비회원도 볼 수 있되, 프론트에서 기존 블러+자물쇠 패턴으로
+// 비로그인 사용자에게는 리뷰 본문을 흐리게 보여준다). 작성자 신원은 노출하지 않는다.
+app.get('/api/partners/:id/reviews', (req, res) => {
+  const rows = db.prepare('SELECT * FROM reviews WHERE partner_id=? ORDER BY created_at DESC LIMIT 50').all(req.params.id);
+  res.json({ success: true, data: rows.map(mapReview) });
+});
+
+app.put('/api/reviews/:id/reply', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 답글을 작성할 수 있습니다' } });
+  const { reply } = req.body;
+  if (!isNonEmptyString(reply, 500)) return validationError(res, '답글은 1자 이상 500자 이내여야 합니다');
+  const review = db.prepare('SELECT * FROM reviews WHERE id=?').get(req.params.id);
+  if (!review) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '리뷰를 찾을 수 없습니다' } });
+  if (review.partner_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인에게 달린 리뷰에만 답글을 작성할 수 있습니다' } });
+  db.prepare("UPDATE reviews SET partner_reply=?, partner_replied_at=datetime('now') WHERE id=?").run(reply.trim(), review.id);
+  createNotification('consumer', review.consumer_id, 'review_replied', '리뷰에 답글이 달렸어요', reply.trim().slice(0, 80), 'review', review.id);
+  res.json({ success: true, data: { message: '답글이 등록됐어요' } });
+});
+
+function createNotification(recipientRole, recipientId, type, title, body, targetType, targetId) {
+  const id = randomUUID();
+  db.prepare(`INSERT INTO notifications (id,recipient_role,recipient_id,type,title,body,target_type,target_id)
+    VALUES (?,?,?,?,?,?,?,?)`).run(id,recipientRole,recipientId,type,title,body||null,targetType||null,targetId||null);
+  // 신규(사용자요청 — 푸시알림 인프라 완성): 알림이 DB에 생성되는 이 단일 지점에서 그대로
+  // 실제 웹푸시도 함께 발송한다(fire-and-forget — 기존 19곳의 호출부는 전혀 손대지 않아도 됨).
+  // VAPID 키가 설정 안 돼있으면(PUSH_ENABLED=false) 바로 조용히 아무 일도 하지 않는다.
+  sendPushToRecipient(recipientRole, recipientId, title, body, targetType, targetId).catch(()=>{});
+  return id;
+}
+
+async function sendPushToRecipient(recipientRole, recipientId, title, body, targetType, targetId) {
+  if (!PUSH_ENABLED) return;
+  let subs;
+  try {
+    subs = db.prepare(`SELECT * FROM push_subscriptions WHERE recipient_role=? AND recipient_id=?`).all(recipientRole, recipientId);
+  } catch (e) { return; }
+  if (!subs || !subs.length) return;
+  const payload = JSON.stringify({ title: title || '루머 ROOMER', body: body || '', url: '/app' });
+  await Promise.all(subs.map(async (sub) => {
+    try {
+      await webpush.sendNotification({
+        endpoint: sub.endpoint,
+        keys: { p256dh: sub.p256dh, auth: sub.auth }
+      }, payload);
+    } catch (err) {
+      // 구독이 만료/취소된 경우(브라우저가 알림 권한을 껐거나 재설치 등) 해당 구독만 정리.
+      if (err && (err.statusCode === 404 || err.statusCode === 410)) {
+        try { db.prepare(`DELETE FROM push_subscriptions WHERE id=?`).run(sub.id); } catch(e){}
+      }
+    }
+  }));
+}
+// 결함정리(사용자요청 — PG사를 포트원 경유가 아닌 토스페이먼츠 자체 API로 직접 연동하기로 확정):
+// 아래 결제 관련 함수·API 전체를 포트원 V2 구조에서 토스페이먼츠 코어 API 구조로 교체.
+// 토스는 결제를 "조회"만 하는 포트원과 달리, 결제를 "승인(confirm)"하는 능동적 API 호출이 필요함.
+function tossAuthHeader() {
+  if (!process.env.TOSS_SECRET_KEY) throw Object.assign(new Error('토스페이먼츠 시크릿 키가 설정되지 않았습니다'), { code:'PAYMENT_NOT_CONFIGURED', status:503 });
+  // 시크릿키 뒤에 콜론(:)을 붙여 base64 인코딩 — 토스페이먼츠 Basic 인증 공식 규격
+  return 'Basic ' + Buffer.from(process.env.TOSS_SECRET_KEY + ':').toString('base64');
+}
+async function confirmTossPayment(paymentKey, orderId, amount) {
+  const response = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
+    method: 'POST',
+    headers: { Authorization: tossAuthHeader(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paymentKey, orderId, amount })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error((data && data.message) || '결제 승인에 실패했습니다'), { code: (data && data.code) || 'PAYMENT_PROVIDER_ERROR', status: response.status >= 400 && response.status < 600 ? response.status : 502 });
+  return data;
+}
+// 웹훅에서는 결제를 다시 "승인"하면 안 되고(이미 승인된 결제를 또 승인 요청하면 오류), 반드시 "조회"만 해야 함
+async function queryTossPayment(paymentKey) {
+  const response = await fetch(`https://api.tosspayments.com/v1/payments/${encodeURIComponent(paymentKey)}`, {
+    headers: { Authorization: tossAuthHeader() }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error((data && data.message) || '결제정보 조회에 실패했습니다'), { code: (data && data.code) || 'PAYMENT_PROVIDER_ERROR', status: 502 });
+  return data;
+}
+// 신규(2026-09, 결제수단 실등록 연동): "카드 등록"은 결제 승인이 아니라 자동결제용 빌링키 발급 API.
+// 프론트에서 tossPayments.requestBillingAuth('CARD', ...)로 카드정보 자체는 토스의 보안 결제창에서만
+// 입력받고(우리 서버·화면은 카드번호를 절대 보지 않음), 그 결과로 받은 authKey만 서버로 전달받아
+// 이 API로 교환해야 진짜 billingKey가 발급된다(PCI-DSS 준수).
+async function issueTossBillingKey(authKey, customerKey) {
+  const response = await fetch('https://api.tosspayments.com/v1/billing/authorizations/issue', {
+    method: 'POST',
+    headers: { Authorization: tossAuthHeader(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ authKey, customerKey })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error((data && data.message) || '카드 등록에 실패했습니다'), { code: (data && data.code) || 'PAYMENT_PROVIDER_ERROR', status: response.status >= 400 && response.status < 600 ? response.status : 502 });
+  return data;
+}
+function syncVerifiedPayment(localPayment, providerPayment, rawEventType) {
+  // 결함정리: 토스페이먼츠 Payment 객체는 포트원과 필드명이 다름(totalAmount 직접 필드, amount.total 아님)
+  const providerAmount = Number(providerPayment.totalAmount);
+  if (providerAmount !== localPayment.amount) {
+    throw Object.assign(new Error('결제 금액이 주문정보와 일치하지 않습니다'), { code:'PAYMENT_AMOUNT_MISMATCH', status:409 });
+  }
+  if (providerPayment.orderId !== localPayment.payment_id) {
+    throw Object.assign(new Error('주문번호가 일치하지 않습니다'), { code:'PAYMENT_ORDER_MISMATCH', status:409 });
+  }
+  // 토스페이먼츠 결제상태: READY/IN_PROGRESS/WAITING_FOR_DEPOSIT/DONE/CANCELED/PARTIAL_CANCELED/ABORTED/EXPIRED
+  const statusMap = { DONE:'paid', CANCELED:'cancelled', PARTIAL_CANCELED:'partially_cancelled', WAITING_FOR_DEPOSIT:'pending', ABORTED:'failed', EXPIRED:'failed' };
+  const nextStatus = statusMap[providerPayment.status] || 'ready';
+  const wasPaid = localPayment.status === 'paid';
+  db.transaction(() => {
+    db.prepare(`UPDATE payments SET status=?, payment_key=?, provider_transaction_id=?, paid_at=CASE WHEN ?='paid' THEN COALESCE(paid_at,datetime('now')) ELSE paid_at END,
+      cancelled_at=CASE WHEN ? IN ('cancelled','partially_cancelled') THEN datetime('now') ELSE cancelled_at END, updated_at=datetime('now') WHERE id=?`)
+      .run(nextStatus,providerPayment.paymentKey||localPayment.payment_key||null,providerPayment.lastTransactionKey||null,nextStatus,nextStatus,localPayment.id);
+    db.prepare(`INSERT OR IGNORE INTO payment_events (id,payment_id,event_type,provider_status,payload) VALUES (?,?,?,?,?)`)
+      .run(randomUUID(),localPayment.payment_id,rawEventType||'sync',providerPayment.status||null,JSON.stringify(providerPayment).slice(0,50000));
+    if (nextStatus==='paid' && !wasPaid) {
+      const contract=db.prepare('SELECT * FROM contracts WHERE id=?').get(localPayment.contract_id);
+      createNotification('partner',localPayment.partner_id,'payment_paid','공사대금 결제 완료',`${localPayment.installment_type} ${localPayment.amount.toLocaleString()}원이 결제되었습니다.`,'contract',localPayment.contract_id);
+      const unpaid=db.prepare("SELECT COUNT(*) AS count FROM payments WHERE contract_id=? AND status!='paid'").get(localPayment.contract_id).count;
+      if (unpaid===0) db.prepare("UPDATE settlements SET status='ready_for_payout' WHERE contract_id=? AND status!='hold'").run(localPayment.contract_id);
+      if (contract) createNotification('consumer',contract.consumer_id,'payment_confirmed','결제가 확인되었습니다','결제 승인정보가 안전하게 확인되었습니다.','contract',localPayment.contract_id);
+    }
+  })();
+  return nextStatus;
+}
+app.post('/api/contracts/:contractId/payments', authRequired, (req,res) => {
+  const contract=contractForMember(req.params.contractId,req.user);
+  if (!contract || req.user.role!=='consumer') return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'계약 소비자만 결제를 시작할 수 있습니다'}});
+  const installmentType=String(req.body.installmentType||'');
+  const amountByType={deposit:contract.deposit_amount,down:contract.down_amount,middle:contract.middle_amount,final:contract.final_amount};
+  if (!Object.prototype.hasOwnProperty.call(amountByType,installmentType) || amountByType[installmentType]<=0) return validationError(res,'결제할 계약 대금 단계를 선택해주세요');
+  let payment=db.prepare('SELECT * FROM payments WHERE contract_id=? AND installment_type=?').get(contract.id,installmentType);
+  if (!payment) {
+    const id=randomUUID(),orderId=('roomer'+randomUUID().replace(/-/g,'')).slice(0,40);
+    db.prepare(`INSERT INTO payments (id,payment_id,contract_id,consumer_id,partner_id,installment_type,amount,provider) VALUES (?,?,?,?,?,?,?,?)`)
+      .run(id,orderId,contract.id,contract.consumer_id,contract.partner_id,installmentType,amountByType[installmentType],'toss_payments');
+    payment=db.prepare('SELECT * FROM payments WHERE id=?').get(id);
+  }
+  if (payment.status==='paid') return res.status(409).json({success:false,error:{code:'ALREADY_PAID',message:'이미 결제된 단계입니다'}});
+  if (!process.env.TOSS_CLIENT_KEY) return res.status(503).json({success:false,error:{code:'PAYMENT_NOT_CONFIGURED',message:'결제 클라이언트 설정이 필요합니다'}});
+  res.json({success:true,data:{orderId:payment.payment_id,clientKey:process.env.TOSS_CLIENT_KEY,orderName:`ROOMER 공사대금 ${installmentType}`,amount:payment.amount,currency:'KRW'}});
+});
+app.post('/api/payments/:paymentId/confirm', authRequired, async (req,res,next) => {
+  const local=db.prepare('SELECT * FROM payments WHERE payment_id=?').get(req.params.paymentId);
+  if (!local) return res.status(404).json({success:false,error:{code:'NOT_FOUND',message:'결제 주문을 찾을 수 없습니다'}});
+  if (local.consumer_id!==req.user.sub) return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인 결제만 확인할 수 있습니다'}});
+  const { paymentKey } = req.body;
+  if (!isNonEmptyString(paymentKey, 200)) return validationError(res, '결제 승인에 필요한 정보가 없습니다');
+  try { const verified=await confirmTossPayment(paymentKey, local.payment_id, local.amount); const status=syncVerifiedPayment(local,verified,'client_confirm'); res.json({success:true,data:{status}}); } catch(error){next(error);}
+});
+// 결함정리(사용자요청 — 보안): 토스페이먼츠 웹훅은 서명검증 헤더가 없으므로(공식문서 확인),
+// 웹훅 본문을 그대로 신뢰하지 않고 반드시 서버가 직접 토스 API로 재조회(GET, 승인아님)해서
+// 확인한 값만 반영한다. 이렇게 하면 위조된 웹훅 요청으로 결제상태를 조작할 수 없음.
+app.post('/api/webhooks/toss/payment', async (req,res) => {
+  const paymentKey=String((req.body&&req.body.data&&req.body.data.paymentKey)||(req.body&&req.body.paymentKey)||'');
+  if (!paymentKey) return res.status(200).json({success:true,data:{ignored:true}});
+  try {
+    const verified=await queryTossPayment(paymentKey);
+    const local=db.prepare('SELECT * FROM payments WHERE payment_id=?').get(verified.orderId);
+    if (!local) return res.status(200).json({success:true,data:{ignored:true}});
+    syncVerifiedPayment(local,verified,'webhook'); res.json({success:true});
+  } catch(error){
+    // 결함정리(사용자요청 — 안전강화): 로컬DB에 없는(또는 존재하지않는) 결제에 대한 웹훅은
+    // 토스 조회 API 자체가 실패할 수 있음(404 등). 이 경우 에러를 그대로 던지면 토스가 최대 7회까지
+    // 웹훅을 재전송하며 낭비되므로, 조회 실패도 "무시"로 조용히 처리해 불필요한 재전송을 막는다.
+    // (단, syncVerifiedPayment 내부의 금액·주문번호 불일치 오류는 실제 결제이므로 그대로 노출)
+    if (error && (error.code==='PAYMENT_AMOUNT_MISMATCH' || error.code==='PAYMENT_ORDER_MISMATCH')) {
+      console.error('토스 웹훅 처리 중 심각한 불일치:', error.code, error.message);
+      return res.status(409).json({success:false,error:{code:error.code,message:error.message}});
+    }
+    console.error('토스 웹훅 처리(무시 처리):', error.message);
+    return res.status(200).json({success:true,data:{ignored:true}});
+  }
+});
+app.get('/api/notifications/mine', authRequired, (req,res) => {
+  const limit=Math.min(Math.max(Number(req.query.limit)||50,1),100);
+  const rows=db.prepare(`SELECT * FROM notifications WHERE recipient_role=? AND recipient_id=? ORDER BY created_at DESC LIMIT ?`).all(req.user.role,req.user.sub,limit);
+  const unread=db.prepare('SELECT COUNT(*) AS count FROM notifications WHERE recipient_role=? AND recipient_id=? AND read_at IS NULL').get(req.user.role,req.user.sub).count;
+  res.json({success:true,data:{items:rows,unreadCount:unread}});
+});
+app.put('/api/notifications/:id/read', authRequired, (req,res) => {
+  const result=db.prepare("UPDATE notifications SET read_at=COALESCE(read_at,datetime('now')) WHERE id=? AND recipient_role=? AND recipient_id=?").run(req.params.id,req.user.role,req.user.sub);
+  if (!result.changes) return res.status(404).json({success:false,error:{code:'NOT_FOUND',message:'알림을 찾을 수 없습니다'}});
+  res.json({success:true});
+});
+app.put('/api/notifications/read-all', authRequired, (req,res) => {
+  const result=db.prepare("UPDATE notifications SET read_at=datetime('now') WHERE recipient_role=? AND recipient_id=? AND read_at IS NULL").run(req.user.role,req.user.sub);
+  res.json({success:true,data:{updated:result.changes}});
+});
+
+// ===== 4-3. 정산 =====
+// 보안 핵심(프론트엔드 프로토타입에서 실제 발견된 버그 재발 방지):
+// partner_id는 오직 인증토큰(req.user.sub)에서만 가져오고, 쿼리 파라미터로는 절대 받지 않는다.
+// → 다른 업체 ID를 쿼리에 넣어도 절대 접근 불가(토큰 소유자 본인 것만 조회됨)
+app.get('/api/settlements/mine', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 조회할 수 있습니다' } });
+  const { period } = req.query; // this|last|all — 기간필터는 실제로는 payout_date 기준 WHERE절 추가
+  const list = db.prepare('SELECT * FROM settlements WHERE partner_id=? ORDER BY created_at DESC').all(req.user.sub);
+  res.json({ success: true, data: list });
+});
+
+// 신규(2026-09, 전수조사 발견 — 운영콘솔 실연동): 관리자 "정산 감독" 화면이 그동안 전체 업체를
+// 조회하는 API가 아예 없어서 항상 빈 배열(window.SETTLEMENTS=[])만 보여주고 있었다 — 뱃지 카운트
+// (settleHold, /api/admin/dashboard/counts)는 실제 DB를 세고 있었는데 정작 목록 화면은 0건/빈 화면으로
+// 나오는 불일치 결함이었음.
+app.get('/api/admin/settlements', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare(`
+    SELECT s.*, p.business_name AS partner_name, p.tier AS partner_tier
+    FROM settlements s
+    LEFT JOIN partners p ON p.id = s.partner_id
+    ORDER BY (s.status = 'hold') DESC, s.created_at DESC
+  `).all();
+  res.json({ success: true, data: rows.map(r => ({
+    id: r.id, contractId: r.contract_id, partnerId: r.partner_id, partnerName: r.partner_name || '(알 수 없음)',
+    tier: r.partner_tier || '-', amount: r.amount, feeRate: r.fee_rate, status: r.status,
+    holdReason: r.hold_reason, payoutDate: r.payout_date, createdAt: r.created_at
+  })) });
+});
+
+app.put('/api/settlements/:id/pay-fee', blockInProduction, authRequired, (req, res) => {
+  const settlement = db.prepare('SELECT * FROM settlements WHERE id=?').get(req.params.id);
+  if (!settlement) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '정산건을 찾을 수 없습니다' } });
+  // 보안: 본인 정산건인지 반드시 확인(다른 업체 정산을 조작 못 하도록)
+  if (settlement.partner_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인 정산건만 처리할 수 있습니다' } });
+  db.prepare("UPDATE settlements SET status='fee_paid' WHERE id=?").run(req.params.id);
+  res.json({ success: true, data: { message: '수수료 납부 완료 처리됐어요' } });
+});
+
+
+// ===== 6. 분쟁 =====
+// 프론트엔드(루머02.html) DISPUTE_TYPES와 판단기준을 그대로 동기화
+// 결함정리(2026-09, 전수조사 발견 — 운영콘솔): 프론트는 하자미처리/대금정산/노쇼/품질불만/기타 5종을
+// 보여주는데 여기엔 '기타'가 빠져 있어서, 소비자가 "기타"를 선택해 분쟁을 접수하면 이 서버가
+// INVALID_TYPE(400)으로 거부하는 결함이었다. 프론트와 동일하게 5종으로 맞춘다.
+const DISPUTE_TYPES = {
+  defect:  { label: '하자 미처리',    basis: '하자 접수 이력 · 완공 사진 대조 · 업체 SLA(48h)', rec: '업체 SLA 초과 여부 확인 → 초과 시 업체 우선 책임, 이행보증금에서 대체 시공비 차감 검토' },
+  payment: { label: '대금·정산 이견', basis: '계약서 대금 분할 · 정산 내역', rec: '계약 기준과 실제 지급 대조 → 차액 발생 시 분할 기준으로 조정' },
+  noshow:  { label: '노쇼·잠수',      basis: '실측 일정 로그 · 노쇼 신고 기록', rec: '반복 노쇼(2회+) 시 어뷰징 큐 연계, 대체 업체 배정 또는 계약 해지 검토' },
+  quality: { label: '품질 불만',      basis: '완공 AI 검수 · 현장 사진 · 자재 미팅 기록', rec: '검수 기준 미달 항목 확인 → 재시공 또는 부분 환불 협의 권고' },
+  etc:     { label: '기타',           basis: '제출 자료 및 대화 이력', rec: '양측 소명 자료 확보 후 관리자 정성 판단' }
+};
+function contractForMember(contractId, user) {
+  const contract = db.prepare('SELECT * FROM contracts WHERE id=?').get(contractId);
+  if (!contract || !user) return null;
+  if (user.role === 'consumer' && contract.consumer_id === user.sub) return contract;
+  if (user.role === 'partner' && contract.partner_id === user.sub) return contract;
+  return null;
+}
+
+app.post('/api/disputes', authRequired, (req, res) => {
+  const { contractId, type, reason } = req.body;
+  if (!isNonEmptyString(contractId, 100)) return validationError(res, '계약을 선택해주세요');
+  if (!DISPUTE_TYPES[type]) return res.status(400).json({ success: false, error: { code: 'INVALID_TYPE', message: '올바른 분쟁 유형이 아닙니다' } });
+  if (reason && !isNonEmptyString(reason, 1000)) return validationError(res, '사유는 1000자 이내여야 합니다');
+  if (!contractForMember(contractId, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인이 참여한 계약만 분쟁을 신청할 수 있습니다' } });
+  const id = randomUUID();
+  db.prepare('INSERT INTO disputes (id, contract_id, type, filed_by, reason) VALUES (?,?,?,?,?)')
+    .run(id, contractId, type, req.user.role, reason || null);
+  const disputeContract=contractForMember(contractId,req.user);
+  const otherRole=req.user.role==='consumer'?'partner':'consumer';
+  const otherId=otherRole==='partner'?disputeContract.partner_id:disputeContract.consumer_id;
+  createNotification(otherRole,otherId,'dispute_filed','분쟁이 접수되었습니다',DISPUTE_TYPES[type].label,'contract',contractId);
+  res.json({ success: true, data: { id, status: 'filed' } });
+});
+
+// ⚡MVP-SWITCH: 실서버 → AI 판정은 서버 LLM(Claude API) 호출 결과 사용. 지금은 유형별 템플릿 기반 시뮬레이션
+app.post('/api/disputes/:id/ai-judge', authRequired, (req, res) => {
+  const dispute = db.prepare('SELECT * FROM disputes WHERE id=?').get(req.params.id);
+  if (!dispute) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '분쟁을 찾을 수 없습니다' } });
+  if (!contractForMember(dispute.contract_id, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인이 참여한 분쟁만 조회할 수 있습니다' } });
+  const t = DISPUTE_TYPES[dispute.type];
+  const verdict = { typeLabel: t.label, basis: t.basis, recommendation: t.rec };
+  db.prepare("UPDATE disputes SET ai_verdict=?, status='ai_judged' WHERE id=?").run(JSON.stringify(verdict), req.params.id);
+  res.json({ success: true, data: verdict });
+});
+
+// 결함정리(2026-09, 전수조사 발견 — 운영콘솔 분쟁 조정 큐를 실연동하며 발견): 이 엔드포인트는 그동안
+// settlementAdjustment가 있을 때 정산을 hold로 "거는" 코드만 있고, 기각·소비자책임 결정일 때 이미 걸린
+// hold를 "풀어주는" 코드가 아예 없었다(프론트 프로토타입의 resolveDispute()에는 있었는데 서버엔 빠짐).
+// 그래서 분쟁이 기각되어도 정산이 영구히 보류 상태로 남는 결함이 될 수 있었음 — 결정 유형별로
+// 명확히 분기해서 처리한다.
+app.put('/api/disputes/:id/resolve', adminAuthRequired(), (req, res) => {
+  // 결함수정(팀장 지시 반영): "실서비스는 관리자 권한 확인 미들웨어 필요"라고 남겨뒀던 주석 처리 완료
+  const { decision, settlementAdjustment } = req.body;
+  const DECISION_LABEL = { partner: '업체 책임', consumer: '소비자 책임', partial: '일부 조정', reject: '기각' };
+  if (!DECISION_LABEL[decision]) return validationError(res, '올바른 조정 결정이 아닙니다');
+  const dispute = db.prepare('SELECT * FROM disputes WHERE id=?').get(req.params.id);
+  if (!dispute) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '분쟁을 찾을 수 없습니다' } });
+  if (dispute.status === 'resolved') return res.status(409).json({ success: false, error: { code: 'ALREADY_RESOLVED', message: '이미 조정이 완료된 분쟁입니다' } });
+  const contract = db.prepare('SELECT * FROM contracts WHERE id=?').get(dispute.contract_id);
+  const tx = db.transaction(() => {
+    db.prepare("UPDATE disputes SET status='resolved', resolution=?, settlement_adjustment=?, resolved_at=datetime('now') WHERE id=?")
+      .run(decision, settlementAdjustment || null, req.params.id);
+    const settlement = dispute.contract_id ? db.prepare('SELECT * FROM settlements WHERE contract_id=?').get(dispute.contract_id) : null;
+    if (settlement) {
+      if (decision === 'consumer' || decision === 'reject') {
+        // 기각 또는 소비자 책임 없음 → 보류 사유가 이 정산이면 해제하고 정산 정상 진행
+        if (settlement.status === 'hold') db.prepare("UPDATE settlements SET status='received', hold_reason=NULL WHERE id=?").run(settlement.id);
+      } else {
+        // 업체 책임 또는 일부 조정 → 보류 유지, 금액 조정분이 있으면 정산액에서 차감
+        const adj = settlementAdjustment ? Math.min(Math.abs(settlementAdjustment), settlement.amount) : 0;
+        db.prepare("UPDATE settlements SET status='hold', hold_reason=?, amount=amount-? WHERE id=?").run('분쟁 조정 반영: ' + DECISION_LABEL[decision], adj, settlement.id);
+      }
+    }
+    if (contract) {
+      createNotification('consumer', contract.consumer_id, 'dispute_resolved', '분쟁 조정이 완료되었습니다', DECISION_LABEL[decision], 'contract', contract.id);
+      createNotification('partner', contract.partner_id, 'dispute_resolved', '분쟁 조정이 완료되었습니다', DECISION_LABEL[decision], 'contract', contract.id);
+    }
+  });
+  tx();
+  res.json({ success: true, data: { message: '조정 완료됐어요' } });
+});
+
+// 신규(2026-09, 전수조사 발견 — 운영콘솔 실연동): 관리자 콘솔 "분쟁 조정 큐" 화면이 그동안
+// 이 목록 API가 아예 없어서 그 브라우저 탭에서 방금 접수된 분쟁만 담기는 로컬 배열(window.DISPUTES)을
+// 보여주고 있었다 — 다른 사용자가 신고한 실제 분쟁은 관리자 화면에 전혀 뜨지 않던 결함.
+app.get('/api/admin/disputes', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare(`
+    SELECT d.*, c.consumer_id, c.partner_id, p.business_name AS partner_name, u.nickname AS consumer_name
+    FROM disputes d
+    LEFT JOIN contracts c ON c.id = d.contract_id
+    LEFT JOIN partners p ON p.id = c.partner_id
+    LEFT JOIN users u ON u.id = c.consumer_id
+    ORDER BY (d.status = 'resolved') ASC, d.filed_at DESC
+  `).all();
+  res.json({ success: true, data: rows.map(r => ({
+    id: r.id, contractId: r.contract_id, type: r.type, filedBy: r.filed_by, reason: r.reason,
+    aiVerdict: r.ai_verdict ? JSON.parse(r.ai_verdict) : null, status: r.status, resolution: r.resolution,
+    settlementAdjustment: r.settlement_adjustment, filedAt: r.filed_at, resolvedAt: r.resolved_at,
+    partnerName: r.partner_name || null, consumerName: r.consumer_name || null
+  })) });
+});
+app.get('/api/admin/disputes/:id', adminAuthRequired(), (req, res) => {
+  const r = db.prepare(`
+    SELECT d.*, c.consumer_id, c.partner_id, p.business_name AS partner_name, u.nickname AS consumer_name
+    FROM disputes d
+    LEFT JOIN contracts c ON c.id = d.contract_id
+    LEFT JOIN partners p ON p.id = c.partner_id
+    LEFT JOIN users u ON u.id = c.consumer_id
+    WHERE d.id=?
+  `).get(req.params.id);
+  if (!r) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '분쟁을 찾을 수 없습니다' } });
+  res.json({ success: true, data: {
+    id: r.id, contractId: r.contract_id, type: r.type, filedBy: r.filed_by, reason: r.reason,
+    aiVerdict: r.ai_verdict ? JSON.parse(r.ai_verdict) : null, status: r.status, resolution: r.resolution,
+    settlementAdjustment: r.settlement_adjustment, filedAt: r.filed_at, resolvedAt: r.resolved_at,
+    partnerName: r.partner_name || null, consumerName: r.consumer_name || null
+  } });
+});
+
+// ===== 6-1. 하자보수 =====
+app.post('/api/defects', authRequired, (req, res) => {
+  const { contractId, photos, description } = req.body;
+  if (!isNonEmptyString(contractId, 100)) return validationError(res, '계약을 선택해주세요');
+  if (!Array.isArray(photos) || photos.length === 0) {
+    return res.status(400).json({ success: false, error: { code: 'PHOTO_REQUIRED', message: '사진을 1장 이상 첨부해야 접수할 수 있습니다' } });
+  }
+  if (photos.length > 10) return validationError(res, '사진은 최대 10장까지 첨부할 수 있습니다');
+  if (description && !isNonEmptyString(description, 1000)) return validationError(res, '설명은 1000자 이내여야 합니다');
+  if (req.user.role !== 'consumer' || !contractForMember(contractId, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'계약 소비자만 하자를 접수할 수 있습니다' } });
+  const invalidPhoto = photos.find(fileId => !db.prepare(`SELECT id FROM stored_files WHERE id=? AND owner_type='contract'
+    AND owner_id=? AND purpose='defect' AND deleted_at IS NULL`).get(fileId, contractId));
+  if (invalidPhoto) return validationError(res, '먼저 하자사진을 안전한 파일 저장소에 업로드해주세요');
+  // ⚡MVP-SWITCH: 실서버는 AI가 사진+설명 기반으로 긴급도 자동분류. 지금은 사진 장수 기준 결정적 mock
+  const urgency = photos.length >= 3 ? '24h' : photos.length === 2 ? '72h' : '168h';
+  const id = randomUUID();
+  db.prepare('INSERT INTO defects (id, contract_id, photos, description, urgency) VALUES (?,?,?,?,?)')
+    .run(id, contractId, JSON.stringify(photos), description || null, urgency);
+  const defectContract=contractForMember(contractId,req.user);
+  createNotification('partner',defectContract.partner_id,'defect_filed','하자보수가 접수되었습니다',`처리 권장기한 ${urgency}`,'contract',contractId);
+  res.json({ success: true, data: { id, urgency } });
+});
+
+app.get('/api/defects/mine', authRequired, (req, res) => {
+  const column = req.user.role === 'partner' ? 'c.partner_id' : 'c.consumer_id';
+  const list = db.prepare(`
+    SELECT d.* FROM defects d JOIN contracts c ON d.contract_id = c.id
+    WHERE ${column} = ? ORDER BY d.created_at DESC
+  `).all(req.user.sub);
+  res.json({ success: true, data: list });
+});
+
+// ===== 7. AI 공사감리 =====
+// 요금제(루머02.html INSPECT_PLANS와 동일하게 유지)
+// 결함정리(사용자요청 — 2026-09-07 사업모델 전면개편): AI무료/사진감리(장수과금)/전문가감리(고정+출장비)
+const INSPECT_PLANS = {
+  ai:     { label: 'AI 감리', maxPhotos: 3 },
+  photo:  { label: '사진감리', unitPrice: 8000, minCount: 5 },
+  expert: { label: '전문가 감리', basePrice: 300000 }
+};
+const INSPECT_TRIP_FEES = { seoul: 50000, chung: 100000, others: 150000, jeju: 200000 };
+// 결함정리(2026-09, 전수조사 발견 — 운영콘솔): 관리자 "정책 설정"에서 사진감리 장당가격·전문가
+// 감리 기본가를 바꿔도 실제 결제금액 계산은 이 파일의 하드코딩된 INSPECT_PLANS를 그대로 썼음.
+// admin_policies에 저장된 값이 있으면 우선 적용하고, 없으면 기본값으로 폴백.
+function getInspectPlans() {
+  const overrides = getAdminPolicy('inspect_plan_pricing', {});
+  return {
+    ai: INSPECT_PLANS.ai,
+    photo: { ...INSPECT_PLANS.photo, unitPrice: (overrides.photo && typeof overrides.photo.unitPrice === 'number') ? overrides.photo.unitPrice : INSPECT_PLANS.photo.unitPrice },
+    expert: { ...INSPECT_PLANS.expert, basePrice: (overrides.expert && typeof overrides.expert.basePrice === 'number') ? overrides.expert.basePrice : INSPECT_PLANS.expert.basePrice }
+  };
+}
+function calcInspectionPrice(plan, photoCount, tripKey) {
+  const plans = getInspectPlans();
+  if (plan === 'ai') return 0;
+  if (plan === 'photo') { const c = Math.max(plans.photo.minCount, parseInt(photoCount) || plans.photo.minCount); return c * plans.photo.unitPrice; }
+  if (plan === 'expert') { const trip = tripKey ? (INSPECT_TRIP_FEES[tripKey] || 0) : 0; return plans.expert.basePrice + trip; }
+  return 0;
+}
+// 등급별 판정 템플릿(루머02.html INSPECT_VERDICTS와 동일하게 유지)
+const INSPECT_VERDICTS = {
+  '양호': { score: 92, opinion: '전반적으로 시공 품질이 양호합니다. 타일 수평·도배 이음새가 기준을 충족합니다.', advice: '현재 상태로 다음 공정을 진행해도 좋습니다.' },
+  '주의': { score: 76, opinion: '대체로 양호하나 일부 마감에서 편차가 보입니다. 욕실 코킹 두께 불균일이 의심됩니다.', advice: '해당 부분 재점검을 업체에 요청하고, 사진을 추가로 받아 확인하는 것을 권장합니다.' },
+  '문제': { score: 58, opinion: '주요 공정에서 기준 미달이 감지됩니다. 타일 줄눈 간격 불균일·방수 처리 미흡 가능성이 있습니다.', advice: '다음 공정 진행 전 재시공을 요청하고, 이 보고서를 하자보수 접수 근거로 보관하세요.' }
+};
+
+app.post('/api/inspections', authRequired, (req, res) => {
+  const { contractId, plan, photoCount, tripKey } = req.body;
+  if (!INSPECT_PLANS[plan]) return res.status(400).json({ success: false, error: { code: 'INVALID_PLAN', message: '올바른 요금제가 아닙니다' } });
+  if (plan === 'photo' && (!Number.isInteger(photoCount) || photoCount < INSPECT_PLANS.photo.minCount)) return validationError(res, '사진은 최소 '+INSPECT_PLANS.photo.minCount+'장 이상 신청해주세요');
+  // 결함정리(사용자요청 — AI감리도 비용통제를 위해 최대 장수 제한 필요): 무료 서비스라 무제한 업로드시
+  // 향후 실제 AI Vision API 연동 시 비용이 통제되지 않으므로 최대장수(3장)를 서버에서도 강제 검증
+  if (plan === 'ai' && photoCount != null && (!Number.isInteger(photoCount) || photoCount > INSPECT_PLANS.ai.maxPhotos)) return validationError(res, 'AI 감리는 최대 '+INSPECT_PLANS.ai.maxPhotos+'장까지만 가능합니다');
+  if (plan === 'expert' && tripKey != null && !INSPECT_TRIP_FEES[tripKey]) return validationError(res, '올바른 출장 지역이 아닙니다');
+  if (req.user.role !== 'consumer' || !contractForMember(contractId, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'계약 소비자만 감리를 신청할 수 있습니다' } });
+  const price = calcInspectionPrice(plan, photoCount, tripKey);
+  const id = randomUUID();
+  db.prepare('INSERT INTO inspections (id, contract_id, plan, price, photo_count, trip_key, status) VALUES (?,?,?,?,?,?,?)')
+    .run(id, contractId, plan, price, photoCount || null, tripKey || null, price > 0 ? 'unpaid' : 'reported');
+  const inspectionContract=contractForMember(contractId,req.user);
+  createNotification('partner',inspectionContract.partner_id,'inspection_requested',(plan==='ai'?'AI':plan==='photo'?'사진':'전문가')+' 감리가 신청되었습니다',INSPECT_PLANS[plan].label,'contract',contractId);
+  // AI(무료)는 결제 없이 즉시 보고서 생성(결정적 mock — 실서비스에서는 Claude Vision 연동 예정)
+  let aiResult = null;
+  if (plan === 'ai') {
+    const grades = Object.keys(INSPECT_VERDICTS);
+    const grade = grades[Math.floor(Math.random() * grades.length)];
+    const verdict = INSPECT_VERDICTS[grade];
+    const report = JSON.stringify({ grade, score: verdict.score, opinion: verdict.opinion, advice: verdict.advice });
+    db.prepare("UPDATE inspections SET grade=?, score=?, report=?, paid_at=datetime('now') WHERE id=?").run(grade, verdict.score, report, id);
+    aiResult = { grade, score: verdict.score, opinion: verdict.opinion, advice: verdict.advice };
+  }
+  res.json({ success: true, data: { id, plan, price, status: price > 0 ? 'unpaid' : 'reported', ...(aiResult || {}) } });
+});
+
+// 결함정리(사용자요청 — 사진감리·전문가감리는 사람 전문인력이 실제로 검토·답변해야 함):
+// 소비자가 결제 후 사진을 업로드하는 API. 1장이라도 올라오면 즉시 상태가 in_review로
+// 바뀌어 관리자 대기열에 노출된다(순차적으로, 전체 장수를 다 기다리지 않음).
+const inspectionPhotoUpload = express.raw({ type: 'multipart/form-data', limit: '12mb' });
+app.post('/api/inspections/:id/photos', authRequired, inspectionPhotoUpload, async (req, res, next) => {
+  const inspection = db.prepare('SELECT * FROM inspections WHERE id=?').get(req.params.id);
+  if (!inspection) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
+  if (req.user.role !== 'consumer' || !contractForMember(inspection.contract_id, req.user)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인의 감리 신청에만 사진을 올릴 수 있습니다' } });
+  if (inspection.status !== 'paid' && inspection.status !== 'in_review') return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: '사진을 업로드할 수 있는 상태가 아닙니다' } });
+  let parsed;
+  try { parsed = parseMultipartBody(req); } catch (e) { return validationError(res, 'multipart/form-data 형식의 파일 업로드가 필요합니다'); }
+  const fileEntry = parsed.files.find(file => file.field === 'file');
+  if (!fileEntry || fileEntry.data.length === 0) return validationError(res, '전송할 파일이 없습니다');
+  if (fileEntry.data.length > 10 * 1024 * 1024) return validationError(res, '파일은 최대 10MB까지 전송할 수 있습니다');
+  const detected = detectPortfolioImage(fileEntry);
+  if (!detected) return validationError(res, 'JPG, PNG, WebP 사진만 전송할 수 있어요');
+  const fileId = randomUUID();
+  const key = `private/inspection/${req.params.id}/${fileId}.${detected.ext}`;
+  try { await objectStorage.putObject({ key, body: fileEntry.data, contentType: detected.mime, isPublic: false }); }
+  catch (e) {
+    if (e && e.code === 'OBJECT_STORAGE_NOT_CONFIGURED') return res.status(503).json({ success: false, error: { code: 'OBJECT_STORAGE_NOT_CONFIGURED', message: '파일 저장소가 아직 설정되지 않았습니다' } });
+    return next(e);
+  }
+  db.prepare(`INSERT INTO stored_files (id,storage_key,owner_type,owner_id,purpose,original_name,mime_type,size_bytes,public_url,visibility)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(fileId, key, 'inspection', req.params.id, 'inspection_photo', normalizeUploadFilename(fileEntry.filename), detected.mime, fileEntry.data.length, null, 'private');
+  if (inspection.status === 'paid') db.prepare("UPDATE inspections SET status='in_review' WHERE id=?").run(req.params.id);
+  const photoCount = db.prepare("SELECT COUNT(*) AS c FROM stored_files WHERE owner_type='inspection' AND owner_id=? AND deleted_at IS NULL").get(req.params.id).c;
+  res.json({ success: true, data: { photoId: fileId, uploadedCount: photoCount } });
+});
+
+// 관리자 감리 처리 대기열: in_review(사진 도착중) 또는 최근 reported(완료) 건 목록
+app.get('/api/admin/inspections/queue', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare(`SELECT i.*, c.consumer_id, c.partner_id, u.nickname AS consumer_name, p.business_name AS partner_name
+    FROM inspections i JOIN contracts c ON c.id=i.contract_id JOIN users u ON u.id=c.consumer_id JOIN partners p ON p.id=c.partner_id
+    WHERE i.plan IN ('photo','expert') AND i.status IN ('in_review','reported') ORDER BY i.applied_at DESC LIMIT 100`).all();
+  const data = rows.map(r => ({
+    id: r.id, plan: r.plan, price: r.price, status: r.status, photoCount: r.photo_count, tripKey: r.trip_key,
+    consumerName: r.consumer_name, partnerName: r.partner_name, appliedAt: r.applied_at,
+    uploadedPhotoCount: db.prepare("SELECT COUNT(*) AS c FROM stored_files WHERE owner_type='inspection' AND owner_id=? AND deleted_at IS NULL").get(r.id).c
+  }));
+  res.json({ success: true, data });
+});
+
+app.get('/api/admin/inspections/:id', adminAuthRequired(), (req, res) => {
+  const r = db.prepare(`SELECT i.*, c.consumer_id, c.partner_id, u.nickname AS consumer_name, p.business_name AS partner_name, p.tier AS partner_tier
+    FROM inspections i JOIN contracts c ON c.id=i.contract_id JOIN users u ON u.id=c.consumer_id JOIN partners p ON p.id=c.partner_id WHERE i.id=?`).get(req.params.id);
+  if (!r) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
+  const photos = db.prepare("SELECT id, mime_type, size_bytes, created_at FROM stored_files WHERE owner_type='inspection' AND owner_id=? AND deleted_at IS NULL ORDER BY created_at ASC").all(req.params.id)
+    .map(f => ({ id: f.id, url: `/api/admin/inspections/${req.params.id}/photos/${f.id}`, mimeType: f.mime_type, sizeBytes: f.size_bytes }));
+  res.json({ success: true, data: {
+    id: r.id, plan: r.plan, price: r.price, status: r.status, photoCount: r.photo_count, tripKey: r.trip_key,
+    consumerName: r.consumer_name, partnerName: r.partner_name, partnerTier: r.partner_tier, appliedAt: r.applied_at,
+    grade: r.grade, score: r.score, report: r.report, photos
+  } });
+});
+
+// 관리자가 감리 사진 원본을 열람(비공개 파일이라 관리자 인증 필수)
+app.get('/api/admin/inspections/:id/photos/:fileId', adminAuthRequired(), async (req, res, next) => {
+  const file = db.prepare("SELECT * FROM stored_files WHERE id=? AND owner_type='inspection' AND owner_id=? AND deleted_at IS NULL").get(req.params.fileId, req.params.id);
+  if (!file) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '파일을 찾을 수 없습니다' } });
+  try {
+    const stored = await objectStorage.getObject(file.storage_key);
+    logAdminAccess(req, 'stored_file', file.id, file.purpose);
+    res.set('Content-Type', file.mime_type); res.set('Cache-Control', 'private,no-store');
+    stored.Body.pipe(res);
+  } catch (e) {
+    if (e && e.code === 'OBJECT_STORAGE_NOT_CONFIGURED') return res.status(503).json({ success: false, error: { code: 'OBJECT_STORAGE_NOT_CONFIGURED', message: '파일 저장소가 아직 설정되지 않았습니다' } });
+    next(e);
+  }
+});
+
+// 전문인력(관리자)이 직접 판정+답변 작성 → 완료처리(소비자에게 즉시 전달됨)
+app.put('/api/admin/inspections/:id/answer', adminAuthRequired(), (req, res) => {
+  const { grade, opinion, advice } = req.body;
+  if (!['양호', '주의', '문제'].includes(grade)) return validationError(res, '올바른 판정 등급이 아닙니다(양호/주의/문제)');
+  if (!isNonEmptyString(opinion, 2000) || !isNonEmptyString(advice, 1000)) return validationError(res, '소견과 권고사항을 입력해주세요');
+  const inspection = db.prepare('SELECT * FROM inspections WHERE id=?').get(req.params.id);
+  if (!inspection) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
+  const scoreMap = { '양호': 90, '주의': 75, '문제': 55 };
+  const report = JSON.stringify({ grade, score: scoreMap[grade], opinion, advice, answeredBy: 'expert' });
+  db.prepare("UPDATE inspections SET status='reported', grade=?, score=?, report=?, paid_at=COALESCE(paid_at,datetime('now')) WHERE id=?")
+    .run(grade, scoreMap[grade], report, req.params.id);
+  const contract = db.prepare('SELECT * FROM contracts WHERE id=?').get(inspection.contract_id);
+  if (contract) createNotification('consumer', contract.consumer_id, 'inspection_answered', '전문가 감리 답변이 도착했어요', opinion.slice(0, 80), 'contract', contract.id);
+  res.json({ success: true, data: { id: req.params.id, status: 'reported', grade, score: scoreMap[grade] } });
+});
+
+// 결제 성공 콜백에서만 보고서 생성(되돌리기 잠금 — 미결제 상태에서는 절대 보고서 안 나옴)
+// 결함정리(2026-09, 전수조사 발견 — 이 라우트가 blockInProduction으로 실서비스에서 아예 막혀있어
+// 결제 화면 진입 자체가 불가능했고, 프론트는 이 실패를 감추고 setTimeout으로 결제성공을 흉내내던
+// 심각한 가짜결제였음): 보유크레딧 우선차감 + 부족분만 토스페이먼츠로 실제 승인받도록 교체.
+// 결함정리(사용자요청 — 사진감리·전문가감리는 사람이 직접 검토해야 하므로, 결제완료시
+// 자동판정을 만들지 않고 "사진대기(paid)" 상태로만 전환. 실제 판정/답변은 사진 제출 후
+// 관리자(자체 전문인력)가 직접 작성한다.
+app.post('/api/inspections/:id/pay', authRequired, (req, res) => {
+  const inspection = db.prepare('SELECT * FROM inspections WHERE id=?').get(req.params.id);
+  if (!inspection) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
+  if (req.user.role !== 'consumer' || !contractForMember(inspection.contract_id, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인의 감리 신청만 결제할 수 있습니다' } });
+  if (inspection.status !== 'unpaid') return res.status(400).json({ success: false, error: { code: 'ALREADY_PAID', message: '이미 결제가 완료됐습니다' } });
+  const user = db.prepare('SELECT cash_balance FROM users WHERE id=?').get(req.user.sub);
+  const balance = user ? user.cash_balance : 0;
+  const price = inspection.price;
+  // useCreditFull: 보유크레딧이 가격 이상일 때만 의미있는 선택지(크레딧 전액사용 vs 카드 등 다른수단 전액사용).
+  // 보유크레딧이 가격보다 적으면 그 크레딧은 항상 먼저 자동사용되고, 부족분만 결제된다(선택 여지 없음).
+  const useCreditFull = !!req.body.useCreditFull;
+  let creditUsed, remainder;
+  if (balance >= price) {
+    if (useCreditFull) { creditUsed = price; remainder = 0; }
+    else { creditUsed = 0; remainder = price; }
+  } else {
+    creditUsed = balance; remainder = price - balance;
+  }
+  if (remainder <= 0) {
+    db.transaction(() => {
+      if (creditUsed > 0) db.prepare('UPDATE users SET cash_balance = cash_balance - ? WHERE id=?').run(creditUsed, req.user.sub);
+      db.prepare("UPDATE inspections SET status='paid', paid_at=datetime('now'), credit_used=? WHERE id=?").run(creditUsed, req.params.id);
+    })();
+    return res.json({ success: true, data: { status: 'paid', creditUsed, remainderAmount: 0 } });
+  }
+  if (!process.env.TOSS_CLIENT_KEY) return res.status(503).json({ success: false, error: { code: 'PAYMENT_NOT_CONFIGURED', message: '결제 클라이언트 설정이 필요합니다' } });
+  const orderId = ('roomerinsp' + randomUUID().replace(/-/g, '')).slice(0, 40);
+  db.prepare('UPDATE inspections SET order_id=?, credit_used=? WHERE id=?').run(orderId, creditUsed, req.params.id);
+  res.json({ success: true, data: {
+    status: 'unpaid', creditUsed, remainderAmount: remainder,
+    orderId, clientKey: process.env.TOSS_CLIENT_KEY,
+    orderName: 'ROOMER ' + (INSPECT_PLANS[inspection.plan] ? INSPECT_PLANS[inspection.plan].label : inspection.plan) + ' 감리',
+    amount: remainder, currency: 'KRW'
+  } });
+});
+function syncVerifiedInspectionPayment(local, providerPayment) {
+  const remainder = local.price - (local.credit_used || 0);
+  const providerAmount = Number(providerPayment.totalAmount);
+  if (providerAmount !== remainder) throw Object.assign(new Error('결제 금액이 주문정보와 일치하지 않습니다'), { code: 'PAYMENT_AMOUNT_MISMATCH', status: 409 });
+  if (providerPayment.orderId !== local.order_id) throw Object.assign(new Error('주문번호가 일치하지 않습니다'), { code: 'PAYMENT_ORDER_MISMATCH', status: 409 });
+  const statusMap = { DONE: 'paid', CANCELED: 'cancelled', PARTIAL_CANCELED: 'partially_cancelled', WAITING_FOR_DEPOSIT: 'pending', ABORTED: 'failed', EXPIRED: 'failed' };
+  const nextStatus = statusMap[providerPayment.status] || 'ready';
+  if (nextStatus === 'paid' && local.status !== 'paid') {
+    const contract = db.prepare('SELECT * FROM contracts WHERE id=?').get(local.contract_id);
+    db.transaction(() => {
+      if (local.credit_used > 0 && contract) db.prepare('UPDATE users SET cash_balance = cash_balance - ? WHERE id=?').run(local.credit_used, contract.consumer_id);
+      db.prepare("UPDATE inspections SET status='paid', paid_at=datetime('now') WHERE id=?").run(local.id);
+    })();
+    if (contract) createNotification('partner', contract.partner_id, 'inspection_paid', '감리 결제가 완료되었습니다', (INSPECT_PLANS[local.plan] ? INSPECT_PLANS[local.plan].label : local.plan) + ' 결제가 완료됐습니다.', 'contract', contract.id);
+  }
+  return nextStatus;
+}
+app.post('/api/inspections/:id/pay/confirm', authRequired, async (req, res, next) => {
+  const inspection = db.prepare('SELECT * FROM inspections WHERE id=?').get(req.params.id);
+  if (!inspection) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
+  if (req.user.role !== 'consumer' || !contractForMember(inspection.contract_id, req.user)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인의 감리 신청만 결제할 수 있습니다' } });
+  if (!inspection.order_id) return res.status(400).json({ success: false, error: { code: 'INVALID_STATE', message: '결제할 주문 정보가 없습니다' } });
+  if (inspection.status !== 'unpaid') return res.status(409).json({ success: false, error: { code: 'ALREADY_PAID', message: '이미 결제가 완료됐습니다' } });
+  const { paymentKey } = req.body;
+  if (!isNonEmptyString(paymentKey, 200)) return validationError(res, '결제 승인에 필요한 정보가 없습니다');
+  try {
+    const remainder = inspection.price - (inspection.credit_used || 0);
+    const verified = await confirmTossPayment(paymentKey, inspection.order_id, remainder);
+    const status = syncVerifiedInspectionPayment(inspection, verified);
+    // 결제 성공 리다이렉트 복귀(브라우저 완전 새로고침) 이후에는 프론트의 in-memory 감리 목록이
+    // 초기화되어 있으므로, 사진업로드 화면을 바로 이어갈 수 있도록 필요한 정보를 함께 내려준다.
+    res.json({ success: true, data: { status, id: inspection.id, plan: inspection.plan, price: inspection.price, creditUsed: inspection.credit_used || 0 } });
+  } catch (error) { next(error); }
+});
+// 토스 웹훅은 서명검증이 없어 본문을 신뢰하지 않고, 반드시 서버가 직접 재조회(GET)해서 확인한 값만 반영(위 결제 웹훅과 동일 원칙)
+app.post('/api/webhooks/toss/inspection-payment', async (req, res) => {
+  const paymentKey = String((req.body && req.body.data && req.body.data.paymentKey) || (req.body && req.body.paymentKey) || '');
+  if (!paymentKey) return res.status(200).json({ success: true, data: { ignored: true } });
+  try {
+    const verified = await queryTossPayment(paymentKey);
+    const local = db.prepare('SELECT * FROM inspections WHERE order_id=?').get(verified.orderId);
+    if (!local) return res.status(200).json({ success: true, data: { ignored: true } });
+    syncVerifiedInspectionPayment(local, verified);
+    res.json({ success: true });
+  } catch (error) { console.error('감리결제 웹훅 처리 실패:', error.message); res.status(200).json({ success: true, data: { error: true } }); }
+});
+
+// 소비자가 감리건에 시공사진을 업로드(사진감리/전문가감리 전용, 결제완료 후에만 가능)
+app.get('/api/inspections/mine', authRequired, (req, res) => {
+  const list = db.prepare(`
+    SELECT i.* FROM inspections i JOIN contracts c ON i.contract_id = c.id
+    WHERE c.consumer_id = ? ORDER BY i.applied_at DESC
+  `).all(req.user.sub);
+  res.json({ success: true, data: list });
+});
+
+// ===== 8. 채팅방·실측일정 =====
+app.post('/api/rooms', authRequired, (req, res) => {
+  // 결함정리(사용자요청 — 보안점검: 역할검증 누락 발견): 이 API는 consumer_id=본인, partner_id=요청값으로
+  // 저장하므로, 파트너 계정이 호출하면 partner.id가 consumer_id 자리에 잘못 들어가 데이터가 오염됨.
+  // 소비자 계정만 방을 생성할 수 있도록 명시적으로 제한.
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정에서만 채팅방을 시작할 수 있습니다' } });
+  const { partnerId } = req.body;
+  const approvedPartner = db.prepare("SELECT id FROM partners WHERE id=? AND verify_status='approved'").get(partnerId);
+  if (!approvedPartner) return res.status(409).json({ success:false, error:{ code:'PARTNER_NOT_APPROVED', message:'승인된 업체와만 채팅을 시작할 수 있습니다' } });
+  let room = db.prepare('SELECT * FROM chat_rooms WHERE consumer_id=? AND partner_id=?').get(req.user.sub, partnerId);
+  if (!room) {
+    const id = randomUUID();
+    db.prepare('INSERT INTO chat_rooms (id, consumer_id, partner_id) VALUES (?,?,?)').run(id, req.user.sub, partnerId);
+    db.prepare('INSERT INTO meas_jobs (room_id) VALUES (?)').run(id);
+    room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(id);
+  }
+  res.json({ success: true, data: room });
+});
+
+// ===== 8-1. 채팅 메시지(소비자↔업체 실시간 메신저) =====
+// 방 접근권한 확인 헬퍼: 본인이 속한 방인지(소비자 본인 또는 업체 본인) 검증
+function assertRoomAccess(room, user) {
+  if (!room) return false;
+  if (user.role === 'consumer') return room.consumer_id === user.sub;
+  if (user.role === 'partner') return room.partner_id === user.sub;
+  return false;
+}
+
+// 본인(소비자 또는 업체)이 속한 채팅방 목록(최근 생성순)
+// 본인(소비자 또는 업체)이 속한 채팅방 목록(최근 생성순) — 상대방 이름·마지막메시지 포함
+// 결함수정(사용자 실제 발견): 이전엔 방 ID만 줘서, 프론트가 이름/최근메시지를 표시할 방법이 없어
+// 화면(메신저 목록)이 실제 서버 데이터에 연결이 안 되고 고정 데모데이터만 보여주던 문제
+app.get('/api/rooms/mine', authRequired, (req, res) => {
+  const column = req.user.role === 'partner' ? 'partner_id' : 'consumer_id';
+  const rooms = db.prepare(`SELECT * FROM chat_rooms WHERE ${column}=? ORDER BY created_at DESC`).all(req.user.sub);
+  const getLastMsg = db.prepare('SELECT text, msg_type, created_at FROM chat_messages WHERE room_id=? ORDER BY seq DESC LIMIT 1');
+  const getReadState = db.prepare('SELECT last_read_seq FROM room_read_states WHERE room_id=? AND reader_role=? AND reader_id=?');
+  const getUnreadCount = db.prepare('SELECT count(*) AS count FROM chat_messages WHERE room_id=? AND seq>? AND sender_id<>?');
+  // 신규(사용자요청 — 파트너가 여러 소비자의 견적요청을 구분 관리): 방마다 연결된 가장 최근
+  // quote_requests/quotes 행을 함께 내려줘서, 프론트가 "이 방=이 소비자의 어떤 요청/견적 상태인지"를
+  // 화면(견적 요청함, 알림 딥링크)에서 확실히 구분할 수 있게 한다. 기존엔 방 id·이름·마지막 메시지만
+  // 내려줘서 프론트가 room과 quote_requests를 연결할 방법이 전혀 없었음(사용자 실제 발견).
+  const getLatestRequest = db.prepare('SELECT id, address, pyeong, space_type, status, created_at FROM quote_requests WHERE user_id=? AND partner_id=? ORDER BY created_at DESC LIMIT 1');
+  const getLatestQuote = db.prepare('SELECT id, status, total_amount, version FROM quotes WHERE request_id=? ORDER BY version DESC LIMIT 1');
+  const enriched = rooms.map(room => {
+    let displayName;
+    if (req.user.role === 'partner') {
+      const consumer = db.prepare('SELECT nickname FROM users WHERE id=?').get(room.consumer_id);
+      displayName = (consumer && consumer.nickname) || '회원';
+    } else {
+      const partner = db.prepare('SELECT business_name FROM partners WHERE id=?').get(room.partner_id);
+      displayName = (partner && partner.business_name) || '업체';
+    }
+    const lastMsg = getLastMsg.get(room.id);
+    const readState = getReadState.get(room.id,req.user.role,req.user.sub);
+    const lastReadSeq = readState ? readState.last_read_seq : 0;
+    const unreadCount = getUnreadCount.get(room.id,lastReadSeq,req.user.sub).count;
+    // 신규(사용자요청 — 견적요청 알림): 목록에서 견적요청 메시지는 사람이 읽기 좋은 요약문구로 표시
+    let lastMessagePreview = lastMsg ? lastMsg.text : '';
+    if (lastMsg && lastMsg.msg_type === 'quote_request') {
+      try { const q = JSON.parse(lastMsg.text); lastMessagePreview = '📋 견적요청 · ' + q.address + ' · ' + q.pyeong + '평'; } catch (e) {}
+    }
+    const latestRequest = getLatestRequest.get(room.consumer_id, room.partner_id);
+    const latestQuote = latestRequest ? getLatestQuote.get(latestRequest.id) : null;
+    return {
+      id: room.id,
+      consumerId: room.consumer_id,
+      partnerId: room.partner_id,
+      displayName,
+      lastMessage: lastMessagePreview,
+      lastMessageType: lastMsg ? lastMsg.msg_type : 'text',
+      lastTime: lastMsg ? lastMsg.created_at : room.created_at,
+      lastReadSeq,
+      unreadCount,
+      requestId: latestRequest ? latestRequest.id : null,
+      requestStatus: latestRequest ? latestRequest.status : null,
+      requestCreatedAt: latestRequest ? latestRequest.created_at : null,
+      projectAddress: latestRequest ? latestRequest.address : null,
+      projectSpaceType: latestRequest ? latestRequest.space_type : null,
+      projectPyeong: latestRequest ? latestRequest.pyeong : null,
+      latestQuoteId: latestQuote ? latestQuote.id : null,
+      latestQuoteStatus: latestQuote ? latestQuote.status : null
+    };
+  });
+  res.json({ success: true, data: enriched });
+});
+
+// 결함정리(사용자요청 — 감사보고서 지적사항 2순위: 프론트는 이 API를 호출하는데 서버에 라우트
+// 자체가 없어 항상 404였음. 실제로 구현): 소비자/파트너가 본인이 참여한 Room에만 이미지를
+// 업로드할 수 있고, magic byte로 실제 파일종류를 검사(확장자·선언 MIME만 신뢰하지 않음),
+// 원본은 객체 저장소에, DB(stored_files)에는 메타데이터만 저장한다(Base64 원본 저장 금지).
+const chatAttachmentUpload = express.raw({ type: 'multipart/form-data', limit: '12mb' });
+app.post('/api/rooms/:roomId/attachments', authRequired, chatAttachmentUploadLimiter, chatAttachmentUpload, async (req, res, next) => {
+  const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if (!assertRoomAccess(room, req.user)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인이 속한 채팅방이 아닙니다' } });
+  let parsed;
+  try { parsed = parseMultipartBody(req); }
+  catch (e) { return validationError(res, 'multipart/form-data 형식의 파일 업로드가 필요합니다'); }
+  const fileEntry = parsed.files.find(file => file.field === 'file');
+  if (!fileEntry) return validationError(res, '전송할 파일이 없습니다');
+  if (fileEntry.data.length === 0) return validationError(res, '비어 있는 파일입니다');
+  if (fileEntry.data.length > 10 * 1024 * 1024) return validationError(res, '파일은 최대 10MB까지 전송할 수 있습니다');
+  const detected = detectPortfolioImage(fileEntry); // JPEG/PNG/WebP만 magic byte로 인식(PDF는 이번 구현 범위에서 제외)
+  if (!detected) return validationError(res, 'JPG, PNG, WebP 사진만 전송할 수 있어요');
+  if (fileEntry.declaredType && fileEntry.declaredType !== detected.mime) return validationError(res, '선언된 파일형식과 실제 파일형식이 일치하지 않습니다');
+  const fileId = randomUUID();
+  const key = `private/chat/${req.params.roomId}/${fileId}.${detected.ext}`;
+  try {
+    await objectStorage.putObject({ key, body: fileEntry.data, contentType: detected.mime, isPublic: false });
+  } catch (e) {
+    if (e && e.code === 'OBJECT_STORAGE_NOT_CONFIGURED') {
+      return res.status(503).json({ success: false, error: { code: 'OBJECT_STORAGE_NOT_CONFIGURED', message: '파일 저장소가 아직 설정되지 않았습니다' } });
+    }
+    return next(e);
+  }
+  db.prepare(`INSERT INTO stored_files (id,storage_key,owner_type,owner_id,purpose,original_name,mime_type,size_bytes,public_url,visibility)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(fileId, key, 'chat_room', req.params.roomId, 'chat_attachment', normalizeUploadFilename(fileEntry.filename), detected.mime, fileEntry.data.length, null, 'private');
+  res.json({ success: true, data: { attachment: {
+    id: fileId,
+    url: `/api/rooms/${req.params.roomId}/attachments/${fileId}`,
+    mimeType: detected.mime,
+    sizeBytes: fileEntry.data.length
+  } } });
+});
+
+// 첨부파일 다운로드: Room 참여자만 접근 가능(비참여자는 403, 없는 파일/타 Room 파일은 404)
+app.get('/api/rooms/:roomId/attachments/:attachmentId', authRequired, async (req, res, next) => {
+  const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if (!assertRoomAccess(room, req.user)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인이 속한 채팅방이 아닙니다' } });
+  const file = db.prepare(`SELECT * FROM stored_files WHERE id=? AND owner_type='chat_room' AND owner_id=? AND deleted_at IS NULL`).get(req.params.attachmentId, req.params.roomId);
+  if (!file) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '파일을 찾을 수 없습니다' } });
+  try {
+    const stored = await objectStorage.getObject(file.storage_key);
+    res.set('Content-Type', file.mime_type);
+    res.set('Cache-Control', 'private,no-store');
+    if (stored.ContentLength) res.set('Content-Length', String(stored.ContentLength));
+    stored.Body.pipe(res);
+  } catch (e) {
+    if (e && e.code === 'OBJECT_STORAGE_NOT_CONFIGURED') {
+      return res.status(503).json({ success: false, error: { code: 'OBJECT_STORAGE_NOT_CONFIGURED', message: '파일 저장소가 아직 설정되지 않았습니다' } });
+    }
+    next(e);
+  }
+});
+
+app.post('/api/rooms/:roomId/messages', authRequired, (req, res) => {
+  const { text, clientMessageId, type, attachmentId } = req.body;
+  const isImageMessage = type === 'image';
+  // 결함정리(사용자요청 — 첨부메시지 지원): 텍스트 메시지는 기존과 동일하게 text 필수.
+  // 이미지 메시지는 text 대신 attachmentId가 필수이며, 그 첨부가 반드시 이 Room 소유인지 검증한다
+  // (타 Room의 attachmentId를 넣어 재사용하는 것을 차단).
+  if (!isImageMessage && !isNonEmptyString(text, 1000)) return validationError(res, '메시지 내용은 1~1000자여야 합니다');
+  if (clientMessageId != null && !isNonEmptyString(clientMessageId,100)) return validationError(res,'메시지 식별자가 올바르지 않습니다');
+  const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if (!assertRoomAccess(room, req.user)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인이 속한 채팅방이 아닙니다' } });
+  let attachmentMeta = null;
+  if (isImageMessage) {
+    if (!isNonEmptyString(attachmentId, 100)) return validationError(res, '첨부파일 정보가 필요합니다');
+    attachmentMeta = db.prepare(`SELECT * FROM stored_files WHERE id=? AND owner_type='chat_room' AND owner_id=? AND deleted_at IS NULL`).get(attachmentId, req.params.roomId);
+    if (!attachmentMeta) return res.status(403).json({ success: false, error: { code: 'ATTACHMENT_MISMATCH', message: '이 채팅방의 첨부파일이 아닙니다' } });
+  }
+  if(clientMessageId){
+    const existing=db.prepare('SELECT * FROM chat_messages WHERE room_id=? AND sender_id=? AND client_message_id=?').get(req.params.roomId,req.user.sub,clientMessageId);
+    if(existing)return res.json({success:true,data:{...existing,deduplicated:true}});
+  }
+  const id = randomUUID();
+  db.prepare('INSERT INTO chat_messages (id, room_id, sender_role, sender_id, text, client_message_id, msg_type, attachment_id) VALUES (?,?,?,?,?,?,?,?)')
+    .run(id, req.params.roomId, req.user.role, req.user.sub, isImageMessage ? (text || '사진') : text, clientMessageId||null, isImageMessage ? 'image' : 'text', isImageMessage ? attachmentId : null);
+  const saved = db.prepare('SELECT * FROM chat_messages WHERE id=?').get(id);
+  broadcastNewMessage(req.params.roomId, saved);
+  // 결함정리(사용자요청 — 메신저 신뢰성 점검 중 발견한 핵심 결함): 지금까지 일반 채팅 메시지(사용자가
+  // 직접 입력하는 대화)는 WebSocket으로 그 방을 "지금 실시간으로 보고 있는" 상대에게만 전달되고,
+  // 상대가 채팅화면을 벗어나거나(다른 화면 이동), 앱을 백그라운드로 내리거나, 완전히 종료한 경우에는
+  // 알림이 전혀 가지 않았음(견적/계약/결제 등 시스템 이벤트와 달리 이 경로에만 createNotification()
+  // 호출이 빠져있었음). "업체가 답장하면 바로 알려드릴게요" 알림 배너의 약속과 실제 동작이 어긋나던
+  // 부분을 수정: 상대가 지금 이 방을 실시간으로 보고 있지 않을 때만 알림(+실제 푸시)을 생성한다
+  // (이미 화면으로 보고 있는 상대에게 중복 푸시를 보내지 않기 위함).
+  const recipient = otherRoomParticipant(room, req.user.role);
+  if (recipient && recipient.id && !isRoomRecipientConnected(req.params.roomId, recipient.role, recipient.id)) {
+    const preview = isImageMessage ? '사진을 보냈습니다' : String(text).slice(0, 80);
+    createNotification(recipient.role, recipient.id, 'chat_message', '새 메시지가 도착했습니다', preview, 'chat_room', req.params.roomId);
+  }
+  res.json({ success: true, data: saved });
+});
+
+// 폴링용 조회: since 파라미터(마지막으로 받은 메시지 시각) 이후의 새 메시지만 반환
+app.get('/api/rooms/:roomId/messages', authRequired, (req, res) => {
+  const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if (!assertRoomAccess(room, req.user)) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인이 속한 채팅방이 아닙니다' } });
+  // 결함수정(실제 재현·발견된 버그): since를 시간(문자열)으로 비교하면, 같은 초(1초 이내)에 여러 메시지가
+  // 오갈 경우 SQLite 시간정밀도(초 단위) 한계로 새 메시지를 놓치는 문제가 있었음
+  // → 시간 대신 자동증가 순번(seq)으로 비교해서 정확히 그 이후 메시지만 가져오도록 근본수정
+  const { sinceSeq } = req.query;
+  const rows = sinceSeq
+    ? db.prepare('SELECT * FROM chat_messages WHERE room_id=? AND seq > ? ORDER BY seq ASC').all(req.params.roomId, Number(sinceSeq))
+    : db.prepare('SELECT * FROM chat_messages WHERE room_id=? ORDER BY seq ASC').all(req.params.roomId);
+  res.json({ success: true, data: rows });
+});
+
+// 프론트엔드(루머02.html) saveMeasJob()/loadMeasJob() 어댑터와 1:1 대응 — 상태 객체 통째로 저장/조회
+function parseJsonField(value, fallback) {
+  try { return value ? JSON.parse(value) : fallback; } catch (_) { return fallback; }
+}
+function measurementView(job) {
+  return {
+    status: job.status,
+    slots: parseJsonField(job.slots, []),
+    chosenSlotId: job.chosen_slot_id,
+    siteNotes: parseJsonField(job.site_notes, []),
+    meetings: parseJsonField(job.meetings, { site:false, design:false, material:false }),
+    confirmChecks: parseJsonField(job.confirm_checks, { photo:false, adjust:false }),
+    rescheduleCount: job.reschedule_count || 0,
+    noshow: parseJsonField(job.noshow_log, []),
+    revision: job.revision || 0,
+    updatedAt: job.updated_at
+  };
+}
+function otherRoomParticipant(room, actorRole) {
+  return actorRole === 'partner'
+    ? { role:'consumer', id:room.consumer_id }
+    : { role:'partner', id:room.partner_id };
+}
+function commitMeasurementAction({ room, user, eventType, allowedStatuses, nextStatus, updates, payload, summary }) {
+  const result = db.transaction(() => {
+    const current = db.prepare('SELECT * FROM meas_jobs WHERE room_id=?').get(room.id);
+    if (!current) return { error:{ status:404, code:'NOT_FOUND', message:'실측 정보를 찾을 수 없습니다' } };
+    if (allowedStatuses && !allowedStatuses.includes(current.status)) {
+      return { error:{ status:409, code:'INVALID_MEASUREMENT_TRANSITION', message:`현재 상태(${current.status})에서는 이 작업을 할 수 없습니다` } };
+    }
+    const values = { ...updates };
+    if (nextStatus) values.status = nextStatus;
+    const columns = Object.keys(values);
+    const setSql = columns.map(key => `${key}=?`).concat(["revision=revision+1", "updated_at=datetime('now')"]).join(', ');
+    db.prepare(`UPDATE meas_jobs SET ${setSql} WHERE room_id=?`).run(...columns.map(key => values[key]), room.id);
+    const updated = db.prepare('SELECT * FROM meas_jobs WHERE room_id=?').get(room.id);
+    // 결함수정(사용자 실제 발견 — "실측 진행 이력" 팝업 undefined 표시): 채팅에는 이미 사람이 읽을 수
+    // 있는 summary 문장을 보내면서, 정작 그 문장을 measurement_events에는 저장하지 않아서 이 팝업이
+    // 재구성할 방법이 없었다. 같은 트랜잭션에서 함께 저장한다.
+    db.prepare(`INSERT INTO measurement_events (id,room_id,actor_role,actor_id,event_type,from_status,to_status,payload,summary)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(randomUUID(),room.id,user.role,user.sub,eventType,current.status,updated.status,JSON.stringify(payload||{}),summary||null);
+    const message = {
+      id: randomUUID(), room_id:room.id, sender_role:'system', sender_id:'roomer', text:summary, msg_type:'measurement_event'
+    };
+    db.prepare('INSERT INTO chat_messages (id,room_id,sender_role,sender_id,text,msg_type) VALUES (?,?,?,?,?,?)')
+      .run(message.id,message.room_id,message.sender_role,message.sender_id,message.text,message.msg_type);
+    const savedMessage = db.prepare('SELECT * FROM chat_messages WHERE id=?').get(message.id);
+    const recipient = otherRoomParticipant(room,user.role);
+    createNotification(recipient.role,recipient.id,'measurement',summary,null,'room',room.id);
+    return { job:updated, message:savedMessage };
+  })();
+  if (result.message) broadcastNewMessage(room.id,result.message);
+  return result;
+}
+function sendMeasurementResult(res, result) {
+  if (result.error) return res.status(result.error.status).json({ success:false, error:{ code:result.error.code, message:result.error.message } });
+  return res.json({ success:true, data:measurementView(result.job) });
+}
+
+app.get('/api/meas-jobs/:roomId', authRequired, (req, res) => {
+  const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if (!assertRoomAccess(room, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인이 속한 채팅방만 조회할 수 있습니다' } });
+  const job = db.prepare('SELECT * FROM meas_jobs WHERE room_id=?').get(req.params.roomId);
+  if (!job) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '실측 정보를 찾을 수 없습니다' } });
+  const events = db.prepare('SELECT id,actor_role,event_type,from_status,to_status,payload,summary,created_at FROM measurement_events WHERE room_id=? ORDER BY created_at,id').all(req.params.roomId)
+    .map(row => ({ ...row, payload:parseJsonField(row.payload,{}) }));
+  res.json({ success: true, data: { ...measurementView(job), events } });
+});
+
+app.post('/api/rooms/:roomId/read', authRequired, (req,res) => {
+  const room=db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if(!assertRoomAccess(room,req.user))return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인이 속한 채팅방만 읽음 처리할 수 있습니다'}});
+  const requested=Number(req.body.lastReadSeq);
+  if(!Number.isInteger(requested)||requested<0)return validationError(res,'읽음 위치가 올바르지 않습니다');
+  const maxRow=db.prepare('SELECT coalesce(max(seq),0) AS max_seq FROM chat_messages WHERE room_id=?').get(room.id);
+  const safeSeq=Math.min(requested,maxRow.max_seq);
+  const previous=db.prepare('SELECT last_read_seq FROM room_read_states WHERE room_id=? AND reader_role=? AND reader_id=?').get(room.id,req.user.role,req.user.sub);
+  const nextSeq=Math.max(previous?previous.last_read_seq:0,safeSeq);
+  db.prepare(`INSERT INTO room_read_states(room_id,reader_role,reader_id,last_read_seq,read_at) VALUES (?,?,?,?,datetime('now'))
+    ON CONFLICT(room_id,reader_role,reader_id) DO UPDATE SET last_read_seq=excluded.last_read_seq,read_at=datetime('now')`)
+    .run(room.id,req.user.role,req.user.sub,nextSeq);
+  broadcastReadState(room.id,{readerRole:req.user.role,readerId:req.user.sub,lastReadSeq:nextSeq});
+  res.json({success:true,data:{roomId:room.id,lastReadSeq:nextSeq}});
+});
+
+app.put('/api/meas-jobs/:roomId', authRequired, (req, res) => {
+  const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if (!assertRoomAccess(room, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인이 속한 채팅방만 수정할 수 있습니다' } });
+  return res.status(405).json({ success:false, error:{ code:'ACTION_ENDPOINT_REQUIRED', message:'실측 상태는 목적별 전용 API로만 변경할 수 있습니다' } });
+});
+
+// 업체가 실측 가능일정 제안
+app.post('/api/meas-jobs/:roomId/slots', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 일정을 제안할 수 있습니다' } });
+  const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if (!assertRoomAccess(room, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인 채팅방의 일정만 제안할 수 있습니다' } });
+  const { slots } = req.body;
+  if (!Array.isArray(slots) || slots.length === 0) return validationError(res, '일정을 1개 이상 제안해주세요');
+  if (slots.length > 10) return validationError(res, '일정은 최대 10개까지 제안할 수 있습니다');
+  if (!slots.every(s => isNonEmptyString(s.id, 50) && isNonEmptyString(s.date, 30) && isNonEmptyString(s.time, 20))) {
+    return validationError(res, '각 일정에는 id, date, time이 필요합니다');
+  }
+  const result = commitMeasurementAction({ room,user:req.user,eventType:'slots_proposed',allowedStatuses:['none','slots_proposed'],nextStatus:'slots_proposed',updates:{slots:JSON.stringify(slots),chosen_slot_id:null},payload:{slots},summary:`업체가 실측 가능 일정 ${slots.length}개를 제안했습니다` });
+  return sendMeasurementResult(res,result);
+});
+
+// 소비자가 일정 중 하나 선택
+app.post('/api/meas-jobs/:roomId/select', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 선택할 수 있습니다' } });
+  const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if (!assertRoomAccess(room, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인 채팅방의 일정만 선택할 수 있습니다' } });
+  const { slotId } = req.body;
+  if (!isNonEmptyString(slotId, 50)) return validationError(res, '일정을 선택해주세요');
+  const job = db.prepare('SELECT * FROM meas_jobs WHERE room_id=?').get(req.params.roomId);
+  if (!job) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '채팅방을 찾을 수 없습니다' } });
+  const validSlot = JSON.parse(job.slots).some(s => s.id === slotId);
+  if (!validSlot) return validationError(res, '제안된 일정 중에서만 선택할 수 있습니다');
+  const selected = parseJsonField(job.slots,[]).find(s => s.id === slotId);
+  const result = commitMeasurementAction({ room,user:req.user,eventType:'slot_selected',allowedStatuses:['slots_proposed'],nextStatus:'slot_selected',updates:{chosen_slot_id:slotId},payload:{slotId,slot:selected},summary:`소비자가 실측 일정을 선택했습니다: ${selected.date} ${selected.time}` });
+  return sendMeasurementResult(res,result);
+});
+
+app.post('/api/meas-jobs/:roomId/reschedule', authRequired, (req,res) => {
+  const room=db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if(!assertRoomAccess(room,req.user)) return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인 채팅방의 일정만 변경할 수 있습니다'}});
+  const job=db.prepare('SELECT * FROM meas_jobs WHERE room_id=?').get(room.id);
+  const count=(job&&job.reschedule_count||0)+1;
+  const result=commitMeasurementAction({room,user:req.user,eventType:'reschedule_requested',allowedStatuses:['slot_selected'],nextStatus:'slots_proposed',updates:{chosen_slot_id:null,reschedule_count:count},payload:{reason:String(req.body.reason||'').slice(0,300)},summary:`${req.user.role==='partner'?'업체':'소비자'}가 실측 일정 재조율을 요청했습니다`});
+  return sendMeasurementResult(res,result);
+});
+
+// 노쇼 신고(반복시 어뷰징 큐 연계 — 프론트엔드 로직과 동일하게 기록만, 실제 어뷰징 판정은 관리자 큐에서)
+app.post('/api/meas-jobs/:roomId/noshow', authRequired, (req, res) => {
+  const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if (!assertRoomAccess(room, req.user)) return res.status(403).json({ success:false, error:{ code:'FORBIDDEN', message:'본인이 속한 채팅방만 신고할 수 있습니다' } });
+  const job = db.prepare('SELECT * FROM meas_jobs WHERE room_id=?').get(req.params.roomId);
+  if (!job) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '실측 정보를 찾을 수 없습니다' } });
+  const noshowLog = parseJsonField(job.noshow_log,[]);
+  noshowLog.push({ reportedBy:req.user.role, reporterId:req.user.sub, reason:String(req.body.reason||'').slice(0,300), at:new Date().toISOString() });
+  const result=commitMeasurementAction({room,user:req.user,eventType:'noshow_reported',allowedStatuses:['slot_selected'],nextStatus:'slots_proposed',updates:{noshow_log:JSON.stringify(noshowLog),chosen_slot_id:null},payload:{count:noshowLog.length},summary:`${req.user.role==='partner'?'업체':'소비자'}가 노쇼를 신고했습니다`});
+  if(result.error) return sendMeasurementResult(res,result);
+  return res.json({success:true,data:{...measurementView(result.job),noshowCount:noshowLog.length,needsAbuseReview:noshowLog.length>=2}});
+});
+
+app.post('/api/meas-jobs/:roomId/result', authRequired, (req,res) => {
+  if(req.user.role!=='partner') return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'업체만 실측결과를 등록할 수 있습니다'}});
+  const room=db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if(!assertRoomAccess(room,req.user)) return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인 채팅방의 실측결과만 등록할 수 있습니다'}});
+  const notes=req.body.siteNotes;
+  if(!Array.isArray(notes)||notes.length===0||notes.length>50) return validationError(res,'공정별 실측결과가 필요합니다');
+  for(const note of notes){if(!isNonEmptyString(note.phase,50)||!isNonEmptyString(note.status,30)||String(note.memo||'').length>500)return validationError(res,'실측결과 형식이 올바르지 않습니다');}
+  const result=commitMeasurementAction({room,user:req.user,eventType:'measurement_completed',allowedStatuses:['slot_selected'],nextStatus:'measured',updates:{site_notes:JSON.stringify(notes)},payload:{noteCount:notes.length},summary:'업체가 실측결과를 등록했습니다'});
+  return sendMeasurementResult(res,result);
+});
+
+app.post('/api/meas-jobs/:roomId/final-quote-sent', authRequired, (req,res) => {
+  if(req.user.role!=='partner') return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'업체만 최종견적 단계를 진행할 수 있습니다'}});
+  const room=db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if(!assertRoomAccess(room,req.user)) return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인 채팅방만 처리할 수 있습니다'}});
+  return sendMeasurementResult(res,commitMeasurementAction({room,user:req.user,eventType:'final_quote_sent',allowedStatuses:['measured'],nextStatus:'final_quote_sent',updates:{},payload:{},summary:'업체가 실측 반영 최종견적 단계를 시작했습니다'}));
+});
+
+app.put('/api/meas-jobs/:roomId/meetings/:kind', authRequired, (req,res) => {
+  if(req.user.role!=='partner') return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'업체만 미팅 완료상태를 변경할 수 있습니다'}});
+  if(!['site','design','material'].includes(req.params.kind)||typeof req.body.completed!=='boolean') return validationError(res,'미팅 종류와 완료 여부가 올바르지 않습니다');
+  const room=db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if(!assertRoomAccess(room,req.user)) return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인 채팅방만 처리할 수 있습니다'}});
+  const job=db.prepare('SELECT * FROM meas_jobs WHERE room_id=?').get(room.id);
+  const meetings=parseJsonField(job&&job.meetings,{site:false,design:false,material:false});meetings[req.params.kind]=req.body.completed;
+  const allDone=meetings.site&&meetings.design&&meetings.material;
+  const result=commitMeasurementAction({room,user:req.user,eventType:'meeting_updated',allowedStatuses:['final_quote_sent','meetings_done'],nextStatus:allDone?'meetings_done':'final_quote_sent',updates:{meetings:JSON.stringify(meetings)},payload:{kind:req.params.kind,completed:req.body.completed},summary:`${req.params.kind==='site'?'현장':req.params.kind==='design'?'디자인':'자재'} 미팅 상태가 변경되었습니다`});
+  return sendMeasurementResult(res,result);
+});
+
+app.post('/api/meas-jobs/:roomId/quote-finalized', authRequired, (req,res) => {
+  if(req.user.role!=='partner') return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'업체만 견적을 확정할 수 있습니다'}});
+  const room=db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if(!assertRoomAccess(room,req.user)) return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인 채팅방만 처리할 수 있습니다'}});
+  return sendMeasurementResult(res,commitMeasurementAction({room,user:req.user,eventType:'quote_finalized',allowedStatuses:['meetings_done'],nextStatus:'quote_finalized',updates:{},payload:{},summary:'업체가 최종 견적을 확정했습니다'}));
+});
+
+app.put('/api/meas-jobs/:roomId/confirmation', authRequired, (req,res) => {
+  if(req.user.role!=='consumer') return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'소비자만 최종 확인항목을 변경할 수 있습니다'}});
+  if(!['photo','adjust'].includes(req.body.key)||typeof req.body.checked!=='boolean') return validationError(res,'확인항목이 올바르지 않습니다');
+  const room=db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if(!assertRoomAccess(room,req.user)) return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인 채팅방만 처리할 수 있습니다'}});
+  const job=db.prepare('SELECT * FROM meas_jobs WHERE room_id=?').get(room.id);const checks=parseJsonField(job&&job.confirm_checks,{photo:false,adjust:false});checks[req.body.key]=req.body.checked;
+  return sendMeasurementResult(res,commitMeasurementAction({room,user:req.user,eventType:'confirmation_updated',allowedStatuses:['quote_finalized'],nextStatus:null,updates:{confirm_checks:JSON.stringify(checks)},payload:{key:req.body.key,checked:req.body.checked},summary:'소비자가 최종 견적 확인항목을 변경했습니다'}));
+});
+
+app.post('/api/meas-jobs/:roomId/contract-confirmed', authRequired, (req,res) => {
+  if(req.user.role!=='consumer') return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'소비자만 계약확정을 완료할 수 있습니다'}});
+  const room=db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if(!assertRoomAccess(room,req.user)) return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인 채팅방만 처리할 수 있습니다'}});
+  const contract=db.prepare('SELECT id FROM contracts WHERE id=? AND consumer_id=? AND partner_id=?').get(req.body.contractId,room.consumer_id,room.partner_id);
+  if(!contract)return res.status(409).json({success:false,error:{code:'CONTRACT_ROOM_MISMATCH',message:'이 채팅방과 연결된 계약을 확인할 수 없습니다'}});
+  const job=db.prepare('SELECT * FROM meas_jobs WHERE room_id=?').get(room.id);const checks=parseJsonField(job&&job.confirm_checks,{});
+  if(!checks.photo||!checks.adjust)return res.status(409).json({success:false,error:{code:'CONFIRMATION_INCOMPLETE',message:'견적서와 계약금액 확인을 모두 완료해주세요'}});
+  return sendMeasurementResult(res,commitMeasurementAction({room,user:req.user,eventType:'contract_confirmed',allowedStatuses:['quote_finalized'],nextStatus:'contract_confirmed',updates:{},payload:{contractId:contract.id},summary:'소비자가 최종 계약금액을 확인했습니다'}));
+});
+
+// ===== 5. 광고(Ad Reservations) — 지역당 6자리 달력 예약 + "정해진 틀" 자동검증(전면 재설계,
+// 사용자요청): 슬롯종류(히어로/히어로하단/지역상위노출)별로 따로 사고 따로 심사받던 방식을 버리고,
+// 폼 하나를 완성해서 예약한 지역·기간에 3곳(우리동네 추천디자인업체·우리지역 대표업체·지역추천업체)
+// 전부 동시노출되는 방식으로 바꿨다. 관리자 승인 절차는 없다 — "정해진 틀"(사진 필수, 문구 글자수
+// 제한)을 다 채웠는지가 유일한 게이트이며, 다 채우면 예약 시작일 자정부터 자동으로 노출된다. =====
+const AD_PRICE_PER_DAY_DEFAULT = 9900;
+const AD_CAPACITY_PER_REGION_DEFAULT = 6;
+const AD_HERO_SLIDE_COUNT = 6; // 히어로 영상 슬라이드 개수와 반드시 일치(프론트 .hero-vid 6개)
+const AD_TAGLINE_MAX = 24;
+const AD_KEYWORD_MAX = 2;
+const AD_KEYWORD_LEN_MAX = 10;
+function getAdPricePerDay() {
+  const o = getAdminPolicy('ad_price_per_day', null);
+  return (typeof o === 'number' && o > 0) ? o : AD_PRICE_PER_DAY_DEFAULT;
+}
+function getAdCapacityPerRegion() {
+  const o = getAdminPolicy('ad_capacity_per_region', null);
+  return (typeof o === 'number' && o > 0) ? o : AD_CAPACITY_PER_REGION_DEFAULT;
+}
+function dateOnly(d) { return d.toISOString().slice(0, 10); }
+function addDays(dateStr, n) { const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return dateOnly(d); }
+function isValidDateStr(s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s + 'T00:00:00Z').getTime()); }
+function daysBetweenInclusive(a, b) { return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000) + 1; }
+// 예약(ad_reservations) 한 건의 "지금 시점" 상태를 계산한다 — 상태를 별도 컬럼에 저장하고 매일
+// 자정마다 바꿔주는 배치 없이, 오늘 날짜와 예약 기간·콘텐츠 완성 여부만으로 그때그때 판단한다.
+function adReservationStatus(row, todayStr) {
+  if (!row.content_completed_at) return 'pending_content'; // 결제(예약)는 됐지만 사진·문구를 아직 안 채움
+  if (todayStr < row.start_date) return 'scheduled';
+  if (todayStr <= row.end_date) return 'active';
+  return 'ended';
+}
+function serializeAdReservation(row, todayStr) {
+  const status = adReservationStatus(row, todayStr);
+  const remainingDays = status === 'active' ? daysBetweenInclusive(todayStr, row.end_date) : (status === 'scheduled' ? daysBetweenInclusive(todayStr, row.start_date) - 1 : 0);
+  return {
+    id: row.id, partnerId: row.partner_id, partnerName: row.partner_name, region: row.region,
+    startDate: row.start_date, endDate: row.end_date, days: row.days, costCredits: row.cost_credits,
+    imageUrl: row.image_url, tagline: row.tagline, keywords: row.keywords ? JSON.parse(row.keywords) : [],
+    heroSlideIndex: row.hero_slide_index, impressions: row.impressions, clicks: row.clicks,
+    status, remainingDays, createdAt: row.created_at
+  };
+}
+// GET /api/ads/availability — 지역을 고르면 앞으로 N일(기본 92일≈3개월)치 달력에서 하루하루
+// 6자리 중 몇 자리가 이미 찼는지 보여준다. 오늘 자리는 판매 대상이 아니므로 내일부터 계산한다.
+app.get('/api/ads/availability', (req, res) => {
+  const region = req.query.region;
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 92, 1), 186);
+  if (!isNonEmptyString(region, 50)) return validationError(res, '지역을 선택해주세요');
+  const capacity = getAdCapacityPerRegion();
+  const todayStr = dateOnly(new Date());
+  const rangeStart = addDays(todayStr, 1);
+  const rangeEnd = addDays(rangeStart, days - 1);
+  // 이 지역에서 요청 구간과 하루라도 겹치는 예약을 전부 가져와 하루 단위로 카운트한다
+  const rows = db.prepare(`SELECT start_date, end_date FROM ad_reservations WHERE region=? AND NOT(end_date < ? OR start_date > ?)`)
+    .all(region, rangeStart, rangeEnd);
+  const calendar = [];
+  for (let i = 0; i < days; i++) {
+    const d = addDays(rangeStart, i);
+    const used = rows.filter(r => r.start_date <= d && r.end_date >= d).length;
+    calendar.push({ date: d, used, capacity, available: Math.max(0, capacity - used) });
+  }
+  res.json({ success: true, data: { region, pricePerDay: getAdPricePerDay(), capacity, calendar } });
+});
+
+// POST /api/ads/reservations — 날짜(범위)를 골라 자리를 예약·결제한다(내용은 아직 없음, 다음 단계에서 채움)
+app.post('/api/ads/reservations', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 광고를 예약할 수 있습니다' } });
+  const approvedAdvertiser = db.prepare("SELECT id FROM partners WHERE id=? AND verify_status='approved'").get(req.user.sub);
+  if (!approvedAdvertiser) return res.status(403).json({ success: false, error: { code: 'PARTNER_NOT_APPROVED', message: '승인된 업체만 광고를 예약할 수 있습니다' } });
+  const { region, startDate, endDate } = req.body;
+  if (!isNonEmptyString(region, 50)) return validationError(res, '노출 지역을 선택해주세요');
+  if (!isValidDateStr(startDate) || !isValidDateStr(endDate)) return validationError(res, '날짜 형식이 올바르지 않습니다');
+  if (endDate < startDate) return validationError(res, '종료일은 시작일보다 빠를 수 없습니다');
+  const todayStr = dateOnly(new Date());
+  const tomorrow = addDays(todayStr, 1);
+  if (startDate < tomorrow) return validationError(res, '오늘 결제하면 내일부터 예약할 수 있어요');
+  const maxEnd = addDays(todayStr, 186);
+  if (endDate > maxEnd) return validationError(res, '예약은 최대 약 6개월 이내 날짜까지만 가능합니다');
+  const days = daysBetweenInclusive(startDate, endDate);
+  const pricePerDay = getAdPricePerDay();
+  const cost = pricePerDay * days;
+  const capacity = getAdCapacityPerRegion();
+  const id = randomUUID();
+  try {
+    const tx = db.transaction(() => {
+      // 1) 예약 기간 동안 하루라도 6자리가 이미 다 찬 날이 있으면 차단
+      const overlapping = db.prepare(`SELECT start_date, end_date FROM ad_reservations WHERE region=? AND NOT(end_date < ? OR start_date > ?)`)
+        .all(region, startDate, endDate);
+      for (let i = 0; i < days; i++) {
+        const d = addDays(startDate, i);
+        const used = overlapping.filter(r => r.start_date <= d && r.end_date >= d).length;
+        if (used >= capacity) throw Object.assign(new Error(`${d} 날짜는 이 지역 광고자리가 모두 찼어요. 다른 날짜를 선택해주세요.`), { code: 'CAPACITY_FULL' });
+      }
+      // 2) 크레딧 잔액 확인 및 차감
+      const partner = db.prepare('SELECT credit_balance FROM partners WHERE id=?').get(req.user.sub);
+      if (!partner) throw Object.assign(new Error('업체를 찾을 수 없습니다'), { code: 'NOT_FOUND' });
+      if (partner.credit_balance < cost) throw Object.assign(new Error('보유 크레딧이 부족합니다. 충전 후 다시 시도해주세요.'), { code: 'INSUFFICIENT_BALANCE' });
+      db.prepare('UPDATE partners SET credit_balance = credit_balance - ? WHERE id=?').run(cost, req.user.sub);
+      db.prepare('INSERT INTO credit_ledger (id, partner_id, type, amount, related_ad_id) VALUES (?,?,?,?,?)')
+        .run(randomUUID(), req.user.sub, 'ad_purchase', -cost, id);
+      // 3) 예약 생성(내용은 아직 비어있음 — 다음 화면에서 채워야 노출 시작)
+      db.prepare(`INSERT INTO ad_reservations (id, partner_id, region, start_date, end_date, days, cost_credits)
+        VALUES (?,?,?,?,?,?,?)`).run(id, req.user.sub, region, startDate, endDate, days, cost);
+    });
+    tx();
+  } catch (e) {
+    const code = e.code || 'AD_RESERVE_FAILED';
+    const status = code === 'NOT_FOUND' ? 404 : (code === 'INSUFFICIENT_BALANCE' || code === 'CAPACITY_FULL') ? 400 : 500;
+    return res.status(status).json({ success: false, error: { code, message: e.message } });
+  }
+  res.json({ success: true, data: { id, region, startDate, endDate, days, cost, pricePerDay,
+    message: '예약이 완료됐어요. 이어서 광고 내용을 등록하면 예약일부터 자동으로 노출됩니다.' } });
+});
+
+// POST /api/ads/reservations/batch — 신규(사용자요청): 장바구니 방식 — 여러 지역·기간을 한 번에 담아
+// 한 번의 결제로 예약을 확정한다. 장바구니 자체는 서버에 저장하지 않고(브라우저를 벗어나면 사라지는
+// 임시상태로 충분하다고 확인받음) 프론트가 모아둔 항목을 한 번에 이 API로 보낸다.
+// "실반영" 요구사항: 항목마다 자리 검증을 그 시점의 실제 DB 상태로 다시 조회해서 확인한다 — 같은
+// 배치 안에서 앞서 넣은 예약도 곧바로 반영되므로(트랜잭션 내부에서 매 항목마다 재조회), 예를 들어
+// 장바구니에 같은 지역·겹치는 날짜를 두 번 담았어도 실제 정원(6자리)을 넘어서게 되면 그 자리에서
+// 막힌다. 하나라도 자리가 없거나 잔액이 부족하면 전부 롤백되어 크레딧도, 예약도 하나도 생기지 않는다
+// (부분결제로 어중간하게 남는 상태를 만들지 않음).
+app.post('/api/ads/reservations/batch', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 광고를 예약할 수 있습니다' } });
+  const approvedAdvertiser = db.prepare("SELECT id FROM partners WHERE id=? AND verify_status='approved'").get(req.user.sub);
+  if (!approvedAdvertiser) return res.status(403).json({ success: false, error: { code: 'PARTNER_NOT_APPROVED', message: '승인된 업체만 광고를 예약할 수 있습니다' } });
+  const items = req.body.items;
+  if (!Array.isArray(items) || items.length === 0) return validationError(res, '장바구니가 비어있습니다');
+  if (items.length > 10) return validationError(res, '한 번에 최대 10건까지 예약할 수 있어요');
+  const todayStr = dateOnly(new Date());
+  const tomorrow = addDays(todayStr, 1);
+  const maxEnd = addDays(todayStr, 186);
+  const pricePerDay = getAdPricePerDay();
+  const capacity = getAdCapacityPerRegion();
+  const parsedItems = [];
+  for (let idx = 0; idx < items.length; idx++) {
+    const it = items[idx] || {};
+    const { region, startDate, endDate } = it;
+    const label = (idx + 1) + '번째 항목';
+    if (!isNonEmptyString(region, 50)) return validationError(res, label + ': 노출 지역을 선택해주세요');
+    if (!isValidDateStr(startDate) || !isValidDateStr(endDate)) return validationError(res, label + ': 날짜 형식이 올바르지 않습니다');
+    if (endDate < startDate) return validationError(res, label + ': 종료일은 시작일보다 빠를 수 없습니다');
+    if (startDate < tomorrow) return validationError(res, label + ': 오늘 결제하면 내일부터 예약할 수 있어요');
+    if (endDate > maxEnd) return validationError(res, label + ': 예약은 최대 약 6개월 이내 날짜까지만 가능합니다');
+    const days = daysBetweenInclusive(startDate, endDate);
+    parsedItems.push({ region, startDate, endDate, days, cost: pricePerDay * days });
+  }
+  const totalCost = parsedItems.reduce((s, it) => s + it.cost, 0);
+  const results = [];
+  try {
+    const tx = db.transaction(() => {
+      const partner = db.prepare('SELECT credit_balance FROM partners WHERE id=?').get(req.user.sub);
+      if (!partner) throw Object.assign(new Error('업체를 찾을 수 없습니다'), { code: 'NOT_FOUND' });
+      if (partner.credit_balance < totalCost) throw Object.assign(new Error('보유 크레딧이 부족합니다. 충전 후 다시 시도해주세요.'), { code: 'INSUFFICIENT_BALANCE' });
+      parsedItems.forEach((item, idx) => {
+        // 실반영 보장: 배치 안에서 방금 넣은 예약도 다시 조회에 포함되도록 항목마다 새로 조회
+        const overlapping = db.prepare(`SELECT start_date, end_date FROM ad_reservations WHERE region=? AND NOT(end_date < ? OR start_date > ?)`)
+          .all(item.region, item.startDate, item.endDate);
+        for (let i = 0; i < item.days; i++) {
+          const d = addDays(item.startDate, i);
+          const used = overlapping.filter(r => r.start_date <= d && r.end_date >= d).length;
+          if (used >= capacity) throw Object.assign(new Error((idx + 1) + '번째 항목(' + item.region + ' ' + d + '): 이 지역 광고자리가 모두 찼어요. 장바구니에서 날짜를 조정해주세요.'), { code: 'CAPACITY_FULL' });
+        }
+        const id = randomUUID();
+        db.prepare(`INSERT INTO ad_reservations (id, partner_id, region, start_date, end_date, days, cost_credits)
+          VALUES (?,?,?,?,?,?,?)`).run(id, req.user.sub, item.region, item.startDate, item.endDate, item.days, item.cost);
+        db.prepare('INSERT INTO credit_ledger (id, partner_id, type, amount, related_ad_id) VALUES (?,?,?,?,?)')
+          .run(randomUUID(), req.user.sub, 'ad_purchase', -item.cost, id);
+        results.push({ id, region: item.region, startDate: item.startDate, endDate: item.endDate, days: item.days, cost: item.cost });
+      });
+      db.prepare('UPDATE partners SET credit_balance = credit_balance - ? WHERE id=?').run(totalCost, req.user.sub);
+    });
+    tx();
+  } catch (e) {
+    const code = e.code || 'AD_RESERVE_FAILED';
+    const status = code === 'NOT_FOUND' ? 404 : (code === 'INSUFFICIENT_BALANCE' || code === 'CAPACITY_FULL') ? 400 : 500;
+    return res.status(status).json({ success: false, error: { code, message: e.message } });
+  }
+  res.json({ success: true, data: { items: results, totalCost, pricePerDay,
+    message: results.length + '건 예약이 완료됐어요. 이어서 각 광고의 내용을 등록해주세요.' } });
+});
+
+// PATCH /api/ads/reservations/:id/content — "정해진 틀"에 사진·문구를 채운다. 다 채우면(사진 필수,
+// 문구 글자수 이내) 그 즉시 완료 처리되고, 예약 시작일이 되면 별도 승인 없이 자동노출된다.
+// 시작일 전날 자정까지는 몇 번이든 다시 수정할 수 있고, 이미 노출이 시작된 뒤에는 잠근다(표시 안정성).
+const adContentMultipart = express.raw({ type: 'multipart/form-data', limit: '12mb' });
+app.patch('/api/ads/reservations/:id/content', authRequired, portfolioUploadLimiter, adContentMultipart, async (req, res, next) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 등록할 수 있습니다' } });
+  const reservation = db.prepare('SELECT * FROM ad_reservations WHERE id=?').get(req.params.id);
+  if (!reservation) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '해당 예약을 찾을 수 없습니다' } });
+  if (reservation.partner_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인 예약만 수정할 수 있습니다' } });
+  const todayStr = dateOnly(new Date());
+  if (todayStr >= reservation.start_date) return res.status(409).json({ success: false, error: { code: 'LOCKED', message: '이미 노출이 시작된 광고는 내용을 수정할 수 없습니다' } });
+  let parsed;
+  try { parsed = parseMultipartBody(req); }
+  catch (e) { return validationError(res, 'multipart/form-data 형식으로 보내주세요'); }
+  const tagline = (parsed.fields.tagline || '').trim();
+  let keywords = [];
+  if (parsed.fields.keywords) {
+    try { keywords = JSON.parse(parsed.fields.keywords); } catch (e) { return validationError(res, '강조 키워드 형식이 올바르지 않습니다'); }
+  }
+  if (!Array.isArray(keywords) || keywords.length > AD_KEYWORD_MAX || keywords.some(k => typeof k !== 'string' || !k.trim() || k.length > AD_KEYWORD_LEN_MAX)) {
+    return validationError(res, `강조 키워드는 최대 ${AD_KEYWORD_MAX}개, 각 ${AD_KEYWORD_LEN_MAX}자 이내여야 합니다`);
+  }
+  if (!tagline || tagline.length > AD_TAGLINE_MAX) return validationError(res, `한 줄 문구는 1~${AD_TAGLINE_MAX}자 이내로 입력해주세요`);
+  const photoFile = parsed.files.find(f => f.field === 'photo');
+  // 신규(사용자요청 — 포트폴리오 사진을 광고 이미지로 재사용): 새로 업로드하지 않고 이미 갖고 있는
+  // 대표 시공사진/포트폴리오 사진 URL을 그대로 광고 이미지로 쓸 수 있게 한다. 본인 소유가 아닌 URL을
+  // 함부로 지정하지 못하도록 대표 시공사진(portfolio_images)과 완공사례 사진(portfolio_photos, 파트너 소유
+  // 프로젝트에 한함) 두 곳 중 하나에 실제로 존재하는지 검증한다.
+  const reuseImageUrl = isNonEmptyString(parsed.fields.reuseImageUrl, 2000) ? parsed.fields.reuseImageUrl.trim() : null;
+  if (!photoFile && reuseImageUrl) {
+    const partnerRow = db.prepare('SELECT portfolio_images FROM partners WHERE id=?').get(req.user.sub);
+    let heroUrls = []; try { heroUrls = JSON.parse((partnerRow && partnerRow.portfolio_images) || '[]'); } catch (e) { heroUrls = []; }
+    const ownsHero = Array.isArray(heroUrls) && heroUrls.includes(reuseImageUrl);
+    const ownsProjectPhoto = !!db.prepare(`SELECT pp.id FROM portfolio_photos pp
+      JOIN portfolio_projects proj ON proj.id = pp.project_id
+      WHERE proj.partner_id = ? AND pp.image_url = ?`).get(req.user.sub, reuseImageUrl);
+    if (!ownsHero && !ownsProjectPhoto) return validationError(res, '본인의 사진만 광고 이미지로 사용할 수 있습니다');
+  }
+  if (!photoFile && !reuseImageUrl && !reservation.image_url) return validationError(res, '대표 사진을 올려주세요');
+  let uploaded = reuseImageUrl || null;
+  if (photoFile) {
+    if (photoFile.data.length === 0 || photoFile.data.length > 10 * 1024 * 1024) return validationError(res, '사진은 최대 10MB까지 올릴 수 있습니다');
+    const detected = detectPortfolioImage(photoFile);
+    if (!detected || photoFile.declaredType !== detected.mime) return validationError(res, 'JPG, PNG, WebP 이미지 파일만 올릴 수 있습니다');
+    const fileId = randomUUID();
+    const key = `public/ad-content/${req.user.sub}/${req.params.id}.${detected.ext}`;
+    try {
+      const url = await objectStorage.putObject({ key, body: photoFile.data, contentType: detected.mime, isPublic: true });
+      db.prepare(`INSERT INTO stored_files (id,storage_key,owner_type,owner_id,purpose,original_name,mime_type,size_bytes,public_url,visibility)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(fileId, key, 'partner', req.user.sub, 'ad-content', normalizeUploadFilename(photoFile.filename), detected.mime, photoFile.data.length, url, 'public');
+      uploaded = url;
+    } catch (e) { return next(e); }
+  }
+  const firstTime = !reservation.content_completed_at;
+  let heroSlideIndex = reservation.hero_slide_index;
+  if (firstTime) {
+    // 같은 지역에서 내 예약 기간과 겹치는 다른 예약들이 이미 쓰고 있는 히어로 슬라이드 번호를 피해서
+    // 비어있는 가장 작은 번호(0~5)를 배정한다 — 지역당 6자리 = 히어로 슬라이드 6개이므로 항상 하나는 남는다.
+    const overlapping = db.prepare(`SELECT hero_slide_index FROM ad_reservations WHERE region=? AND id!=? AND hero_slide_index IS NOT NULL AND NOT(end_date < ? OR start_date > ?)`)
+      .all(reservation.region, reservation.id, reservation.start_date, reservation.end_date);
+    const used = new Set(overlapping.map(r => r.hero_slide_index));
+    heroSlideIndex = 0;
+    while (used.has(heroSlideIndex) && heroSlideIndex < AD_HERO_SLIDE_COUNT - 1) heroSlideIndex++;
+  }
+  db.prepare(`UPDATE ad_reservations SET image_url=COALESCE(?, image_url), tagline=?, keywords=?, hero_slide_index=?,
+    content_completed_at=COALESCE(content_completed_at, datetime('now')) WHERE id=?`)
+    .run(uploaded, tagline, JSON.stringify(keywords), heroSlideIndex, req.params.id);
+  const updated = db.prepare('SELECT * FROM ad_reservations WHERE id=?').get(req.params.id);
+  res.json({ success: true, data: serializeAdReservation(updated, todayStr) });
+});
+
+// GET /api/ads/active — 우리동네 추천디자인업체·우리지역 대표업체·지역추천업체 3곳이 전부 이 하나의
+// API로 같은 데이터를 받아서 각자 필요한 필드만 꺼내 쓴다(폼 하나 = 3곳 동일노출 원칙).
+app.get('/api/ads/active', (req, res) => {
+  const region = req.query.region;
+  if (!isNonEmptyString(region, 50)) return res.json({ success: true, data: [] });
+  const todayStr = dateOnly(new Date());
+  const rows = db.prepare(`SELECT a.*, p.business_name AS partner_name FROM ad_reservations a
+    LEFT JOIN partners p ON p.id=a.partner_id
+    WHERE a.region=? AND a.content_completed_at IS NOT NULL AND a.start_date<=? AND a.end_date>=?
+    ORDER BY a.hero_slide_index ASC, a.rowid ASC`).all(region, todayStr, todayStr);
+  res.json({ success: true, data: rows.map(r => serializeAdReservation(r, todayStr)) });
+});
+
+// GET /api/ads/mine — 내 광고관리 화면: 진행중/예정/지난 광고를 한 번에 조회(상태는 그때그때 계산)
+app.get('/api/ads/mine', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 조회할 수 있습니다' } });
+  const todayStr = dateOnly(new Date());
+  const rows = db.prepare('SELECT * FROM ad_reservations WHERE partner_id=? ORDER BY start_date DESC, rowid DESC').all(req.user.sub);
+  res.json({ success: true, data: rows.map(r => serializeAdReservation(r, todayStr)) });
+});
+// 관리자는 이제 승인/반려할 게 없다(정해진 틀 자동검증으로 대체) — 현황 모니터링 목적의 조회만 남긴다
+app.get('/api/admin/ads', adminAuthRequired(), (req, res) => {
+  const todayStr = dateOnly(new Date());
+  const { status } = req.query;
+  const rows = db.prepare(`SELECT a.*, p.business_name AS partner_name FROM ad_reservations a
+    LEFT JOIN partners p ON p.id=a.partner_id ORDER BY a.start_date DESC, a.rowid DESC`).all();
+  let list = rows.map(r => serializeAdReservation(r, todayStr));
+  if (isNonEmptyString(status, 20)) list = list.filter(r => r.status === status);
+  res.json({ success: true, data: list });
+});
+
+// 신규(2026-09): 업체 본인의 크레딧 원장(적립·소진·환불·출금 이력) 조회. 광고비 소진 내역은 예약 정보를 함께 붙여서 반환.
+app.get('/api/credit/ledger/mine', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 조회할 수 있습니다' } });
+  const rows = db.prepare(`SELECT l.*, a.region, a.tagline, a.start_date, a.end_date FROM credit_ledger l LEFT JOIN ad_reservations a ON a.id=l.related_ad_id
+    WHERE l.partner_id=? ORDER BY l.created_at DESC, l.rowid DESC LIMIT 200`).all(req.user.sub);
+  res.json({ success: true, data: rows });
+});
+// 관리자 "포인트 관리 › 업체 크레딧" 탭: 전체 업체를 가로질러 원장을 모아본다(위 /mine과 달리 partner_id로 필터하지 않음)
+app.get('/api/admin/credit-ledger', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare(`SELECT l.*, p.business_name AS partner_name, a.region, a.tagline
+    FROM credit_ledger l LEFT JOIN partners p ON p.id=l.partner_id LEFT JOIN ad_reservations a ON a.id=l.related_ad_id
+    ORDER BY l.created_at DESC, l.rowid DESC LIMIT 300`).all();
+  res.json({ success: true, data: rows });
+});
+
+// ===== 5-1. 광고 크레딧 충전(토스페이먼츠) =====
+// [배경] 광고(POST /api/ads)는 credit_balance를 실제로 차감하지만, 그 잔액을 채워주는 "충전" API가
+// 없었음(프론트는 window.PARTNER_CREDIT_LEDGER.push로 충전을 흉내만 냈음) → 계약 대금 결제(/api/contracts/:id/payments,
+// 위 confirmTossPayment/syncVerifiedPayment)와 동일한 토스페이먼츠 승인 구조를 그대로 재사용해 실제 충전 흐름을 만든다.
+function syncVerifiedCreditTopup(local, providerPayment, rawEventType) {
+  const providerAmount = Number(providerPayment.totalAmount);
+  if (providerAmount !== local.amount) throw Object.assign(new Error('결제 금액이 주문정보와 일치하지 않습니다'), { code: 'PAYMENT_AMOUNT_MISMATCH', status: 409 });
+  if (providerPayment.orderId !== local.order_id) throw Object.assign(new Error('주문번호가 일치하지 않습니다'), { code: 'PAYMENT_ORDER_MISMATCH', status: 409 });
+  const statusMap = { DONE: 'paid', CANCELED: 'cancelled', PARTIAL_CANCELED: 'partially_cancelled', WAITING_FOR_DEPOSIT: 'pending', ABORTED: 'failed', EXPIRED: 'failed' };
+  const nextStatus = statusMap[providerPayment.status] || 'ready';
+  const wasPaid = local.status === 'paid';
+  db.transaction(() => {
+    db.prepare("UPDATE credit_topups SET status=?, payment_key=?, paid_at=CASE WHEN ?='paid' THEN COALESCE(paid_at,datetime('now')) ELSE paid_at END WHERE id=?")
+      .run(nextStatus, providerPayment.paymentKey || local.payment_key || null, nextStatus, local.id);
+    if (nextStatus === 'paid' && !wasPaid) {
+      db.prepare('UPDATE partners SET credit_balance = credit_balance + ? WHERE id=?').run(local.amount, local.partner_id);
+      db.prepare('INSERT INTO credit_ledger (id, partner_id, type, amount, payment_method, order_id) VALUES (?,?,?,?,?,?)')
+        .run(randomUUID(), local.partner_id, 'purchase', local.amount, 'toss', local.order_id);
+      createNotification('partner', local.partner_id, 'credit_topup_paid', '광고 크레딧이 충전되었습니다', local.amount.toLocaleString() + '원이 충전되었습니다.', 'credit_topup', local.id);
+    }
+  })();
+  return nextStatus;
+}
+app.post('/api/credit/topup', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 크레딧을 충전할 수 있습니다' } });
+  const { amount } = req.body;
+  if (!isPositiveAmount(amount) || amount < 10000 || amount > 10000000) return validationError(res, '충전 금액은 1만원 이상 1천만원 이하로 입력해주세요');
+  if (!process.env.TOSS_CLIENT_KEY) return res.status(503).json({ success: false, error: { code: 'PAYMENT_NOT_CONFIGURED', message: '결제 클라이언트 설정이 필요합니다' } });
+  const id = randomUUID();
+  const orderId = ('roomercredit' + randomUUID().replace(/-/g, '')).slice(0, 40);
+  db.prepare('INSERT INTO credit_topups (id, order_id, partner_id, amount) VALUES (?,?,?,?)').run(id, orderId, req.user.sub, amount);
+  res.json({ success: true, data: { orderId, clientKey: process.env.TOSS_CLIENT_KEY, orderName: 'ROOMER 광고 크레딧 충전', amount, currency: 'KRW' } });
+});
+app.post('/api/credit/topup/:orderId/confirm', authRequired, async (req, res, next) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 확인할 수 있습니다' } });
+  const local = db.prepare('SELECT * FROM credit_topups WHERE order_id=?').get(req.params.orderId);
+  if (!local) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '충전 주문을 찾을 수 없습니다' } });
+  if (local.partner_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인 주문만 확인할 수 있습니다' } });
+  const { paymentKey } = req.body;
+  if (!isNonEmptyString(paymentKey, 200)) return validationError(res, '결제 승인에 필요한 정보가 없습니다');
+  try {
+    const verified = await confirmTossPayment(paymentKey, local.order_id, local.amount);
+    const status = syncVerifiedCreditTopup(local, verified, 'client_confirm');
+    const balance = db.prepare('SELECT credit_balance FROM partners WHERE id=?').get(req.user.sub).credit_balance;
+    res.json({ success: true, data: { status, balance } });
+  } catch (error) { next(error); }
+});
+// 토스 웹훅은 서명검증이 없어 본문을 신뢰하지 않고, 반드시 서버가 직접 재조회(GET)해서 확인한 값만 반영(위 결제 웹훅과 동일 원칙)
+app.post('/api/webhooks/toss/credit-topup', async (req, res) => {
+  const paymentKey = String((req.body && req.body.data && req.body.data.paymentKey) || (req.body && req.body.paymentKey) || '');
+  if (!paymentKey) return res.status(200).json({ success: true, data: { ignored: true } });
+  try {
+    const verified = await queryTossPayment(paymentKey);
+    const local = db.prepare('SELECT * FROM credit_topups WHERE order_id=?').get(verified.orderId);
+    if (!local) return res.status(200).json({ success: true, data: { ignored: true } });
+    syncVerifiedCreditTopup(local, verified, 'webhook');
+    res.json({ success: true });
+  } catch (error) { console.error('크레딧충전 웹훅 처리 실패:', error.message); res.status(200).json({ success: true, data: { error: true } }); }
+});
+
+// ===== 5-1b. 소비자 포인트 충전(토스페이먼츠) =====
+// [배경] 결제기능 전수조사(2026-09)에서 소비자 "포인트 충전"이 서버 없이 setTimeout으로 성공을
+// 흉내내던 가짜결제였음이 발견됨 → 위 업체 크레딧 충전과 완전히 동일한 토스페이먼츠 승인 구조로 교체.
+function syncVerifiedPointTopup(local, providerPayment, rawEventType) {
+  const providerAmount = Number(providerPayment.totalAmount);
+  if (providerAmount !== local.amount) throw Object.assign(new Error('결제 금액이 주문정보와 일치하지 않습니다'), { code: 'PAYMENT_AMOUNT_MISMATCH', status: 409 });
+  if (providerPayment.orderId !== local.order_id) throw Object.assign(new Error('주문번호가 일치하지 않습니다'), { code: 'PAYMENT_ORDER_MISMATCH', status: 409 });
+  const statusMap = { DONE: 'paid', CANCELED: 'cancelled', PARTIAL_CANCELED: 'partially_cancelled', WAITING_FOR_DEPOSIT: 'pending', ABORTED: 'failed', EXPIRED: 'failed' };
+  const nextStatus = statusMap[providerPayment.status] || 'ready';
+  const wasPaid = local.status === 'paid';
+  db.transaction(() => {
+    db.prepare("UPDATE point_topups SET status=?, payment_key=?, paid_at=CASE WHEN ?='paid' THEN COALESCE(paid_at,datetime('now')) ELSE paid_at END WHERE id=?")
+      .run(nextStatus, providerPayment.paymentKey || local.payment_key || null, nextStatus, local.id);
+    if (nextStatus === 'paid' && !wasPaid) {
+      db.prepare('UPDATE users SET cash_balance = cash_balance + ? WHERE id=?').run(local.amount, local.user_id);
+      createNotification('consumer', local.user_id, 'point_topup_paid', '포인트가 충전되었습니다', local.amount.toLocaleString() + 'P가 충전되었습니다.', 'point_topup', local.id);
+    }
+  })();
+  return nextStatus;
+}
+app.post('/api/points/topup', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 포인트를 충전할 수 있습니다' } });
+  const { amount } = req.body;
+  if (!isPositiveAmount(amount) || amount < 10000 || amount > 10000000) return validationError(res, '충전 금액은 1만원 이상 1천만원 이하로 입력해주세요');
+  if (!process.env.TOSS_CLIENT_KEY) return res.status(503).json({ success: false, error: { code: 'PAYMENT_NOT_CONFIGURED', message: '결제 클라이언트 설정이 필요합니다' } });
+  const id = randomUUID();
+  const orderId = ('roomerpoint' + randomUUID().replace(/-/g, '')).slice(0, 40);
+  db.prepare('INSERT INTO point_topups (id, order_id, user_id, amount) VALUES (?,?,?,?)').run(id, orderId, req.user.sub, amount);
+  res.json({ success: true, data: { orderId, clientKey: process.env.TOSS_CLIENT_KEY, orderName: 'ROOMER 포인트 충전', amount, currency: 'KRW' } });
+});
+app.post('/api/points/topup/:orderId/confirm', authRequired, async (req, res, next) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 확인할 수 있습니다' } });
+  const local = db.prepare('SELECT * FROM point_topups WHERE order_id=?').get(req.params.orderId);
+  if (!local) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '충전 주문을 찾을 수 없습니다' } });
+  if (local.user_id !== req.user.sub) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '본인 주문만 확인할 수 있습니다' } });
+  const { paymentKey } = req.body;
+  if (!isNonEmptyString(paymentKey, 200)) return validationError(res, '결제 승인에 필요한 정보가 없습니다');
+  try {
+    const verified = await confirmTossPayment(paymentKey, local.order_id, local.amount);
+    const status = syncVerifiedPointTopup(local, verified, 'client_confirm');
+    const balance = db.prepare('SELECT cash_balance FROM users WHERE id=?').get(req.user.sub).cash_balance;
+    res.json({ success: true, data: { status, balance } });
+  } catch (error) { next(error); }
+});
+app.post('/api/webhooks/toss/point-topup', async (req, res) => {
+  const paymentKey = String((req.body && req.body.data && req.body.data.paymentKey) || (req.body && req.body.paymentKey) || '');
+  if (!paymentKey) return res.status(200).json({ success: true, data: { ignored: true } });
+  try {
+    const verified = await queryTossPayment(paymentKey);
+    const local = db.prepare('SELECT * FROM point_topups WHERE order_id=?').get(verified.orderId);
+    if (!local) return res.status(200).json({ success: true, data: { ignored: true } });
+    syncVerifiedPointTopup(local, verified, 'webhook');
+    res.json({ success: true });
+  } catch (error) { console.error('포인트충전 웹훅 처리 실패:', error.message); res.status(200).json({ success: true, data: { error: true } }); }
+});
+app.get('/api/points/topup/mine', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 조회할 수 있습니다' } });
+  const rows = db.prepare('SELECT id, order_id, amount, status, created_at, paid_at FROM point_topups WHERE user_id=? ORDER BY created_at DESC LIMIT 100').all(req.user.sub);
+  res.json({ success: true, data: rows });
+});
+
+// ===== 5-1c. 결제수단(카드) 등록 — 토스페이먼츠 빌링키 =====
+// [배경] 전수조사에서 "카드 등록"이 화면에서 카드번호를 직접 입력받아 처리하는 PCI-DSS 위반
+// 방식이었음이 발견됨 → 카드정보는 토스의 보안 결제창(requestBillingAuth)에서만 입력받고,
+// 우리 서버는 그 결과인 authKey를 빌링키로 교환하는 역할만 한다(카드번호 전체를 절대 보지 않음).
+app.post('/api/payment-methods/register', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 결제수단을 등록할 수 있습니다' } });
+  if (!process.env.TOSS_CLIENT_KEY) return res.status(503).json({ success: false, error: { code: 'PAYMENT_NOT_CONFIGURED', message: '결제 클라이언트 설정이 필요합니다' } });
+  const customerKey = 'cust' + randomUUID().replace(/-/g, '');
+  res.json({ success: true, data: { clientKey: process.env.TOSS_CLIENT_KEY, customerKey } });
+});
+app.post('/api/payment-methods/confirm', authRequired, async (req, res, next) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 등록할 수 있습니다' } });
+  const { authKey, customerKey } = req.body;
+  if (!isNonEmptyString(authKey, 200) || !isNonEmptyString(customerKey, 200)) return validationError(res, '카드 등록에 필요한 정보가 없습니다');
+  try {
+    const issued = await issueTossBillingKey(authKey, customerKey);
+    const card = issued.card || {};
+    // 토스가 이미 마스킹해서 내려주는 값만 저장(카드번호 전체는 응답에도, DB에도 존재하지 않음)
+    const id = randomUUID();
+    db.prepare('INSERT INTO payment_methods (id, user_id, billing_key, customer_key, card_last4, card_brand) VALUES (?,?,?,?,?,?)')
+      .run(id, req.user.sub, issued.billingKey, customerKey, card.number || null, card.issuerCode || card.company || null);
+    res.json({ success: true, data: { id, cardLast4: card.number || null, cardBrand: card.issuerCode || card.company || null } });
+  } catch (error) { next(error); }
+});
+app.get('/api/payment-methods', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 조회할 수 있습니다' } });
+  const rows = db.prepare('SELECT id, card_last4, card_brand, created_at FROM payment_methods WHERE user_id=? AND removed_at IS NULL ORDER BY created_at DESC').all(req.user.sub);
+  res.json({ success: true, data: rows });
+});
+app.delete('/api/payment-methods/:id', authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정만 삭제할 수 있습니다' } });
+  const result = db.prepare("UPDATE payment_methods SET removed_at=datetime('now') WHERE id=? AND user_id=? AND removed_at IS NULL").run(req.params.id, req.user.sub);
+  if (!result.changes) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '등록된 결제수단을 찾을 수 없습니다' } });
+  res.json({ success: true });
+});
+
+// ===== 5-2. 등급 승급 심사 =====
+// (프론트 window.TIER_FEE·TIER_ORDER와 반드시 동일하게 유지할 것 — 위 TIER_FEE 상수와 같은 원칙)
+const TIER_ORDER = ['부분공사가능업체', '인증사업자', '면허 파트너'];
+function nextTierOf(cur) { const i = TIER_ORDER.indexOf(cur); return (i >= 0 && i < TIER_ORDER.length - 1) ? TIER_ORDER[i + 1] : null; }
+app.post('/api/partners/me/tier-upgrade', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 승급 신청을 할 수 있습니다' } });
+  const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.user.sub);
+  if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체 정보를 찾을 수 없습니다' } });
+  const next = nextTierOf(partner.tier);
+  if (!next) return res.status(400).json({ success: false, error: { code: 'ALREADY_TOP_TIER', message: '이미 최상위 등급입니다' } });
+  const pending = db.prepare("SELECT id FROM tier_upgrades WHERE partner_id=? AND status='admin_review'").get(req.user.sub);
+  if (pending) return res.status(409).json({ success: false, error: { code: 'ALREADY_PENDING', message: '이미 심사 대기 중인 승급 신청이 있습니다' } });
+  const { licenseNumber, issuer, docName } = req.body;
+  if (next === '면허 파트너' && !isNonEmptyString(licenseNumber, 60)) return validationError(res, '면허번호를 입력해주세요');
+  const id = randomUUID();
+  db.prepare('INSERT INTO tier_upgrades (id, partner_id, from_tier, to_tier, license_number, issuer, doc_name) VALUES (?,?,?,?,?,?,?)')
+    .run(id, req.user.sub, partner.tier, next, isNonEmptyString(licenseNumber, 60) ? licenseNumber.trim() : null, isNonEmptyString(issuer, 60) ? issuer.trim() : null, isNonEmptyString(docName, 100) ? docName.trim() : null);
+  res.json({ success: true, data: { id, fromTier: partner.tier, toTier: next, status: 'admin_review' } });
+});
+app.get('/api/partners/me/tier-upgrade', authRequired, (req, res) => {
+  if (req.user.role !== 'partner') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '업체 계정만 조회할 수 있습니다' } });
+  const row = db.prepare('SELECT * FROM tier_upgrades WHERE partner_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(req.user.sub);
+  if (!row) return res.json({ success: true, data: null });
+  res.json({ success: true, data: { id: row.id, fromTier: row.from_tier, toTier: row.to_tier, status: row.status, licenseNumber: row.license_number, issuer: row.issuer, docName: row.doc_name, createdAt: row.created_at, decidedAt: row.decided_at, adminNote: row.admin_note } });
+});
+app.get('/api/admin/tier-upgrades', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare(`SELECT t.*, p.business_name AS partner_name FROM tier_upgrades t JOIN partners p ON p.id=t.partner_id
+    WHERE t.status='admin_review' ORDER BY t.created_at ASC`).all();
+  res.json({ success: true, data: rows.map(r => ({ id: r.id, partnerId: r.partner_id, partnerName: r.partner_name, fromTier: r.from_tier, toTier: r.to_tier, licenseNumber: r.license_number, issuer: r.issuer, docName: r.doc_name, createdAt: r.created_at })) });
+});
+app.get('/api/admin/tier-upgrades/:id', adminAuthRequired(), (req, res) => {
+  const r = db.prepare('SELECT t.*, p.business_name AS partner_name FROM tier_upgrades t JOIN partners p ON p.id=t.partner_id WHERE t.id=?').get(req.params.id);
+  if (!r) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 건을 찾을 수 없습니다' } });
+  res.json({ success: true, data: { id: r.id, partnerId: r.partner_id, partnerName: r.partner_name, fromTier: r.from_tier, toTier: r.to_tier, licenseNumber: r.license_number, issuer: r.issuer, docName: r.doc_name, status: r.status, createdAt: r.created_at, decidedAt: r.decided_at, adminNote: r.admin_note } });
+});
+app.patch('/api/admin/tier-upgrades/:id/approve', adminAuthRequired(), (req, res) => {
+  const row = db.prepare('SELECT * FROM tier_upgrades WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 건을 찾을 수 없습니다' } });
+  if (row.status !== 'admin_review') return res.status(409).json({ success: false, error: { code: 'ALREADY_DECIDED', message: '이미 심사가 완료된 건입니다' } });
+  db.transaction(() => {
+    db.prepare("UPDATE tier_upgrades SET status='approved', decided_at=datetime('now') WHERE id=?").run(row.id);
+    db.prepare('UPDATE partners SET tier=? WHERE id=?').run(row.to_tier, row.partner_id);
+  })();
+  createNotification('partner', row.partner_id, 'tier_upgrade_approved', row.to_tier + ' 승급이 승인되었습니다', '수수료율이 자동으로 반영됩니다', 'tier_upgrade', row.id);
+  res.json({ success: true, data: { id: row.id, status: 'approved', toTier: row.to_tier } });
+});
+app.patch('/api/admin/tier-upgrades/:id/reject', adminAuthRequired(), (req, res) => {
+  const row = db.prepare('SELECT * FROM tier_upgrades WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 건을 찾을 수 없습니다' } });
+  if (row.status !== 'admin_review') return res.status(409).json({ success: false, error: { code: 'ALREADY_DECIDED', message: '이미 심사가 완료된 건입니다' } });
+  const { reason } = req.body;
+  db.prepare("UPDATE tier_upgrades SET status='rejected', admin_note=?, decided_at=datetime('now') WHERE id=?").run(isNonEmptyString(reason, 500) ? reason.trim() : null, row.id);
+  createNotification('partner', row.partner_id, 'tier_upgrade_rejected', row.to_tier + ' 승급이 반려되었습니다', reason || null, 'tier_upgrade', row.id);
+  res.json({ success: true, data: { id: row.id, status: 'rejected' } });
+});
+
+// ===== 5-3. 어뷰징(반복 노쇼) 관리 =====
+// meas_jobs.noshow_log(실측 일정 중 쌓이는 노쇼 신고 로그)에 2회 이상 쌓인 채팅방을 대기열로 보여준다.
+// abuse_actions는 "이 방을 이 노쇼횟수 시점까지 이미 조치했다"만 기억하는 이력 테이블 —
+// 조치 이후 노쇼가 더 쌓이지 않으면 큐에서 빠지고, 더 쌓이면 다시 대기열에 뜬다.
+const ABUSE_NOSHOW_THRESHOLD = 2;
+function buildAbuseQueue() {
+  const rooms = db.prepare(`SELECT m.room_id, m.noshow_log, r.partner_id, r.consumer_id, p.business_name AS partner_name, u.nickname AS consumer_name
+    FROM meas_jobs m JOIN chat_rooms r ON r.id=m.room_id
+    LEFT JOIN partners p ON p.id=r.partner_id LEFT JOIN users u ON u.id=r.consumer_id`).all();
+  const lastActionByRoom = new Map();
+  db.prepare('SELECT room_id, action, noshow_count_at_action, created_at FROM abuse_actions ORDER BY created_at ASC').all()
+    .forEach(a => lastActionByRoom.set(a.room_id, a));
+  const queue = [];
+  rooms.forEach(r => {
+    let log; try { log = JSON.parse(r.noshow_log || '[]'); } catch (e) { log = []; }
+    if (!Array.isArray(log) || log.length < ABUSE_NOSHOW_THRESHOLD) return;
+    const lastAction = lastActionByRoom.get(r.room_id);
+    if (lastAction && lastAction.noshow_count_at_action >= log.length) return; // 이미 이 수준까지 조치됨
+    const lastEntry = log[log.length - 1] || {};
+    queue.push({
+      roomId: r.room_id, partnerId: r.partner_id, partnerName: r.partner_name || '(탈퇴한 업체)',
+      consumerId: r.consumer_id, consumerName: r.consumer_name || '(탈퇴한 회원)',
+      noshowCount: log.length, lastNoshowAt: lastEntry.at || null, lastNoshowReportedBy: lastEntry.reportedBy || null,
+      lastAction: lastAction ? { action: lastAction.action, at: lastAction.created_at } : null
+    });
+  });
+  queue.sort((a, b) => (b.noshowCount - a.noshowCount) || String(b.lastNoshowAt || '').localeCompare(String(a.lastNoshowAt || '')));
+  return queue;
+}
+app.get('/api/admin/abuse/queue', adminAuthRequired(), (req, res) => {
+  res.json({ success: true, data: buildAbuseQueue() });
+});
+app.post('/api/admin/abuse/:roomId/action', adminAuthRequired(), (req, res) => {
+  const { action, note } = req.body;
+  if (!['warn', 'suspend'].includes(action)) return validationError(res, '올바른 조치가 아닙니다(warn/suspend)');
+  const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
+  if (!room) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '채팅방을 찾을 수 없습니다' } });
+  const job = db.prepare('SELECT noshow_log FROM meas_jobs WHERE room_id=?').get(req.params.roomId);
+  let log; try { log = JSON.parse((job && job.noshow_log) || '[]'); } catch (e) { log = []; }
+  const id = randomUUID();
+  db.transaction(() => {
+    db.prepare('INSERT INTO abuse_actions (id, room_id, partner_id, action, note, noshow_count_at_action) VALUES (?,?,?,?,?,?)')
+      .run(id, req.params.roomId, room.partner_id, action, isNonEmptyString(note, 500) ? note.trim() : null, log.length);
+    if (action === 'suspend' && room.partner_id) {
+      db.prepare("UPDATE partners SET verify_status='suspended' WHERE id=? AND verify_status='approved'").run(room.partner_id);
+    }
+  })();
+  if (room.partner_id) {
+    createNotification('partner', room.partner_id, action === 'suspend' ? 'abuse_suspended' : 'abuse_warned',
+      action === 'suspend' ? '반복 노쇼로 계정이 일시 정지되었습니다' : '반복 노쇼 관련 경고 안내',
+      note || null, 'chat_room', req.params.roomId);
+  }
+  res.json({ success: true, data: { id, roomId: req.params.roomId, action, message: action === 'suspend' ? '해당 업체가 일시 정지되었습니다' : '경고가 발송되었습니다' } });
+});
+
+// ===== 신규(사용자요청 — 루머칼럼 Notion 연동) =====
+// 운영자가 Notion 데이터베이스에 글을 쓰면, 이 서버가 주기적으로(또는 수동 트리거로) 가져와서
+// columns 테이블에 동기화한다. NOTION_API_KEY/NOTION_DATABASE_ID 환경변수가 없으면 폴백(기본 3개 글)만 사용.
+// 실서비스 확장 시: 이 폴링 방식 대신 Notion 웹훅으로 실시간 동기화 권장.
+const NOTION_API_KEY = process.env.NOTION_API_KEY || '';
+const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID || '';
+
+// 폴백(기본) 칼럼 3개 — Notion 미연동 상태에서도 화면이 비어보이지 않도록 서버 최초 기동시 1회 시딩
+function seedDefaultColumnsIfEmpty() {
+  const count = db.prepare('SELECT COUNT(*) as c FROM columns').get().c;
+  if (count > 0) return;
+  // 신규(사용자요청 — 실제 웹 기사 기반 칼럼): 아래 3개는 실제 인테리어 매체 기사를 조사해
+  // 저작권 규정에 맞게 직접 인용 없이 자체적으로 재구성한 요약이며, 각 기사의 실제 원문 링크(source_url)를
+  // 함께 제공해 사용자가 원문을 계속 읽을 수 있도록 합니다.
+  const defaults = [
+    {
+      id: randomUUID(), tag: '욕실 인테리어', title: '2026년 욕실 트렌드, 대형 타일이 대세인 이유',
+      summary: '줄눈을 줄이는 대형 타일 시공이 욕실을 넓어 보이게 하는 핵심 트렌드로 떠오르고 있습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-20',
+      source_name: '오늘의집 라이프스타일 매거진', source_url: 'https://ohou.se/advices/12252',
+      body: '최근 인테리어 시공 사례들을 살펴보면 욕실과 거실 벽에서 공통적으로 눈에 띄는 변화가 있습니다. 바로 대형 타일의 확산입니다.\n\n작은 타일을 촘촘히 붙이던 기존 방식과 달리, 600×600mm 이상의 대형 포세린 타일을 쓰면 줄눈 개수가 크게 줄어듭니다. 그 결과 벽면과 바닥이 훨씬 매끈하고 넓어 보이는 효과를 얻을 수 있어, 좁은 욕실을 고민하는 세대에서 특히 선호도가 높습니다.\n\n조명 설계도 함께 달라지고 있습니다. 예전에는 욕실 전체를 하나의 조명으로 균일하게 밝히는 방식이 일반적이었다면, 최근에는 세면대·샤워부스 등 구역마다 조도를 다르게 설계해 공간에 입체감을 주는 방식이 늘고 있습니다. 밝은 영역과 은은한 영역이 공존하면 실제 면적보다 더 넓게 느껴지는 효과가 있습니다.\n\n타일 색상은 화이트·아이보리 같은 밝은 톤이 여전히 강세지만, 최근에는 호텔 욕실처럼 고급스러운 무드를 내기 위해 마감재의 질감(무광·유광)을 다르게 조합하는 경우도 늘고 있습니다.\n\n실제 시공 시에는 타일 크기가 커질수록 평탄 작업의 중요성도 함께 커지므로, 바닥 미장 상태를 꼼꼼히 확인해줄 수 있는 시공 경험이 풍부한 업체를 선택하는 것이 중요합니다.'
+    },
+    {
+      id: randomUUID(), tag: '주방 트렌드', title: '2026년 주방 인테리어, 대면형과 엔지니어드 스톤이 이끈다',
+      summary: '요리하며 가족과 소통할 수 있는 대면형 주방과, 고급스러운 질감의 엔지니어드 스톤 상판이 올해 주방 트렌드를 이끌고 있습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-18',
+      source_name: '오늘의집 라이프스타일 매거진', source_url: 'https://ohou.se/advices/12252',
+      body: '2026년 주방 인테리어에서 가장 두드러지는 흐름은 대면형(아일랜드·ㄷ자 개방형) 주방의 확산입니다. 조리대가 거실을 바라보는 구조라 요리를 하면서도 가족이나 손님과 자연스럽게 대화를 나눌 수 있고, 거실과 주방의 경계가 흐려지면서 공간 전체가 넓어 보이는 효과도 있습니다.\n\n다만 대면형 구조를 무리 없이 적용하려면 어느 정도 면적이 확보되어야 합니다. 협소한 주방이라면 기존 배치를 유지하되 아일랜드 느낌을 낼 수 있는 소형 테이블을 절충안으로 고려하는 경우가 많습니다.\n\n상판 소재로는 엔지니어드 스톤(쿼츠 스톤)이 올해 1순위로 꼽힙니다. 내구성이 좋고 관리가 편하면서도 자연석과 유사한 고급스러운 질감을 낼 수 있기 때문입니다. 최근에는 인공적인 느낌보다 자연스러운 무늬를 살린 제품이 특히 인기입니다.\n\n가전 배치도 인테리어 설계 초반부터 함께 고려하는 추세입니다. 빌트인 냉장고·인덕션·식기세척기 등의 위치를 먼저 정한 뒤 전기 설비와 수납 구조를 맞추는 순서로 진행하면, 시공 중간에 위치를 바꾸는 시행착오를 줄일 수 있습니다.'
+    },
+    {
+      id: randomUUID(), tag: '견적 가이드', title: '인테리어 견적서, 이 항목들을 꼭 확인하세요',
+      summary: '항목별 세부내역, 자재 등급 명시, A/S 보증기간까지 — 견적서에서 분쟁을 예방하는 핵심 체크포인트를 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-15',
+      source_name: 'LifeBase 인테리어 가이드', source_url: 'https://lifebase.kr/blog/0429-interior-estimate-checklist/',
+      body: '인테리어 견적서는 보통 철거·목공·전기·도배·장판·타일·가구·조명 등의 항목으로 구성됩니다. 각 항목이 "공사 내용 - 수량 - 단가 - 총액"으로 세분화되어 있는지, 세부 내역의 합이 전체 소계와 정확히 일치하는지부터 확인하는 것이 견적서 검토의 출발점입니다.\n\n특히 "전체 리모델링 일체 2,000만원"처럼 여러 공정을 하나로 뭉뚱그린 이른바 "일식" 항목은 주의가 필요합니다. 나중에 어떤 항목이 빠졌는지, 왜 추가 비용이 발생했는지 설명하기 어려워지는 경우가 많기 때문입니다. 철거비·폐기물 처리비·인건비를 개별 항목으로 나눠 요청하는 것이 안전합니다.\n\n자재 등급 표기도 중요한 포인트입니다. "마루 시공"처럼 뭉뚱그려진 표현보다 브랜드·모델명·규격까지 구체적으로 적혀 있어야, 시공 중 더 저렴한 자재로 바뀌는 것을 예방할 수 있습니다.\n\nA/S(하자보수) 보증기간도 반드시 계약서에 명시해야 합니다. 공정별로 보증기간이 다른 경우가 많은데, 일반적으로 도배·도장·타일 등은 1년, 급배수나 설비 공사는 2년 이상으로 정하는 경우가 흔합니다. 보증 범위(시공 불량, 자재 하자, 누수 등)까지 구체적으로 남겨두면 이후 분쟁 소지를 크게 줄일 수 있습니다.\n\n계약금 비율도 확인해야 할 항목입니다. 계약금을 지나치게 높게 요구하는 업체는 주의가 필요하며, 착수금·중도금·잔금으로 나누어 지급하는 구조가 일반적으로 더 안전합니다.'
+    },
+    {
+      id: randomUUID(), tag: '거실 인테리어', title: '2026년 거실 트렌드, 워밍 뉴트럴과 곡선 디자인',
+      summary: '차가운 미니멀에서 따뜻한 절제미로 — 올해 거실 인테리어를 이끄는 4가지 키워드를 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-25',
+      source_name: '오늘의집 라이프스타일 매거진', source_url: 'https://ohou.se/advices/12448',
+      body: '2026년 거실 인테리어는 이전의 차갑던 미니멀 스타일에서, 한층 따뜻하고 절제된 분위기로 흐름이 바뀌고 있습니다. 한국·유럽·일본의 인테리어 매거진들이 공통적으로 짚는 키워드는 워밍 뉴트럴, 곡선 디자인, 존 디바이드(공간 분리), 플랜테리어 네 가지입니다.\n\n컬러는 베이지를 기본 바탕으로 하고, 테라코타나 세이지그린 같은 어스톤을 포인트로 더하는 조합이 강세입니다. 자재 면에서는 헤링본 패턴 마루나 마이크로 시멘트 마감이 인기를 얻고 있습니다.\n\n조명도 예전처럼 천장등 하나에 의존하기보다, 메인 조명·간접 조명·무드 조명을 함께 활용해 시간대별로 다른 분위기를 연출하는 방식이 트렌드로 자리잡고 있습니다.\n\n다만 평수가 좁은 거실이라면 이 모든 요소를 한 번에 적용하기보다, 러그·소파 등 가구로 먼저 분위기를 잡아보고 마음에 들면 마루나 벽 마감 같은 자재 시공으로 확장하는 단계적 접근이 안전합니다.'
+    },
+    {
+      id: randomUUID(), tag: '컬러 가이드', title: '2026년 인테리어 컬러, 어스톤이 답이다',
+      summary: '베이지·테라코타·올리브그린 — 공간을 압도하지 않으면서 개성을 살리는 2026년 컬러 배합법을 소개합니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-24',
+      source_name: 'LifeBase 인테리어 가이드', source_url: 'https://lifebase.kr/blog/0184-interior-color-trends-2026/',
+      body: '2026년 인테리어 컬러 트렌드는 채도가 살아있는 어스톤과 딥톤이 중심입니다. 웜그레이나 베이지를 기본 배경으로 삼고, 테라코타나 올리브그린 같은 어스톤을 포인트로 더하면 안정적이면서도 개성 있는 공간을 만들 수 있습니다.\n\n색상 배합에는 흔히 70:20:10 법칙이 활용됩니다. 베이스 컬러를 70%, 서브 컬러를 20%, 포인트 컬러를 10% 정도로 배분하면 과하지 않으면서도 시각적으로 안정된 균형을 만들 수 있습니다.\n\n거실처럼 가족이 함께 시간을 보내는 공간에는 편안함을 주는 색상이 적합합니다. 벽면은 웜그레이나 베이지로, 소파나 러그에는 테라코타·카라멜 같은 따뜻한 색을 포인트로 주면 아늑한 분위기를 연출할 수 있습니다.\n\n한 가지 색을 공간 전체에 과하게 적용하기보다, 벽·가구·소품 등 서로 다른 요소에 나눠 배치하는 것이 실패 확률을 줄이는 방법입니다.'
+    },
+    {
+      id: randomUUID(), tag: '조명 팁', title: '침실 조명, 밝기보다 색온도가 중요한 이유',
+      summary: '숙면을 돕는 침실 조명의 핵심은 밝기가 아니라 따뜻한 색온도입니다. 공간별 조명 선택 요령을 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-23',
+      source_name: 'LifeBase 인테리어 가이드', source_url: 'https://lifebase.kr/blog/0455-interior-jomyeong-gongganbbyeol-jomyeong-seontaeggwa-baechi-yoryeong/',
+      body: '침실 조명을 고를 때 가장 흔히 하는 실수는 밝기만 신경 쓰는 것입니다. 실제로 숙면에 더 큰 영향을 주는 요소는 색온도입니다. 천장 조명은 3000K 이하의 따뜻한 색온도를 선택하고, 밝기를 조절할 수 있는 디밍 기능을 함께 갖추는 것이 좋습니다.\n\n침대 양옆에는 독서용 스탠드나 벽등을 따로 두는 것을 추천합니다. 천장 조명 하나에만 의존하면 책을 읽거나 취침 준비를 할 때 불편할 수 있습니다.\n\n조명은 시선에 직접 닿지 않도록 간접적으로 배치하는 것이 원칙입니다. 빛이 눈에 바로 들어오면 오히려 수면을 방해할 수 있기 때문입니다. 드레스룸이나 화장대가 있다면 거울 주변에 자연광에 가까운 색온도(약 5000K)의 조명을 배치하면 도움이 됩니다.\n\n같은 공간 안에서 색온도가 제각각이면 어수선해 보이므로, 거실·주방·침실의 색온도를 비슷하게 맞추거나 공간별로 명확히 구분하는 것이 좋습니다.'
+    },
+    {
+      id: randomUUID(), tag: '수납 팁', title: '침실이 좁아 보인다면? 수납부터 다시 보세요',
+      summary: '큰 공사 없이도 침실을 넓어 보이게 만드는 수납 정리 아이디어를 단계별로 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-22',
+      source_name: '셀프 인테리어 기초', source_url: 'https://quax-interior.com/increase-bedroom-storage/',
+      body: '침실이 좁아 보이는 이유는 실제 면적보다, 물건이 쌓여 어수선해 보이는 경우가 더 많습니다. 셀프 인테리어로 수납을 개선하기 전에는, 먼저 침실에서 무엇이 가장 많이 쌓이는지부터 파악하는 것이 순서입니다.\n\n옷이 많다면 옷걸이 수납이 부족한 경우가 많고, 침구나 계절 용품이 많다면 침대 아래 공간을 활용하는 편이 효율적입니다. 책이나 잡화가 많다면 벽면 선반이나 서랍형 수납이 더 잘 맞습니다.\n\n한 번에 침실 전체를 바꾸기보다, 가장 불편한 지점 하나부터 개선하는 방식이 예산도 아끼고 실패 확률도 낮출 수 있습니다. 보기 좋은 배치보다 꺼내기 쉽고 다시 넣기 쉬운 구조를 우선하는 것이 실사용 측면에서 훨씬 만족도가 높습니다.\n\n다만 수납 가구를 늘릴 때는 통로나 문이 열리는 공간이 좁아지지 않는지 미리 확인해야, 오히려 사용성이 떨어지는 상황을 피할 수 있습니다.'
+    },
+    {
+      id: randomUUID(), tag: '하자보수 가이드', title: '인테리어 완공 후, 이 부분은 꼭 체크하세요',
+      summary: '공정별로 하자가 잘 생기는 지점을 정리했습니다. 완공 직후 이 체크리스트로 집중 점검해보세요.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-21',
+      source_name: '오늘의집 라이프스타일 매거진', source_url: 'https://ohou.se/advices/2327',
+      body: '인테리어 공사가 끝난 직후에는, 공정별로 하자가 잘 생기는 곳을 정리해둔 체크리스트를 기준으로 하나씩 확인하는 것이 안전합니다. 특히 배관이나 설비를 이동한 경우라면 더욱 꼼꼼한 점검이 필요합니다.\n\n대면형 주방처럼 수도관·배관을 이동했다면, 설비 후 물을 30분에서 1시간 정도 틀어놓고 녹물이 나오지는 않는지, 물이 잘 나오는지 확인해야 합니다. 그다음엔 배수도 함께 확인해야 하는데, 싱크대 이동으로 배관이 길어지면 기울기가 완만해져 물빠짐이 잘 안 되는 하자가 생기기 쉽기 때문입니다.\n\n새시나 문짝은 가장 먼저 여닫힘 상태를 확인하는 것이 좋습니다. 틀어진 곳 없이 수평·수직이 잘 맞는지도 함께 점검해야 합니다.\n\n공정이 끝날 때마다 그 부분을 바로바로 점검하는 습관을 들이면, 나중에 문제가 누적되어 원인을 찾기 어려워지는 상황을 예방할 수 있습니다.'
+    },
+    {
+      id: randomUUID(), tag: '계약 체크리스트', title: '인테리어 계약 전, 후회 없는 체크리스트',
+      summary: '견적 내역부터 자재 등급, 하자보수 조항까지 — 계약 전 반드시 확인해야 할 항목을 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-19',
+      source_name: '인테리어 가이드', source_url: 'https://interiorguide.co.kr/267/',
+      body: '인테리어 공사 계약을 서두르면 예산 초과, 하자 발생, 책임 소재 불분명 같은 문제로 이어지기 쉽습니다. 실제로 소비자원에 접수되는 민원 중 상당수가 인테리어 관련 분쟁일 정도로, 계약 전 체계적인 점검이 중요합니다.\n\n견적서에는 철거·설비·마감재·가구 제작 및 운송비·폐기물 처리 비용까지 모두 기재되어 있는지 확인해야 합니다. "마루 시공"처럼 뭉뚱그린 표현보다, 구체적인 브랜드와 규격이 적혀 있어야 나중에 저가 자재로 바뀌는 상황을 예방할 수 있습니다.\n\n"추후 발생 가능"처럼 모호한 항목은 삭제를 요청하거나, 발생 기준을 명확히 정해두는 것이 좋습니다. 계약금은 전체 비용의 10~20% 정도가 일반적이며, 착수금·중도금·잔금으로 나눠 지급하는 구조가 안전합니다.\n\n업체를 고를 때는 가격보다 신뢰성과 시공 품질이 우선입니다. 사업자 등록증과 보험 가입 여부, 실제 시공 사례를 함께 확인하는 것이 좋습니다.'
+    },
+    {
+      id: randomUUID(), tag: '견적 가이드', title: '여러 인테리어 견적, 이렇게 비교하세요',
+      summary: '같은 조건으로 여러 업체에 견적을 요청해야 금액 차이의 이유가 명확해집니다. 견적 비교의 핵심 포인트를 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-17',
+      source_name: '모모랩', source_url: 'https://momolabdesign.com/story/how-to-compare-estimates',
+      body: '여러 업체의 견적을 비교할 때 가장 중요한 원칙은, 원하는 공사 범위와 자재 등급, 포함 항목(철거·폐기물·청소 등)을 한 장으로 정리해 모든 업체에 동일하게 전달하는 것입니다. 같은 조건에서 나온 견적이라야 어느 업체가 무엇을 더 넣었고 뺐는지가 명확히 드러나고, 금액 차이의 이유도 설명이 가능해집니다.\n\n견적서를 볼 때는 공종별로 자재비·인건비·수량이 나뉘어 있는지, 혹은 "일식"으로 뭉쳐 있지는 않은지부터 확인해야 합니다. 자재 정보도 브랜드·품번·등급·규격과 수량까지 구체적으로 적혀 있는지 봐야 합니다.\n\n하자보증 기간은 법으로 일률적으로 정해진 것이 아니라 계약서에 적힌 대로 적용됩니다. 참고로 건설산업기본법상 하자담보책임기간은 공종에 따라 다른데, 도배·도장·타일·방수·창호 등은 보통 1년, 급배수·냉난방 설비는 2년 정도로 정해져 있습니다.\n\n지급 조건도 비교 포인트입니다. 선금 비중이 지나치게 크지 않은지, 공정 진행에 맞춰 나눠 지급하는 구조인지 확인하는 것이 안전합니다.'
+    },
+    {
+      id: randomUUID(), tag: '서재 인테리어', title: '2026년 홈오피스, 일과 휴식 분리가 핵심입니다',
+      summary: '재택근무가 일상이 되면서 홈오피스는 선택이 아닌 필수 공간이 됐습니다. 업무 집중도를 높이는 공간 구성법을 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-27',
+      source_name: '인테리어꿀팁', source_url: 'https://www.intip.kr/posts/home-office-setup',
+      body: '재택근무와 자기계발 시간이 늘면서, 서재나 홈오피스는 이제 선택이 아니라 필수 공간으로 자리잡고 있습니다. 침실 한쪽에서 불편하게 노트북을 펴던 시절과 달리, 최근에는 집에서도 사무실 못지않게 집중할 수 있는 별도 공간을 마련하는 경우가 늘고 있습니다.\n\n홈오피스 구성의 첫 번째 원칙은 "일하는 공간"과 "쉬는 공간"을 명확히 분리하는 것입니다. 별도의 방이 있다면 가장 좋지만, 여의치 않다면 파티션이나 책장으로 구역만 나눠줘도 업무 모드로 전환하는 데 도움이 됩니다.\n\n조명은 전체 조명과 책상 위를 비추는 부분 조명을 함께 쓰는 것이 좋습니다. 색온도도 상황에 따라 다르게 맞추는 게 효과적인데, 집중이 필요한 업무 시간에는 하얀빛(4000~6000K)이, 휴식이나 아이디어가 필요할 때는 노란빛(2700~3000K)이 더 잘 맞습니다.\n\n모니터 높이는 시선이 약간 아래(15~20도)를 향하도록 맞추는 것이 목 건강에 좋습니다. 책상 위는 필요한 물건만 두고 나머지는 정리해두면, 시각적인 산만함이 줄어 집중력 유지에도 도움이 됩니다.'
+    },
+    {
+      id: randomUUID(), tag: '발코니 활용', title: '발코니 확장, 이 2가지만은 꼭 확인하세요',
+      summary: '발코니를 실내 공간으로 확장할 때, 춥지 않게 시공하려면 창호 교체와 바닥 단열을 제대로 챙겨야 합니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-26',
+      source_name: '오늘의집 라이프스타일 매거진', source_url: 'https://ohou.se/advices/2191',
+      body: '좁은 집이 답답하게 느껴질 때 많이 고려하는 것이 발코니 확장입니다. 다만 발코니 확장은 단순히 면적만 넓히는 공사가 아니라, 여러 공정이 함께 필요한 시공이라 미리 알아두면 좋은 부분들이 있습니다.\n\n발코니 확장을 고민할 때 가장 많이 나오는 질문이 "확장하면 춥지 않을까"입니다. 발코니가 사라지면 외부와 실내가 더 직접 맞닿게 되니 당연한 걱정인데, 핵심은 창호와 바닥 단열을 제대로 하는지에 달려 있습니다.\n\n먼저 기존에 단창이었던 발코니 새시는 반드시 이중창으로 교체해야 합니다. 그다음으로 중요한 것이 바닥 단열입니다. 기존 발코니 바닥을 철거한 뒤 보일러를 깔기 전에 단열재를 제대로 시공해야 하는데, 비용을 아끼려고 기존 타일을 뜯지 않고 그 위에 덧방 시공을 하는 경우 단열재가 얇아져 웃풍이나 결로가 생기기 쉽습니다.\n\n확장한 발코니는 거실 연장 공간으로 쓰기도 하고, 최근에는 홈카페나 미니 정원, 작업실처럼 개성 있는 공간으로 꾸미는 사례도 늘고 있습니다. 다만 참고로 발코니 확장은 법적으로 1.5m까지 가능하지만, 베란다는 위아래 층의 면적 차이로 생긴 공간이라 성격이 달라 확장이 불가능하다는 점은 헷갈리지 않아야 합니다.'
+    },
+    {
+      id: randomUUID(), tag: '현관 인테리어', title: '현관 신발장, 이 4가지 스타일 중 골라보세요',
+      summary: '붙박이형·하부 띄움형·거울 도어형·오픈 선반형 — 현관 폭과 신발 수에 맞는 신발장 스타일을 정리했습니다.',
+      thumb_emoji: '', thumb_color: '', published_at: '2026-08-28',
+      source_name: '한샘 스토어', source_url: 'https://store.hanssem.com/tips/info/%ED%98%84%EA%B4%80-%EC%8B%A0%EB%B0%9C%EC%9E%A5-%EC%9D%B8%ED%85%8C%EB%A6%AC%EC%96%B4-%EC%B6%94%EC%B2%9C/',
+      body: '현관 신발장은 크게 붙박이형, 하부 띄움형, 거울 도어형, 오픈 선반형 네 가지로 나눠볼 수 있습니다. 각각 장단점이 달라서, 현관 폭과 보유한 신발 수에 따라 적합한 스타일이 달라집니다.\n\n붙박이형은 수납량을 가장 많이 확보할 수 있어 신발이 많은 가정에 적합합니다. 하부 띄움형은 신발장 아래를 바닥에서 띄워 시공하는 방식으로, 자주 신는 신발을 빠르게 꺼내고 넣기 편하다는 장점이 있습니다.\n\n좁은 현관이라면 밝은 컬러의 슬림형 신발장이 잘 어울립니다. 화이트나 라이트 그레이, 혹은 거울 도어를 활용하면 신발장이 차지하는 시각적 존재감이 줄어들어 공간이 넓어 보이는 효과가 있습니다. 다만 수납할 신발이 많다면, 내부 선반 조절이 가능한지 부츠나 우산을 넣을 별도 공간이 있는지도 함께 확인하는 것이 좋습니다.\n\n시공 전에는 보유한 신발 수와 신발 높이, 현관 치수, 중문 설치 여부를 먼저 확인해야 합니다. 신발을 운동화·구두·부츠처럼 종류별로 분류해두면, 필요한 선반 간격과 하부 오픈 공간을 정하기가 한결 수월해집니다.'
+    }
+  ];
+  const stmt = db.prepare(`INSERT INTO columns (id, tag, title, summary, body, thumb_emoji, thumb_color, published_at, sort_order, source_name, source_url)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  defaults.forEach((c, i) => stmt.run(c.id, c.tag, c.title, c.summary, c.body, c.thumb_emoji, c.thumb_color, c.published_at, i, c.source_name, c.source_url));
+}
+seedDefaultColumnsIfEmpty();
+
+// Notion 텍스트 블록들을 간단한 개행 텍스트로 변환(리치텍스트의 plain_text만 이어붙임)
+function notionBlocksToPlainText(blocks) {
+  return blocks.map(b => {
+    const type = b.type;
+    const rich = (b[type] && b[type].rich_text) || [];
+    const text = rich.map(t => t.plain_text).join('');
+    if (type === 'heading_1' || type === 'heading_2' || type === 'heading_3') return '\n' + text + '\n';
+    return text;
+  }).filter(Boolean).join('\n\n');
+}
+
+// Notion 데이터베이스를 조회해 columns 테이블에 upsert. 실패해도 서버 기동에는 영향 없음(폴백 유지).
+async function syncColumnsFromNotion() {
+  if (!NOTION_API_KEY || !NOTION_DATABASE_ID) {
+    return { synced: false, reason: 'NOTION_API_KEY 또는 NOTION_DATABASE_ID 환경변수가 설정되지 않았습니다' };
+  }
+  const headers = { 'Authorization': `Bearer ${NOTION_API_KEY}`, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json' };
+  const dbRes = await fetch(`https://api.notion.com/v1/databases/${NOTION_DATABASE_ID}/query`, { method: 'POST', headers, body: JSON.stringify({ page_size: 50 }) });
+  if (!dbRes.ok) throw new Error(`Notion 데이터베이스 조회 실패 (${dbRes.status})`);
+  const dbJson = await dbRes.json();
+  const pages = dbJson.results || [];
+  let syncedCount = 0;
+  for (const page of pages) {
+    const props = page.properties || {};
+    const getTitle = (p) => (p && p.title || []).map(t => t.plain_text).join('') || '';
+    const getRichText = (p) => (p && p.rich_text || []).map(t => t.plain_text).join('') || '';
+    const getSelect = (p) => (p && p.select && p.select.name) || '';
+    const title = getTitle(props['Title'] || props['제목']);
+    if (!title) continue; // 제목 없는 항목은 건너뜀
+    const tag = getSelect(props['Tag'] || props['태그']) || '인테리어';
+    const summary = getRichText(props['Summary'] || props['요약']);
+    const emoji = getRichText(props['Emoji'] || props['이모지']) || '🏠';
+    // 본문(블록) 조회
+    const blocksRes = await fetch(`https://api.notion.com/v1/blocks/${page.id}/children?page_size=100`, { headers });
+    const blocksJson = blocksRes.ok ? await blocksRes.json() : { results: [] };
+    const body = notionBlocksToPlainText(blocksJson.results || []) || summary;
+    const publishedAt = (page.created_time || '').slice(0, 10);
+    const existing = db.prepare('SELECT id FROM columns WHERE notion_page_id=?').get(page.id);
+    if (existing) {
+      db.prepare(`UPDATE columns SET tag=?, title=?, summary=?, body=?, thumb_emoji=?, updated_at=datetime('now') WHERE notion_page_id=?`)
+        .run(tag, title, summary, body, emoji, page.id);
+    } else {
+      db.prepare(`INSERT INTO columns (id, notion_page_id, tag, title, summary, body, thumb_emoji, thumb_color, published_at, sort_order)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .run(randomUUID(), page.id, tag, title, summary, body, emoji, 'linear-gradient(135deg,#8FA890,#4A7BA6)', publishedAt, -Date.now());
+    }
+    syncedCount++;
+  }
+  return { synced: true, count: syncedCount };
+}
+
+// 칼럼 목록(요약) — 최신순
+app.get('/api/columns', (req, res) => {
+  const list = db.prepare('SELECT id, tag, title, summary, thumb_emoji, thumb_color, published_at FROM columns ORDER BY sort_order ASC, published_at DESC').all();
+  res.json({ success: true, data: list });
+});
+
+// 칼럼 상세(본문 포함)
+app.get('/api/columns/:id', (req, res) => {
+  const col = db.prepare('SELECT * FROM columns WHERE id=?').get(req.params.id);
+  if (!col) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '칼럼을 찾을 수 없습니다' } });
+  res.json({ success: true, data: col });
+});
+
+// 관리자 수동 동기화 트리거(Notion에 새 글 쓴 뒤 즉시 반영하고 싶을 때 호출)
+app.post('/api/admin/columns/sync-notion', adminAuthRequired(), async (req, res) => {
+  try {
+    const result = await syncColumnsFromNotion();
+    res.json({ success: true, data: result });
+  } catch (e) {
+    res.status(502).json({ success: false, error: { code: 'NOTION_SYNC_FAILED', message: e.message } });
+  }
+});
+
+// ===== 6. 관리자 대시보드 카운트 =====
+// 결함수정(전체 재검증 중 발견): dispute/abuse/inspect/settleHold/tier가 전부 하드코딩된 0이었음
+// → 각각 실제 테이블에서 미처리 건수를 집계하도록 수정
+app.get('/api/admin/dashboard/counts', adminAuthRequired(), (req, res) => {
+  // 결함정리(사용자요청 — 광고를 관리자 승인 없이 "정해진 틀" 자동검증 방식으로 전면 개편):
+  // 더 이상 관리자가 처리해야 할 "광고승인 대기" 큐 자체가 없어져서 이 카운트를 제거했다.
+  const partners = db.prepare("SELECT COUNT(*) c FROM partners WHERE verify_status='pending'").get().c;
+  const dispute = db.prepare("SELECT COUNT(*) c FROM disputes WHERE status IN ('filed','ai_judged')").get().c;
+  // 결함정리(2026-09): "완공검수 승인" 화면이 (AI 자동검수가 아니라) 포트폴리오 게시 승인 대기열을
+  // 보여주도록 바뀌었는데, 이 카운트는 여전히 무관한 inspections(감리) unpaid 건수를 세고 있었음
+  const inspect = db.prepare("SELECT COUNT(*) c FROM portfolio_projects WHERE status='pending'").get().c;
+  // 신규(사용자요청 — 감리 처리 대기열): 사진감리·전문가감리 중 사진이 도착해 사람 답변을 기다리는 건 카운트
+  const inspectionQueue = db.prepare("SELECT COUNT(*) c FROM inspections WHERE plan IN ('photo','expert') AND status='in_review'").get().c;
+  const settleHold = db.prepare("SELECT COUNT(*) c FROM settlements WHERE status='hold'").get().c;
+  // 결함정리(2026-09, 관리자 콘솔 실연동): 조치(경고/정지) 완료된 건까지 계속 카운트되던 것을
+  // buildAbuseQueue()(실제 대기열 화면과 동일한 기준 — 이미 조치된 노쇼는 제외)로 통일
+  const abuseCandidates = buildAbuseQueue().length;
+  const tier = db.prepare("SELECT COUNT(*) c FROM tier_upgrades WHERE status='admin_review'").get().c;
+  // 신규(강남언니 벤치마킹 검토 후속 — 0단계): 답변 대기 중인 1:1 문의 건수를 관리자 대시보드에 노출
+  const supportOpen = db.prepare("SELECT COUNT(*) c FROM support_inquiries WHERE status='open'").get().c;
+  res.json({ success: true, data: { partners, dispute, abuse: abuseCandidates, inspect, inspectionQueue, settleHold, tier, supportOpen } });
+});
+
+// 신규(2026-09, 전수조사 발견 — 운영콘솔 "실시간 현황"): loadTodayStats()가
+// { newSignups:12, contracts:4, feeRevenue:1240000 }을 완전히 하드코딩해서 항상 똑같은 숫자만
+// 보여주고 있었다(⚡MVP-SWITCH 표시는 있었으나 실제 전환이 안 된 채 방치). 실제 DB 집계로 교체.
+app.get('/api/admin/today-stats', adminAuthRequired(), (req, res) => {
+  const newSignups = db.prepare("SELECT COUNT(*) c FROM users WHERE date(created_at)=date('now')").get().c;
+  const contracts = db.prepare("SELECT COUNT(*) c FROM contracts WHERE date(confirmed_at)=date('now')").get().c;
+  const feeRevenue = Math.round(db.prepare("SELECT COALESCE(SUM(amount*fee_rate),0) s FROM settlements WHERE date(created_at)=date('now')").get().s);
+  const disputeTotal = db.prepare("SELECT COUNT(*) c FROM disputes").get().c;
+  const disputeResolved = db.prepare("SELECT COUNT(*) c FROM disputes WHERE status='resolved'").get().c;
+  res.json({ success: true, data: { newSignups, contracts, feeRevenue, disputeTotal, disputeResolved } });
+});
+
+// 신규(2026-09, 전수조사 발견 — 운영콘솔 "이상 지표 알림"): notifyAdmin()이 그 브라우저 탭에서 일어난
+// 일만 로컬 배열(window.ADMIN_ALERTS)에 쌓아서, 다른 세션에서 admin으로 들어온 관리자에게는 항상 빈
+// 목록으로 보였다. 실제 DB에서 "지금 조치가 필요한" 최근 신호를 모아 대체.
+app.get('/api/admin/alerts/recent', adminAuthRequired(), (req, res) => {
+  const items = [];
+  db.prepare("SELECT id, business_name, created_at FROM partners WHERE verify_status='pending' ORDER BY created_at DESC LIMIT 5").all()
+    .forEach(p => items.push({ id: 'partner-' + p.id, type: '신규 업체 등록 신청', message: p.business_name, severity: 'info', at: p.created_at, target: 'admin-pending-partners' }));
+  db.prepare("SELECT id, plan, score, grade, paid_at FROM inspections WHERE grade='문제' ORDER BY paid_at DESC LIMIT 5").all()
+    .forEach(i => items.push({ id: 'insp-' + i.id, type: 'AI감리 문제판정', message: (i.plan||'') + ' · 점수 ' + (i.score != null ? i.score : '-'), severity: 'danger', at: i.paid_at, target: 'admin-inspection-queue' }));
+  db.prepare("SELECT id, type, filed_at FROM disputes WHERE status IN ('filed','ai_judged') ORDER BY filed_at DESC LIMIT 5").all()
+    .forEach(d => items.push({ id: 'dispute-' + d.id, type: '분쟁 신고 접수', message: (DISPUTE_TYPES[d.type] && DISPUTE_TYPES[d.type].label) || d.type, severity: 'danger', at: d.filed_at, target: 'admin-dispute-queue' }));
+  db.prepare("SELECT id, hold_reason, created_at FROM settlements WHERE status='hold' ORDER BY created_at DESC LIMIT 5").all()
+    .forEach(s => items.push({ id: 'settle-' + s.id, type: '정산 보류', message: s.hold_reason || '보류 사유 미상', severity: 'warn', at: s.created_at, target: 'admin-settle' }));
+  items.sort((a, b) => String(b.at||'').localeCompare(String(a.at||'')));
+  res.json({ success: true, data: items.slice(0, 10) });
+});
+
+// ===== 1-5(팀장 지시): API 문서 자동화(Swagger) — /api-docs 에서 43개 전체 확인·직접 테스트 가능 =====
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openapiSpec));
+
+// ===== 8-1. PortOne 휴대폰 본인확인 =====
+// prepare는 브라우저 인증창에 필요한 공개 식별값만 반환하고, API Secret은 서버에서만 사용한다.
+app.post('/api/identity-verifications/prepare', partnerSignupRequired, socialAuthLimiter, (req, res) => {
+  const storeId = process.env.PORTONE_STORE_ID;
+  const channelKey = process.env.PORTONE_IDENTITY_CHANNEL_KEY;
+  if (!storeId || !channelKey || !process.env.PORTONE_API_SECRET) {
+    return res.status(503).json({ success:false, error:{ code:'IDENTITY_NOT_CONFIGURED', message:'휴대폰 본인확인 서비스 계약 및 운영키 설정이 필요합니다' } });
+  }
+  const id = randomUUID();
+  const providerVerificationId = 'roomer-' + randomUUID();
+  db.prepare(`INSERT INTO partner_identity_verifications
+    (id, login_id, provider, provider_verification_id, status) VALUES (?,?,?,?, 'prepared')`)
+    .run(id, req.partnerSignup.loginId, 'portone', providerVerificationId);
+  res.json({ success:true, data:{ verificationId:providerVerificationId, storeId, channelKey } });
+});
+
+app.post('/api/identity-verifications/confirm', partnerSignupRequired, socialAuthLimiter, async (req, res) => {
+  const verificationId = String(req.body.verificationId || '').trim();
+  const row = db.prepare(`SELECT * FROM partner_identity_verifications
+    WHERE provider_verification_id=? AND login_id=?`).get(verificationId, req.partnerSignup.loginId);
+  if (!row) return res.status(404).json({ success:false, error:{ code:'IDENTITY_REQUEST_NOT_FOUND', message:'본인확인 요청을 찾을 수 없습니다' } });
+  if (row.status === 'verified') return res.status(409).json({ success:false, error:{ code:'IDENTITY_ALREADY_VERIFIED', message:'이미 처리된 본인확인 요청입니다' } });
+  try {
+    const response = await fetch('https://api.portone.io/identity-verifications/' + encodeURIComponent(verificationId), {
+      headers:{ Authorization:'PortOne ' + process.env.PORTONE_API_SECRET }
+    });
+    if (!response.ok) throw Object.assign(new Error('본인확인 결과를 조회할 수 없습니다'), { code:'IDENTITY_UPSTREAM_ERROR', status:502 });
+    const body = await response.json();
+    if (body.status !== 'VERIFIED') return res.status(400).json({ success:false, error:{ code:'IDENTITY_NOT_VERIFIED', message:'휴대폰 본인확인이 완료되지 않았습니다' } });
+    const customer = body.verifiedCustomer || body.customer || {};
+    const applicantName = String(customer.name || '').trim();
+    const phone = String(customer.phoneNumber || customer.phone || '').replace(/\D/g, '');
+    const ci = String(customer.ci || customer.id || customer.uniqueId || '');
+    if (!applicantName || !/^01[016789]\d{7,8}$/.test(phone) || !ci) throw Object.assign(new Error('본인확인 결과의 필수정보가 누락되었습니다'), { code:'IDENTITY_RESULT_INCOMPLETE', status:502 });
+    const ciHash = createHmac('sha256', JWT_SECRET).update(ci).digest('hex');
+    db.prepare(`UPDATE partner_identity_verifications SET applicant_name=?, phone=?, ci_hash=?, status='verified', verified_at=datetime('now') WHERE id=?`)
+      .run(db.encryptPii(applicantName), db.encryptPii(phone), ciHash, row.id);
+    const verificationToken = jwt.sign({ role:'partner_identity_verification', verificationId:row.id, loginId:req.partnerSignup.loginId }, JWT_SECRET, { expiresIn:'30m' });
+    res.json({ success:true, data:{ verified:true, applicantName, phone, verificationToken } });
+  } catch (error) {
+    console.error('휴대폰 본인확인 조회 실패:', error.message);
+    res.status(error.status || 500).json({ success:false, error:{ code:error.code || 'IDENTITY_CONFIRM_ERROR', message:error.message || '본인확인 처리 중 오류가 발생했습니다' } });
+  }
+});
+
+// ===== 9. 국세청 사업자등록정보 진위확인 =====
+// 브라우저에는 공공데이터 서비스키를 노출하지 않고 ROOMER 서버가 국세청 API를 대리 호출한다.
+async function verifyBusinessWithNts({ bizNo, startDate, ceoName, businessName }) {
+  const serviceKey = process.env.NTS_SERVICE_KEY;
+  if (!serviceKey) {
+    const error = new Error('국세청 사업자 검증 서비스키가 아직 설정되지 않았습니다');
+    error.code = 'NTS_NOT_CONFIGURED'; error.status = 503; throw error;
+  }
+  const cleanBizNo = String(bizNo || '').replace(/\D/g, '');
+  const cleanStartDate = String(startDate || '').replace(/\D/g, '');
+  const payload = { b_no: cleanBizNo, start_dt: cleanStartDate, p_nm: String(ceoName || '').trim() };
+  if (businessName) payload.b_nm = String(businessName).trim();
+  const base = 'https://api.odcloud.kr/api/nts-businessman/v1';
+  const query = '?serviceKey=' + encodeURIComponent(serviceKey);
+  const [validateResponse, statusResponse] = await Promise.all([
+    fetch(base + '/validate' + query, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ businesses:[payload] }) }),
+    fetch(base + '/status' + query, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ b_no:[cleanBizNo] }) })
+  ]);
+  if (!validateResponse.ok || !statusResponse.ok) {
+    const error = new Error('국세청 조회가 지연되고 있습니다. 잠시 후 다시 시도해주세요');
+    error.code = 'NTS_UPSTREAM_ERROR'; error.status = 502; throw error;
+  }
+  const validateBody = await validateResponse.json();
+  const statusBody = await statusResponse.json();
+  const validation = validateBody && validateBody.data && validateBody.data[0];
+  const status = statusBody && statusBody.data && statusBody.data[0];
+  const authentic = !!validation && validation.valid === '01';
+  const active = !!status && status.b_stt_cd === '01';
+  return { authentic, active, status: status ? status.b_stt : null, taxType: status ? status.tax_type : null, validMessage: validation ? validation.valid_msg : null };
+}
+
+function detectStoredFile(file, allowPdf) {
+  const image = detectPortfolioImage(file);
+  if (image) return image;
+  if (allowPdf && file.data.length >= 5 && file.data.slice(0, 5).toString() === '%PDF-') return { mime:'application/pdf', ext:'pdf' };
+  return null;
+}
+
+function normalizeUploadFilename(value) {
+  return String(value || 'file').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
+}
+
+function requireSignupFile(fileId, loginId, purpose) {
+  if (!isNonEmptyString(fileId, 100)) return null;
+  return db.prepare(`SELECT * FROM stored_files WHERE id=? AND owner_type='partner_signup' AND owner_id=?
+    AND purpose=? AND deleted_at IS NULL`).get(fileId, loginId, purpose);
+}
+
+const signupFileUpload = express.raw({ type:'multipart/form-data', limit:'12mb' });
+app.post('/api/partner-signup/files', partnerSignupRequired, portfolioUploadLimiter, signupFileUpload, async (req, res, next) => {
+  let parsed;
+  try { parsed = parseMultipartBody(req); } catch (_) { return validationError(res, 'multipart/form-data 파일 업로드가 필요합니다'); }
+  const purpose = String(parsed.fields.purpose || '');
+  const allowedPurposes = new Set(['business_registration','office_exterior','office_interior','authorization']);
+  if (!allowedPurposes.has(purpose)) return validationError(res, '허용되지 않은 증빙자료 종류입니다');
+  const file = parsed.files.find(item => item.field === 'file');
+  if (!file || !file.data.length) return validationError(res, '업로드할 파일을 선택해주세요');
+  if (file.data.length > 10 * 1024 * 1024) return validationError(res, '파일은 최대 10MB까지 업로드할 수 있습니다');
+  const detected = detectStoredFile(file, purpose === 'authorization' || purpose === 'business_registration');
+  if (!detected || file.declaredType !== detected.mime) return validationError(res, 'JPG, PNG, WebP 또는 허용된 PDF 파일만 업로드할 수 있습니다');
+  const id = randomUUID();
+  const key = `private/partner-signup/${encodeURIComponent(req.partnerSignup.loginId)}/${purpose}/${id}.${detected.ext}`;
+  try {
+    await objectStorage.putObject({ key, body:file.data, contentType:detected.mime, isPublic:false });
+    db.prepare(`INSERT INTO stored_files (id,storage_key,owner_type,owner_id,purpose,original_name,mime_type,size_bytes,visibility)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(id,key,'partner_signup',req.partnerSignup.loginId,purpose,normalizeUploadFilename(file.filename),detected.mime,file.data.length,'private');
+    res.status(201).json({ success:true, data:{ fileId:id, purpose, originalName:normalizeUploadFilename(file.filename), mimeType:detected.mime, sizeBytes:file.data.length } });
+  } catch (error) { next(error); }
+});
+
+const contractFileUpload = express.raw({ type:'multipart/form-data', limit:'12mb' });
+app.post('/api/contracts/:contractId/files', authRequired, portfolioUploadLimiter, contractFileUpload, async (req,res,next) => {
+  const contract=db.prepare('SELECT * FROM contracts WHERE id=?').get(req.params.contractId);
+  if (!contract || (contract.consumer_id!==req.user.sub && contract.partner_id!==req.user.sub)) return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'해당 계약의 파일을 올릴 권한이 없습니다'}});
+  let parsed;try{parsed=parseMultipartBody(req);}catch(_){return validationError(res,'multipart/form-data 파일 업로드가 필요합니다');}
+  const purpose=String(parsed.fields.purpose||'');
+  if (!['defect','process','inspection'].includes(purpose)) return validationError(res,'허용되지 않은 계약자료 종류입니다');
+  const file=parsed.files.find(item=>item.field==='file');
+  if (!file||!file.data.length||file.data.length>10*1024*1024) return validationError(res,'사진은 한 장당 최대 10MB까지 업로드할 수 있습니다');
+  const detected=detectStoredFile(file,false);
+  if (!detected||file.declaredType!==detected.mime) return validationError(res,'JPG, PNG, WebP 사진만 업로드할 수 있습니다');
+  const id=randomUUID(),key=`private/contracts/${contract.id}/${purpose}/${id}.${detected.ext}`;
+  try{
+    await objectStorage.putObject({key,body:file.data,contentType:detected.mime,isPublic:false});
+    db.prepare(`INSERT INTO stored_files (id,storage_key,owner_type,owner_id,purpose,original_name,mime_type,size_bytes,visibility)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(id,key,'contract',contract.id,purpose,normalizeUploadFilename(file.filename),detected.mime,file.data.length,'private');
+    res.status(201).json({success:true,data:{fileId:id,purpose,mimeType:detected.mime,sizeBytes:file.data.length}});
+  }catch(error){next(error);}
+});
+
+app.get('/api/files/:fileId', authRequired, async (req,res,next) => {
+  const file=db.prepare("SELECT * FROM stored_files WHERE id=? AND deleted_at IS NULL").get(req.params.fileId);
+  if (!file) return res.status(404).json({success:false,error:{code:'NOT_FOUND',message:'파일을 찾을 수 없습니다'}});
+  let allowed=file.visibility==='public';
+  if (!allowed&&file.owner_type==='contract') {
+    const contract=db.prepare('SELECT * FROM contracts WHERE id=?').get(file.owner_id);
+    allowed=!!contract&&(contract.consumer_id===req.user.sub||contract.partner_id===req.user.sub);
+  }
+  if (!allowed) return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'파일을 열람할 권한이 없습니다'}});
+  try{const stored=await objectStorage.getObject(file.storage_key);res.set('Content-Type',file.mime_type);res.set('Cache-Control','private,no-store');stored.Body.pipe(res);}catch(error){next(error);}
+});
+app.post('/api/verify/business-number', socialAuthLimiter, partnerSignupRequired, async (req, res) => {
+  const { bizNo, startDate, ceoName, businessName } = req.body;
+  const cleanBizNo = String(bizNo || '').replace(/\D/g, '');
+  const cleanStartDate = String(startDate || '').replace(/\D/g, '');
+  if (!/^\d{10}$/.test(cleanBizNo)) return validationError(res, '사업자등록번호 10자리가 필요합니다');
+  if (!/^\d{8}$/.test(cleanStartDate)) return validationError(res, '개업일자 8자리가 필요합니다');
+  if (!isNonEmptyString(ceoName, 30)) return validationError(res, '대표자명이 필요합니다');
+  try {
+    const nts = await verifyBusinessWithNts({ bizNo:cleanBizNo, startDate:cleanStartDate, ceoName, businessName });
+    if (!nts.authentic || !nts.active) {
+      return res.json({ success:true, data:{ valid:false, authentic:nts.authentic, active:nts.active, status:nts.status, message:!nts.authentic?'입력 정보가 국세청 등록정보와 일치하지 않습니다.':'현재 계속사업자 상태가 아닙니다.' } });
+    }
+    const verificationToken = jwt.sign({ role:'partner_business_verification', bizNo:cleanBizNo, ceoName:String(ceoName).trim(), businessStatus:nts.status, taxType:nts.taxType, verifiedAt:new Date().toISOString() }, JWT_SECRET, { expiresIn:'30m' });
+    res.json({ success:true, data:{ valid:true, authentic:true, active:true, status:nts.status, taxType:nts.taxType, verificationToken } });
+  } catch (error) {
+    console.error('국세청 사업자 검증 실패:', error.message);
+    res.status(error.status || 500).json({ success:false, error:{ code:error.code || 'NTS_VERIFY_ERROR', message:error.message || '사업자 검증 중 오류가 발생했습니다' } });
+  }
+});
+// 구버전 화면 호환: 대표자명 버튼도 동일한 국세청 진위확인을 사용한다.
+app.post('/api/verify/ceo-name', socialAuthLimiter, partnerSignupRequired, async (req, res) => {
+  const { bizNo, startDate, ceoName, businessName } = req.body;
+  try {
+    const nts = await verifyBusinessWithNts({ bizNo, startDate, ceoName, businessName });
+    res.json({ success:true, data:{ match:nts.authentic && nts.active, status:nts.status } });
+  } catch (error) {
+    res.status(error.status || 500).json({ success:false, error:{ code:error.code || 'NTS_VERIFY_ERROR', message:error.message } });
+  }
+});
+
+// ===== 10. 정산 내보내기 =====
+app.get('/api/settlements/export', authRequired, (req, res) => {
+  if(req.user.role !== 'partner') return res.status(403).json({ success:false, error:{code:'FORBIDDEN', message:'업체 계정만 내보낼 수 있습니다'} });
+  const rows = db.prepare('SELECT * FROM settlements WHERE partner_id=?').all(req.user.sub);
+  res.setHeader('Content-Disposition', 'attachment; filename="settlements.json"');
+  res.json({ success:true, data: rows });
+});
+
+// ===== 11. 캐시 적립 =====
+// 결함정리(2026-09, 전수조사 발견 — 삭제): 이 라우트는 증빙 없이 클라이언트가 부른 금액만큼
+// 무조건 적립해주는 자기신고형 API였다(blockInProduction으로 실서비스에서는 막혀있었음). 이 라우트의
+// 유일한 호출부였던 "완공 리뷰 작성 시 캐시 적립" 기능 자체를 사용자 요청으로 완전히 삭제했으므로
+// (openReview/renderReview/submitReview 등, 실제로는 어디서도 진입할 수 없던 죽은 화면이었음)
+// 이 라우트도 함께 제거한다. 소비자 포인트 충전은 위 5-1b(POST /api/points/topup)의 실제 토스페이먼츠
+// 결제로만 이루어진다.
+
+// ===== 12. 업체 출금 =====
+app.post('/api/withdrawals', authRequired, (req, res) => {
+  if(req.user.role !== 'partner') return res.status(403).json({ success:false, error:{code:'FORBIDDEN', message:'업체 계정만 출금할 수 있습니다'} });
+  const { amount, bankAccount } = req.body;
+  if(!isPositiveAmount(amount) || amount<=0) return validationError(res, '출금액은 0보다 커야 합니다');
+  if(!isNonEmptyString(bankAccount, 50)) return validationError(res, '계좌정보를 입력해주세요');
+  // 결함수정(4단계 부하테스트 중 발견 — 중대): 잔액 검증이 전혀 없어 보유 캐시 초과 출금이나
+  // 동시 다발 요청으로 인한 이중출금이 가능했음 → 트랜잭션으로 잔액 확인+즉시차감을 원자적으로 처리
+  const id = randomUUID();
+  try {
+    const tx = db.transaction(() => {
+      const partner = db.prepare('SELECT credit_balance FROM partners WHERE id=?').get(req.user.sub);
+      if(!partner) throw Object.assign(new Error('업체를 찾을 수 없습니다'), { code:'NOT_FOUND' });
+      if(partner.credit_balance < amount) throw Object.assign(new Error('보유 잔액이 부족합니다'), { code:'INSUFFICIENT_BALANCE' });
+      db.prepare('UPDATE partners SET credit_balance = credit_balance - ? WHERE id=?').run(amount, req.user.sub);
+      db.prepare('INSERT INTO credit_ledger (id, partner_id, type, amount, payment_method) VALUES (?,?,?,?,?)')
+        .run(id, req.user.sub, 'withdrawal', -Math.abs(amount), bankAccount);
+    });
+    tx();
+  } catch(e) {
+    const code = e.code || 'WITHDRAWAL_FAILED';
+    const status = code === 'NOT_FOUND' ? 404 : code === 'INSUFFICIENT_BALANCE' ? 400 : 500;
+    return res.status(status).json({ success:false, error:{ code, message: e.message } });
+  }
+  res.json({ success:true, data:{ id, status:'requested', message:'출금 신청이 접수됐어요' } });
+});
+
+// ===== 13. SNS 공유 + 초대 =====
+app.post('/api/share/sns', blockInProduction, authRequired, (req, res) => {
+  const { platform, contentUrl } = req.body;
+  if(!isNonEmptyString(platform, 30)) return validationError(res, '공유 플랫폼을 지정해주세요');
+  // ⚡MVP-SWITCH: 실서버 → 실제 SNS 공유 SDK 콜백 확인 후 리워드 지급. 지금은 즉시 지급 mock
+  db.prepare('UPDATE users SET cash_balance = cash_balance + 1000 WHERE id=?').run(req.user.sub);
+  res.json({ success:true, data:{ shared:true, rewardCredited:true, reward:1000 } });
+});
+app.post('/api/invite', authRequired, (req, res) => {
+  const inviteId = randomUUID();
+  res.json({ success:true, data:{ inviteId, inviteUrl: 'https://roomer.app/invite/'+inviteId } });
+});
+
+// ===== 13-2. 고객센터 1:1 문의 =====
+// 신규(강남언니 벤치마킹 검토 후속 — 0단계): "1:1 문의하기" 버튼이 alert('...프로토타입: 실제로는
+// 전송되지 않습니다')만 띄우고 실제로는 아무 데도 접수되지 않던 문제를 실제 접수·답변 흐름으로 교체.
+function mapSupportInquiry(row) {
+  return {
+    id: row.id,
+    userRole: row.user_role,
+    message: row.message,
+    status: row.status,
+    adminReply: row.admin_reply,
+    repliedAt: row.replied_at,
+    createdAt: row.created_at,
+  };
+}
+app.post('/api/support/inquiries', authRequired, (req, res) => {
+  const { message } = req.body;
+  if (!isNonEmptyString(message, 1000) || message.trim().length < 5) {
+    return validationError(res, '문의 내용을 5자 이상 1000자 이내로 입력해주세요');
+  }
+  const id = randomUUID();
+  db.prepare('INSERT INTO support_inquiries (id, user_role, user_id, message, status) VALUES (?,?,?,?,?)')
+    .run(id, req.user.role, req.user.sub, message.trim(), 'open');
+  res.json({ success: true, data: { id, status: 'open' } });
+});
+app.get('/api/support/inquiries/mine', authRequired, (req, res) => {
+  const rows = db.prepare('SELECT * FROM support_inquiries WHERE user_role=? AND user_id=? ORDER BY created_at DESC')
+    .all(req.user.role, req.user.sub);
+  res.json({ success: true, data: rows.map(mapSupportInquiry) });
+});
+app.get('/api/admin/support/inquiries', adminAuthRequired(), (req, res) => {
+  const status = req.query.status;
+  const rows = status
+    ? db.prepare('SELECT * FROM support_inquiries WHERE status=? ORDER BY created_at DESC').all(status)
+    : db.prepare('SELECT * FROM support_inquiries ORDER BY created_at DESC').all();
+  res.json({ success: true, data: rows.map(mapSupportInquiry) });
+});
+app.put('/api/admin/support/inquiries/:id/reply', adminAuthRequired(), (req, res) => {
+  const { reply } = req.body;
+  if (!isNonEmptyString(reply, 2000)) return validationError(res, '답변 내용을 입력해주세요');
+  const row = db.prepare('SELECT * FROM support_inquiries WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '문의를 찾을 수 없습니다' } });
+  db.prepare("UPDATE support_inquiries SET admin_reply=?, status='answered', replied_at=datetime('now') WHERE id=?")
+    .run(reply.trim(), req.params.id);
+  createNotification(row.user_role, row.user_id, 'support_replied', '문의하신 내용에 답변이 도착했어요', reply.trim().slice(0, 80), 'support', row.id);
+  res.json({ success: true, data: mapSupportInquiry(db.prepare('SELECT * FROM support_inquiries WHERE id=?').get(req.params.id)) });
+});
+
+// ===== 13-3. 고객센터 FAQ =====
+// 신규(사용자요청 — FAQ를 검색 가능한 방대한 자료로 확장, 2026-09): 기존 3개짜리 하드코딩 FAQ를
+// DB 기반으로 교체. 문항 수가 지금 규모(수백 개 이내)에서는 서버 검색 없이 프론트가 전체를 한 번에
+// 받아 즉시 필터링하는 편이 응답이 빠르고 서버 부담도 없어서, 여기서는 목록 조회 API만 제공한다.
+function mapFaq(row) {
+  return {
+    id: row.id,
+    audience: row.audience,
+    category: row.category,
+    question: row.question,
+    answer: row.answer,
+    keywords: row.keywords,
+    sortOrder: row.sort_order,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+app.get('/api/faqs', (req, res) => {
+  const audience = req.query.audience;
+  let rows;
+  if (audience && ['consumer', 'partner', 'common'].includes(audience)) {
+    rows = db.prepare("SELECT * FROM faqs WHERE status='published' AND audience IN (?, 'common') ORDER BY sort_order ASC")
+      .all(audience);
+  } else {
+    rows = db.prepare("SELECT * FROM faqs WHERE status='published' ORDER BY sort_order ASC").all();
+  }
+  res.json({ success: true, data: rows.map(mapFaq) });
+});
+app.get('/api/admin/faqs', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare('SELECT * FROM faqs ORDER BY audience ASC, category ASC, sort_order ASC').all();
+  res.json({ success: true, data: rows.map(mapFaq) });
+});
+app.post('/api/admin/faqs', adminAuthRequired(), (req, res) => {
+  const { audience, category, question, answer, keywords } = req.body;
+  if (!['consumer', 'partner', 'common'].includes(audience)) return validationError(res, 'audience가 올바르지 않습니다(consumer/partner/common)');
+  if (!isNonEmptyString(category, 50)) return validationError(res, 'category를 입력해주세요');
+  if (!isNonEmptyString(question, 300)) return validationError(res, '질문을 입력해주세요');
+  if (!isNonEmptyString(answer, 3000)) return validationError(res, '답변을 입력해주세요');
+  const id = randomUUID();
+  const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order),-1) m FROM faqs WHERE audience=? AND category=?').get(audience, category).m;
+  db.prepare(`INSERT INTO faqs (id, audience, category, question, answer, keywords, sort_order, status) VALUES (?,?,?,?,?,?,?,'published')`)
+    .run(id, audience, category, question.trim(), answer.trim(), (keywords || '').trim(), maxOrder + 1);
+  res.json({ success: true, data: mapFaq(db.prepare('SELECT * FROM faqs WHERE id=?').get(id)) });
+});
+app.put('/api/admin/faqs/:id', adminAuthRequired(), (req, res) => {
+  const row = db.prepare('SELECT * FROM faqs WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'FAQ를 찾을 수 없습니다' } });
+  const { question, answer, keywords, category, status } = req.body;
+  if (question != null && !isNonEmptyString(question, 300)) return validationError(res, '질문이 올바르지 않습니다');
+  if (answer != null && !isNonEmptyString(answer, 3000)) return validationError(res, '답변이 올바르지 않습니다');
+  if (status != null && !['published', 'draft'].includes(status)) return validationError(res, 'status가 올바르지 않습니다');
+  db.prepare(`UPDATE faqs SET
+      question=COALESCE(?, question), answer=COALESCE(?, answer), keywords=COALESCE(?, keywords),
+      category=COALESCE(?, category), status=COALESCE(?, status), updated_at=datetime('now')
+    WHERE id=?`)
+    .run(question ? question.trim() : null, answer ? answer.trim() : null, keywords != null ? keywords.trim() : null, category || null, status || null, req.params.id);
+  res.json({ success: true, data: mapFaq(db.prepare('SELECT * FROM faqs WHERE id=?').get(req.params.id)) });
+});
+app.delete('/api/admin/faqs/:id', adminAuthRequired(), (req, res) => {
+  const row = db.prepare('SELECT id FROM faqs WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'FAQ를 찾을 수 없습니다' } });
+  db.prepare('DELETE FROM faqs WHERE id=?').run(req.params.id);
+  res.json({ success: true, data: { id: req.params.id } });
+});
+
+// ===== 14. 관리자 알림·정책 =====
+app.post('/api/admin/alert', adminAuthRequired(), (req, res) => {
+  const { channel, message } = req.body;
+  if(!['sms','email'].includes(channel)) return validationError(res, '올바른 발송채널이 아닙니다(sms/email)');
+  // ⚡MVP-SWITCH: 실서버 → SMS/이메일 게이트웨이(알리고·SendGrid 등) API 호출
+  console.log('[관리자알림 발송 mock]', channel, message);
+  res.json({ success:true, data:{ sent:true, channel } });
+});
+app.put('/api/admin/policy', adminAuthRequired('admin_super'), (req, res) => {
+  const { key, value } = req.body;
+  if(!isNonEmptyString(key, 100)) return validationError(res, 'key가 필요합니다');
+  db.prepare('CREATE TABLE IF NOT EXISTS admin_policies (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime(\'now\')))').run();
+  db.prepare('INSERT INTO admin_policies (key, value, updated_at) VALUES (?,?,datetime(\'now\')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime(\'now\')').run(key, JSON.stringify(value));
+  res.json({ success:true, data:{ key, value } });
+});
+// 신규(사용자요청 — 관리자가 언제든 온/오프 전환 가능한 정책): 정책값 조회 API + 서버 내부에서
+// 쓸 헬퍼함수. 파트너 본인확인(PASS) 필수여부를 관리자가 코드수정 없이 토글할 수 있게 함.
+db.prepare('CREATE TABLE IF NOT EXISTS admin_policies (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT (datetime(\'now\')))').run();
+function getAdminPolicy(key, defaultValue) {
+  const row = db.prepare('SELECT value FROM admin_policies WHERE key=?').get(key);
+  if (!row) return defaultValue;
+  try { return JSON.parse(row.value); } catch (e) { return defaultValue; }
+}
+app.get('/api/admin/policy/:key', adminAuthRequired(), (req, res) => {
+  const row = db.prepare('SELECT value, updated_at FROM admin_policies WHERE key=?').get(req.params.key);
+  res.json({ success:true, data: row ? { key: req.params.key, value: JSON.parse(row.value), updatedAt: row.updated_at } : { key: req.params.key, value: null, updatedAt: null } });
+});
+
+// 신규(2026-09, 전수조사 발견 — 운영콘솔 "이벤트 관리" 실연동): admin_events 테이블 CRUD.
+// 참여자·전환수는 아직 실제 추적 연동이 없어 항상 0으로 생성되고(가짜 숫자 없음), 목록·상세 화면에서
+// "아직 참여 추적 기능은 준비 중"임을 정직하게 표시한다.
+app.get('/api/admin/events', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare('SELECT * FROM admin_events ORDER BY created_at DESC').all();
+  res.json({ success:true, data: rows.map(e => ({ id:e.id, name:e.name, start:e.start_date, end:e.end_date, target:e.target, benefit:e.benefit, copy:e.copy, status:e.status, participants:e.participants, conversions:e.conversions, createdAt:e.created_at })) });
+});
+app.post('/api/admin/events', adminAuthRequired(), (req, res) => {
+  const { name, start, end, target, benefit, copy } = req.body;
+  if (!isNonEmptyString(name, 100)) return validationError(res, '이벤트 이름을 입력해주세요');
+  if (!['consumer','partner','all'].includes(target)) return validationError(res, '대상을 선택해주세요');
+  const id = randomUUID();
+  db.prepare('INSERT INTO admin_events (id, name, start_date, end_date, target, benefit, copy, status) VALUES (?,?,?,?,?,?,?,?)')
+    .run(id, name, start || null, end || null, target, benefit || null, copy || null, 'active');
+  res.json({ success:true, data: { id, status:'active' } });
+});
+app.patch('/api/admin/events/:id/status', adminAuthRequired(), (req, res) => {
+  const { status } = req.body;
+  if (!['draft','active','paused','ended'].includes(status)) return validationError(res, '올바른 상태가 아닙니다');
+  const row = db.prepare('SELECT id FROM admin_events WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ success:false, error:{ code:'NOT_FOUND', message:'이벤트를 찾을 수 없습니다' } });
+  db.prepare('UPDATE admin_events SET status=? WHERE id=?').run(status, req.params.id);
+  res.json({ success:true, data:{ id: req.params.id, status } });
+});
+// 신규(사용자요청 — 파트너가입 화면이 본인확인 온오프 여부를 알아야 "다음"단계 진행여부를
+// 결정할 수 있음): 로그인 없이도 조회 가능한 공개 정책 API. 민감정보 없는 on/off 값만 노출하므로 안전함.
+app.get('/api/public/policy/identity-verification-required', (req, res) => {
+  res.json({ success:true, data: { required: getAdminPolicy('identity_verification_required', false) } });
+});
+// 신규(사용자요청 — 휴대폰 가입 UI는 이미 있는데, 알리고 환경변수가 실제로 설정됐는지
+// 프론트가 알 방법이 전혀 없어서 window.MVP.smsOtpEnabled가 영원히 false로 고정되어 있던 문제):
+// 민감정보(키 값 자체)는 노출하지 않고, "설정 여부(true/false)"만 공개
+app.get('/api/public/config', (req, res) => {
+  res.json({ success:true, data: {
+    smsOtpEnabled: !!(process.env.ALIGO_API_KEY && process.env.ALIGO_USER_ID && process.env.ALIGO_SENDER),
+    // 신규(사용자요청 — 푸시알림 인프라 완성): 공개해도 안전한 "공개키"만 노출(개인키는 서버에만 존재).
+    // VAPID 키가 아직 설정 안 된 경우 null → 프론트가 구독을 시도하지 않고 조용히 넘어감.
+    vapidPublicKey: PUSH_ENABLED ? process.env.VAPID_PUBLIC_KEY : null
+  } });
+});
+
+// 신규(사용자요청 — 푸시알림 인프라 완성): 브라우저 pushManager.subscribe() 결과(endpoint+keys)를
+// 로그인된 사용자(소비자/업체 공통)에 연결해 저장. 같은 endpoint로 다시 구독하면 갱신(UPSERT)한다.
+app.post('/api/push/subscriptions', authRequired, (req, res) => {
+  const sub = req.body && req.body.subscription ? req.body.subscription : req.body;
+  if (!sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
+    return res.status(400).json({ success:false, error:{ code:'INVALID_SUBSCRIPTION', message:'구독 정보가 올바르지 않습니다' } });
+  }
+  try {
+    const existing = db.prepare('SELECT id FROM push_subscriptions WHERE endpoint=?').get(sub.endpoint);
+    if (existing) {
+      db.prepare('UPDATE push_subscriptions SET recipient_role=?, recipient_id=?, p256dh=?, auth=? WHERE id=?')
+        .run(req.user.role, req.user.sub, sub.keys.p256dh, sub.keys.auth, existing.id);
+    } else {
+      db.prepare(`INSERT INTO push_subscriptions (id,recipient_role,recipient_id,endpoint,p256dh,auth)
+        VALUES (?,?,?,?,?,?)`).run(randomUUID(), req.user.role, req.user.sub, sub.endpoint, sub.keys.p256dh, sub.keys.auth);
+    }
+    res.json({ success:true });
+  } catch (e) {
+    res.status(500).json({ success:false, error:{ code:'SUBSCRIPTION_SAVE_FAILED', message:'구독 저장에 실패했습니다' } });
+  }
+});
+
+// ===== 15. QR코드 생성 =====
+// 실제로 동작하는 QR코드(외부 서비스 계약 불필요, npm qrcode 라이브러리 사용)
+app.get('/api/qrcode', async (req, res) => {
+  const { data } = req.query;
+  if(!isNonEmptyString(data, 500)) return validationError(res, 'data(인코딩할 내용)가 필요합니다');
+  try {
+    const dataUrl = await QRCode.toDataURL(data, { width: 300, margin: 2 });
+    res.json({ success: true, data: { qrCodeDataUrl: dataUrl } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: { code: 'QR_GENERATION_FAILED', message: e.message } });
+  }
+});
+
+// ===== 17. 프론트엔드 직접 서빙(PC+모바일 동시 테스트용) =====
+// 같은 와이파이의 PC/모바일 모두 이 서버 하나만 켜져있으면 http://<PC IP>:4000/app 으로 접속 가능
+// 프론트엔드 파일을 수정할 때는 이 폴더의 루머03.html만 교체하면 됨(서버 재시작 불필요, 브라우저 새로고침만 하면 반영됨)
+// 결함수정(Mac에서 실제로 재현·확인된 심각한 버그): macOS는 파일을 Finder로 옮기거나
+// 다운로드하는 과정에서 한글 파일명을 내부적으로 "분해형(NFD)"으로 자동 변환해서 저장함.
+// 코드에 적힌 '루머03.html'(결합형/NFC)과 실제 디스크의 파일명(분해형/NFD)이 바이트 단위로
+// 달라서 express.static이 파일을 못 찾고 계속 404를 반환했음(Mac에서만 재현되던 문제).
+// → 폴더를 실제로 스캔해서, 정규화(NFC) 기준으로 이름이 같은 파일을 찾아 그 "실제 파일명"으로 서빙
+function findIndexFileNormalized() {
+  const files = fs.readdirSync(__dirname);
+  const acceptedNames = new Set(['루머03.html', 'roomer03.html'].map(name => name.normalize('NFC')));
+  const candidates = files.filter(file => acceptedNames.has(file.normalize('NFC')));
+  // 한글/NFD 파일명과 영문 다운로드 파일명을 모두 지원하되,
+  // ZIP·오류문·TXT가 잘못 이름바꾸기된 파일은 선택하지 않는다.
+  for (const file of candidates) {
+    const candidatePath = path.join(__dirname, file);
+    try {
+      const prefix = fs.readFileSync(candidatePath, { encoding:'utf8' }).slice(0, 4096).replace(/^\uFEFF/, '').trimStart().toLowerCase();
+      if (prefix.includes('<!doctype html') || prefix.includes('<html')) return candidatePath;
+    } catch (error) { /* 다음 후보를 확인한다. */ }
+  }
+  return candidates.length ? path.join(__dirname, candidates[0]) : null;
+}
+
+// 보안수정(루머28): __dirname 전체를 정적 공개하면 /app/server.js, /app/db.js 및 DB 파일까지
+// 다운로드될 수 있다. 앱 HTML 한 파일만 명시적으로 제공하고, 내용이 실제 HTML인지도 확인한다.
+function sendRoomerApp(req, res) {
+  const appFile = findIndexFileNormalized();
+  if (!appFile) {
+    return res.status(503).json({ success:false, error:{ code:'FRONTEND_NOT_FOUND', message:'루머03.html 파일이 배포되지 않았습니다' } });
+  }
+  try {
+    const prefix = fs.readFileSync(appFile, { encoding:'utf8' }).slice(0, 4096).replace(/^\uFEFF/, '').trimStart().toLowerCase();
+    if (!prefix.includes('<!doctype html') && !prefix.includes('<html')) {
+      return res.status(503).json({ success:false, error:{ code:'FRONTEND_INVALID', message:'배포된 루머03.html 파일의 내용이 올바르지 않습니다' } });
+    }
+  } catch (e) {
+    return res.status(503).json({ success:false, error:{ code:'FRONTEND_READ_ERROR', message:'앱 화면 파일을 읽을 수 없습니다' } });
+  }
+  res.type('html').sendFile(appFile);
+}
+app.get(['/app', '/app/'], sendRoomerApp);
+
+// 신규(사용자요청 — 앱스토어 등록 준비 1단계): 개인정보처리방침·이용약관을 로그인·앱실행 없이
+// 순수 정적 페이지로 즉시 열람 가능하게 하는 공개 라우트. 애플/구글 심사 시 "공개 URL"로 그대로 제출 가능.
+// ⚠️ 본문은 앱(루머03.html)의 LEGAL_DOCS와 동일한 원문을 그대로 옮겨둔 것 — 문서 내용을 수정할 때는
+// 반드시 두 곳(여기, 루머03.html의 LEGAL_DOCS.privacy/terms) 모두 함께 갱신해야 함(단일 소스 아님).
+const LEGAL_PAGES = {
+  privacy: { title:'개인정보처리방침', body:
+`제1조 (개인정보의 처리 목적)
+루머(ROOMER)는 다음의 목적을 위해 개인정보를 처리합니다.
+① 회원 가입 및 관리(본인확인, 부정이용 방지)
+② 견적 매칭 및 계약 이행(소비자-업체 연결, 계약금액 확인)
+③ 고객 상담 및 민원 처리
+④ 요금 정산(업체 수수료 산정)
+
+제2조 (처리하는 개인정보의 항목)
+· 소비자: 이름, 연락처, 이메일, 주소(견적 시), 로그인 정보
+· 업체: 상호, 대표자명, 사업자등록번호, 사업장 주소, 연락처,
+       사업자등록증 사본, 사무실 사진
+· 자동 수집: 접속기록, 쿠키, 기기정보
+
+제3조 (14세 미만 아동의 개인정보 처리)
+본 서비스는 만 14세 미만 아동의 회원가입을 받지 않습니다.
+
+제4조 (개인정보의 처리 및 보유 기간)
+· 회원 정보: 회원 탈퇴 시까지(탈퇴 후 즉시 파기, 관계법령상
+  보관 의무가 있는 경우 해당 기간까지 보관)
+· 계약·거래 기록: 전자상거래법에 따라 5년
+· 소비자 불만·분쟁처리 기록: 3년
+
+제5조 (개인정보의 파기 절차 및 방법)
+보유기간 경과 또는 처리목적 달성 시 지체 없이 파기하며,
+전자적 파일은 복구 불가능한 방법으로 영구 삭제합니다.
+
+제6조 (개인정보의 제3자 제공 및 처리위탁)
+① 계약 진행을 위해 필요한 최소한의 정보만 계약 상대방(업체 또는
+소비자)에게 제공하며, 정보주체의 동의 없이는 외부에 제공하지
+않습니다.
+② 회사는 서비스 제공을 위해 다음과 같이 개인정보 처리업무를
+위탁하고 있으며, 위탁계약 시 개인정보가 안전하게 관리될 수 있도록
+필요한 사항을 규정합니다.
+· 결제 처리: PG사(토스페이먼츠) — 결제·정산 처리
+· 본인확인: 본인확인기관 — 휴대폰 본인인증
+· 문자메시지 발송: 알리고(Aligo) — 인증번호·알림 문자 발송
+③ 위탁 기간은 서비스 이용계약 종료 시 또는 위탁 목적 달성 시까지이며,
+위탁계약 종료 시 위탁받은 개인정보는 지체 없이 파기하거나 회사에
+반환하도록 합니다.
+④ 위 위탁업체는 모두 국내에 소재한 사업자이며, 개인정보를 국외로
+이전·보관하지 않습니다.
+⑤ 위탁업체가 추가·변경되는 경우, 본 개인정보처리방침을 통해
+지체 없이 고지합니다.
+
+제7조 (정보주체의 권리·의무 및 행사방법)
+이용자는 언제든지 자신의 개인정보 열람, 정정, 삭제, 처리정지를
+요구할 수 있으며, 마이페이지 또는 고객센터를 통해 행사할 수
+있습니다.
+
+제8조 (개인정보의 안전성 확보조치)
+비밀번호 암호화, 접근권한 관리, 접속기록 보관 등 기술적·관리적
+조치를 시행합니다.
+
+제9조 (개인정보 보호책임자)
+· 성명: 정경훈
+· 연락처: roomer0829@naver.com
+
+제10조 (권익침해 구제방법)
+개인정보침해신고센터(privacy.kisa.or.kr / 국번없이 118) 등에
+분쟁조정을 신청할 수 있습니다.
+
+부칙: 이 방침은 2026년 8월 29일부터 시행합니다.` },
+  terms: { title:'이용약관', body:
+`제1조 (목적)
+이 약관은 루머(ROOMER, 이하 "회사")가 제공하는 서비스 이용과
+관련하여 회사와 이용자 간의 권리·의무 및 책임사항을 규정합니다.
+
+제2조 (정의)
+① "이용자"란 회사의 서비스를 이용하는 소비자 및 업체를 말합니다.
+② "업체"란 인테리어 시공 서비스를 제공하기 위해 등록한 사업자를
+   말합니다.
+③ "계약"이란 소비자와 업체가 플랫폼을 통해 체결하는 시공 계약을
+   말합니다.
+
+제2조의2 (통신판매중개자로서의 지위)
+① 회사는 「전자상거래 등에서의 소비자보호에 관한 법률」에 따른
+   통신판매중개자이며, 통신판매의 당사자가 아닙니다.
+② 등록된 시공 정보, 견적 및 계약 내용, 그로 인해 발생하는 거래에
+   대한 책임은 원칙적으로 해당 업체에 있습니다.
+③ 다만 회사는 이용자 보호를 위해 업체 입점 심사, 계약 이행
+   모니터링, 분쟁 조정 지원 등 합리적인 노력을 다합니다.
+
+제3조 (약관의 효력 및 변경)
+회사는 관계법령을 위반하지 않는 범위에서 약관을 변경할 수 있으며,
+변경 시 최소 7일 전(이용자에게 불리한 경우 30일 전) 공지합니다.
+
+제4조 (서비스 이용신청 및 회원가입)
+이용자는 회사가 정한 절차에 따라 가입을 신청하며, 회사는 다음의
+경우 가입을 거부하거나 제한할 수 있습니다.
+① 허위 정보를 기재한 경우
+② 타인의 명의를 도용한 경우
+③ 관계법령에 따라 등록이 제한된 사업자인 경우
+
+제5조 (계약의 체결)
+① 모든 계약은 반드시 회사의 메신저를 통해 진행해야 합니다.
+② 계약금액은 소비자와 업체가 각자 입력한 금액이 일치해야만
+   확정됩니다.
+③ 플랫폼 밖에서 이루어진 거래는 회사가 분쟁 조정 및 법적 대응을
+   지원하지 않을 수 있습니다.
+
+제6조 (서비스 이용료 및 수수료)
+① 소비자의 서비스 이용은 무료입니다.
+② 업체는 계약이 실제로 성사된 경우에만 등급별 수수료
+   (1.5%~3%)를 지급합니다.
+
+제7조 (이용자의 의무)
+이용자는 다음 행위를 해서는 안 됩니다.
+① 허위 정보 등록 및 실적 조작
+② 플랫폼 밖 직거래 유도
+③ 타인의 개인정보 도용
+④ 근거 없는 리뷰 작성 또는 리뷰 조작
+
+제8조 (회사의 의무)
+회사는 안정적인 서비스 제공을 위해 노력하며, 이용자의 개인정보를
+관계법령에 따라 보호합니다.
+
+제9조 (서비스 제공의 중지)
+시스템 점검, 천재지변 등 불가피한 사유가 있는 경우 서비스 제공을
+일시 중지할 수 있습니다.
+
+제10조 (계약해지 및 이용제한)
+이용자가 본 약관을 위반한 경우, 회사는 사전 통지 후 서비스 이용을
+제한하거나 계약을 해지할 수 있습니다.
+
+제11조 (손해배상 및 면책)
+① 회사의 고의 또는 과실로 인한 손해는 관계법령에 따라 배상합니다.
+② 이용자 간의 거래에서 발생한 분쟁에 대해 회사는 중개자로서
+   합리적인 조정을 지원하나, 최종 책임은 계약 당사자에게 있습니다.
+
+제12조 (분쟁해결)
+서비스 이용 중 발생한 분쟁은 플랫폼 내 기록을 근거로 회사의
+조정을 거치며, 필요시 관련 법령에 따라 처리합니다.
+
+제13조 (관할법원)
+이 약관과 관련한 분쟁에 대한 소송은 민사소송법상의 관할법원에
+제기합니다.
+
+부칙: 이 약관은 2026년 8월 29일부터 시행합니다.` },
+  location_policy: { title:'위치정보 처리방침', body:
+`제1조 (목적)
+루머(ROOMER)는 위치정보의 보호 및 이용 등에 관한 법률에 따라
+이용자의 개인위치정보를 안전하게 보호하고 관련 고충을 신속하게
+처리하기 위하여 다음과 같이 위치정보 처리방침을 수립·공개합니다.
+
+제2조 (회사 정보)
+· 상호: (주)루머(ROOMER)
+· 대표자: 조은혜
+· 위치기반서비스사업 신고번호: [신고 완료 후 기재 예정]
+· 문의: roomer0829@naver.com
+
+제3조 (개인위치정보의 수집 방법 및 항목)
+① 회사는 이용자가 "현재 위치로 찾기" 기능을 직접 실행할 때에만
+개인위치정보(위도·경도 좌표)를 수집합니다. 이용자의 동의 없이
+자동으로 위치를 수집하지 않습니다.
+② 수집된 좌표는 지도 API(카카오)를 통해 "시/도-시군구-행정동"
+수준의 지역 정보로 변환하는 목적에만 순간적으로 이용되며, 변환
+직후 즉시 폐기됩니다.
+③ 위도·경도 원본 좌표 자체는 어떠한 데이터베이스에도 저장하지
+않습니다. 최종적으로 저장되는 정보는 이용자가 확인·선택한
+"서울 강남구"와 같은 문자열 형태의 활성 지역 정보뿐입니다.
+
+제4조 (개인위치정보의 이용 및 제공)
+① 수집된 지역 정보는 이용자에게 인근 지역의 업체를 추천·매칭하는
+목적으로만 이용됩니다.
+② 회사는 개인위치정보를 이용자의 동의 없이 제3자에게 제공하지
+않습니다. 다만 법령에 특별한 규정이 있는 경우는 예외로 합니다.
+③ 업체(파트너)가 직접 입력한 사업장 주소는 지도 표시를 위해
+외부 지도 서비스에 주소 문자열로 전달될 뿐이며, 이 과정에서
+회사는 좌표를 별도로 수집·저장하지 않습니다.
+
+제5조 (개인위치정보의 보유 및 이용기간)
+① 활성 지역 정보는 이용자가 직접 변경하거나 회원 탈퇴 시까지
+보관되며, 탈퇴 시 지체 없이 파기합니다.
+② 좌표 변환 과정에서 발생하는 원본 좌표는 응답 즉시 폐기되며
+별도로 보관하지 않습니다.
+
+제6조 (개인위치정보주체의 권리)
+이용자는 언제든지 다음의 권리를 행사할 수 있습니다.
+① 개인위치정보의 수집·이용·제공에 대한 동의의 전부 또는 일부를
+철회할 권리(설정에서 위치 기반 추천 동의 해제)
+② 개인위치정보의 수집·이용·제공사실 확인자료의 열람 또는 고지를
+요구할 권리(고객센터 문의)
+③ 위 권리 행사는 마이페이지 설정 또는 고객센터(roomer0829@naver.com)를
+통해 하실 수 있습니다.
+
+제7조 (법정대리인의 권리)
+회사는 만 14세 미만 아동의 회원가입을 받지 않으므로, 만 14세
+미만 아동의 개인위치정보를 수집하지 않습니다.
+
+제8조 (개인위치정보관리책임자)
+· 성명: 정경훈
+· 연락처: roomer0829@naver.com
+
+제9조 (손해배상)
+회사는 위치정보의 보호 및 이용 등에 관한 법률 제27조에 따라
+고의 또는 과실로 이용자에게 손해를 발생시킨 경우 이에 대해
+손해배상 책임을 집니다.
+
+제10조 (처리방침의 개정)
+이 처리방침이 변경되는 경우 회사는 변경사항을 시행일로부터
+최소 7일 전에 공지합니다.
+
+부칙: 이 처리방침은 [위치기반서비스사업 신고 완료 후 시행일 기재
+예정]부터 시행합니다.` }
+};
+function escapeHtmlLegal(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function sendLegalPage(key, res) {
+  const doc = LEGAL_PAGES[key];
+  const html = `<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${doc.title} · 루머 ROOMER</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;max-width:680px;margin:0 auto;padding:32px 20px 64px;color:#2C2A28;line-height:1.7;background:#fff}
+  h1{font-size:22px;margin-bottom:24px}
+  pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;font-size:14.5px}
+  a{color:#2C4A63}
+</style>
+</head>
+<body>
+<h1>${doc.title}</h1>
+<pre>${escapeHtmlLegal(doc.body)}</pre>
+<p><a href="/app">← 루머 ROOMER 앱으로 이동</a></p>
+</body>
+</html>`;
+  res.type('html').send(html);
+}
+app.get(['/privacy', '/privacy/'], (req, res) => sendLegalPage('privacy', res));
+app.get(['/terms', '/terms/'], (req, res) => sendLegalPage('terms', res));
+app.get(['/location-policy', '/location-policy/'], (req, res) => sendLegalPage('location_policy', res));
+
+// 신규(사용자요청 — 네이버/카카오 OAuth 콜백시 ROUTE_NOT_FOUND 에러 수정): 소셜로그인 완료 후
+// 카카오/네이버가 리다이렉트하는 /oauth/*/callback 경로는 API가 아니라 "앱 화면"이 다시 열려야
+// 하는 경로임(그래야 프론트의 handleKakaoOAuthCallback/handleNaverOAuthCallback이 code를 읽어
+// 처리함). 이 경로들에서도 앱 파일을 그대로 서빙하도록 명시적으로 라우트 추가.
+app.get(['/oauth/kakao/callback', '/oauth/naver/callback'], (req, res) => {
+  sendRoomerApp(req, res);
+});
+
+// ===== 18. 라이브 리로드(파일만 교체하면 PC·모바일 자동 새로고침) =====
+// 신규(사용자요청): 수정한 루머03.html로 교체만 하면, 서버 재시작·수동 새로고침 없이
+// 열려있는 모든 브라우저(PC+모바일)가 3초 안에 저절로 새로고침되도록
+app.get('/api/dev-file-version', (req, res) => {
+  try {
+    const appFile = findIndexFileNormalized();
+    if (!appFile) throw new Error('루머03.html not found');
+    const stat = fs.statSync(appFile);
+    res.json({ success: true, data: { mtime: stat.mtimeMs } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: { code: 'FILE_ERROR', message: e.message } });
+  }
+});
+// 모바일 접속 URL을 프론트엔드가 QR코드로 바로 보여줄 수 있도록 로컬IP 제공
+app.get('/api/dev-local-url', (req, res) => {
+  const os = require('os');
+  const nets = os.networkInterfaces();
+  let ip = null;
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal) { ip = net.address; break; }
+    }
+    if (ip) break;
+  }
+  res.json({ success: true, data: { url: ip ? `http://${ip}:${PORT}/app` : null } });
+});
+
+app.get('/', (req, res) => res.json({ service: '루머 ROOMER API', status: 'running', docs: '/api-docs', app: '/app' }));
+
+// ===== 16. 테스트 채팅 — 두 브라우저 창이 반드시 같은 방에서 만나게 해주는 고정 테스트업체 =====
+// 실서비스에서는 사용하지 않음(개발/체험 검증 전용). 소비자 계정에서 이 API를 호출하면
+// 항상 "테스트업체(고정 ID)"와의 채팅방을 반환/생성함 — 다른 창에서 업체로 로그인할 때 이 업체를 찾으면 됨
+// 결함정리(사용자요청 — 보안점검: 테스트/체험용 API가 production에서도 열려있던 문제):
+// test-partner-login은 비밀번호 없이 파트너 권한을 즉시 발급하는 API라 production에 열려있으면
+// 심각한 인증우회 취약점이 됨. 반드시 개발환경에서만 동작하도록 미들웨어로 완전 차단.
+// 결함정리(사용자요청 — 보안강화: NODE_ENV=production 체크는 환경변수 누락시 위험한 fail-open
+// 구조였음): ENABLE_DEV_TEST_ROUTES='true'로 명시적으로 허용한 경우에만 열리고, 기본 상태(이 값이
+// 없거나 다른 값이면)에서는 항상 404로 차단하는 fail-safe 구조로 변경. 운영 Render에는 이 환경변수를
+// 등록하지 않는다.
+function blockInProduction(req, res, next) {
+  if (process.env.ENABLE_DEV_TEST_ROUTES !== 'true') {
+    return res.status(404).json({ success: false, error: { code: 'ROUTE_NOT_FOUND', message: '존재하지 않는 API 경로입니다' } });
+  }
+  next();
+}
+const TEST_PARTNER_ID = '00000000-0000-0000-0000-000000000001';
+function ensureTestPartner() {
+  const existing = db.prepare('SELECT * FROM partners WHERE id=?').get(TEST_PARTNER_ID);
+  if (existing) return existing;
+  db.prepare(`INSERT INTO partners (id, business_name, business_reg_number, ceo_name, tier, region, doc_image_url, verify_status, cert_business, cert_location, cert_contact)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(TEST_PARTNER_ID, '테스트업체(체험용)', db.encryptPii('000-00-00000'), db.encryptPii('테스트대표'), '면허 파트너', '서울', 'test', 'approved', 1, 1, 1);
+  return db.prepare('SELECT * FROM partners WHERE id=?').get(TEST_PARTNER_ID);
+}
+app.get('/api/test-partner', blockInProduction, (req, res) => {
+  const p = ensureTestPartner();
+  res.json({ success: true, data: { id: p.id, businessName: p.business_name, hint: '이 화면 정보로 다른 창에서 업체 로그인 후 테스트하세요. (테스트업체는 별도 계정 없이, 서버가 자동으로 만들어둔 고정 업체입니다)' } });
+});
+app.post('/api/test-room', blockInProduction, authRequired, (req, res) => {
+  if (req.user.role !== 'consumer') return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: '소비자 계정에서만 테스트 채팅을 시작할 수 있습니다' } });
+  ensureTestPartner();
+  let room = db.prepare('SELECT * FROM chat_rooms WHERE consumer_id=? AND partner_id=?').get(req.user.sub, TEST_PARTNER_ID);
+  if (!room) {
+    const id = randomUUID();
+    db.prepare('INSERT INTO chat_rooms (id, consumer_id, partner_id) VALUES (?,?,?)').run(id, req.user.sub, TEST_PARTNER_ID);
+    db.prepare('INSERT INTO meas_jobs (room_id) VALUES (?)').run(id);
+    room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(id);
+  }
+  res.json({ success: true, data: room });
+});
+// 업체용: "테스트업체" 계정으로 즉시 로그인(비밀번호 불필요, 체험 전용 특수 로그인)
+app.post('/api/test-partner-login', blockInProduction, (req, res) => {
+  const p = ensureTestPartner();
+  const token = jwt.sign({ sub: p.id, role: 'partner' }, JWT_SECRET, { expiresIn: '4h' });
+  res.json({ success: true, data: { token, partner: p } });
+});
+
+// ===== 1-2(팀장 지시): 정의되지 않은 경로 → Express 기본 HTML 에러 대신 일관된 JSON으로 응답 =====
+app.use((req, res) => {
+  res.status(404).json({ success: false, error: { code: 'ROUTE_NOT_FOUND', message: '존재하지 않는 API 경로입니다' } });
+});
+
+// 신규(2차 심층검증 중 발견): FK위반·잘못된 JSON 요청이 전부 500(서버오류)으로 뭉뚱그려지던 문제 수정
+// → 클라이언트 잘못(400)과 진짜 서버오류(500)를 구분해서 응답
+app.use((err, req, res, next) => {
+  if (err && err.status && err.code) {
+    return res.status(err.status).json({ success:false, error:{ code:err.code, message:err.message } });
+  }
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_JSON', message: '요청 형식이 올바르지 않습니다' } });
+  }
+  // 결함수정(4단계 부하테스트 중 발견): 1MB 초과 요청이 500(서버오류)으로 잘못 분류되던 문제 → 400으로 정확히 구분
+  if (err.type === 'entity.too.large') {
+    const portfolioUpload = req.path === '/api/partners/me/portfolio';
+    return res.status(400).json({ success: false, error: { code: 'PAYLOAD_TOO_LARGE', message: portfolioUpload ? '포트폴리오 업로드 용량이 너무 큽니다(사진당 10MB·최대 10장)' : '요청 본문이 너무 큽니다(최대 8MB)' } });
+  }
+  if (err.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_REFERENCE', message: '존재하지 않는 대상을 참조했습니다(예: 잘못된 업체ID)' } });
+  }
+  console.error(err);
+  res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: '서버 오류가 발생했습니다' } });
+});
+
+const PORT = process.env.PORT || 4000;
+
+// 신규(사용자요청 — 9순위: 실시간 메신저): 프론트엔드(루머03.html)는 이미
+// WebSocket→폴링 순으로 자동 전환하는 transport manager를 갖추고 있었으나,
+// (참고: 프론트에 SSE 폴백 시도 코드가 남아있었지만 서버에 SSE 자체가 없어 실제로는
+// 항상 실패하고 낭비되던 시도였음 — 이후 별도 보안점검에서 발견해 제거함)
+// 서버측에 /api/realtime WebSocket이 없어서 항상 폴링으로만 동작하고 있었음.
+// 최소 침습으로 실제 WebSocket 서버를 구현: roomId 구독 → 새 메시지를 그 room
+// 구독자에게만 실시간 push. REST API(폴링용)는 그대로 두어 자동 fallback 유지.
+const httpServer = http.createServer(app);
+const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 }); // 결함정리(보안강화): 페이로드 64KB로 제한(DoS성 대용량 프레임 방지)
+wss.on('error', (err) => console.error('WebSocketServer 레벨 오류(서버 유지):', err.message));
+
+// roomId → 그 방을 구독 중인 ws 커넥션들의 집합
+const roomSubscribers = new Map();
+function subscribeToRoom(ws, roomId) {
+  unsubscribeFromRoom(ws);
+  if (!roomSubscribers.has(roomId)) roomSubscribers.set(roomId, new Set());
+  roomSubscribers.get(roomId).add(ws);
+  ws.subscribedRoomId = roomId;
+}
+function unsubscribeFromRoom(ws) {
+  if (ws.subscribedRoomId && roomSubscribers.has(ws.subscribedRoomId)) {
+    const set = roomSubscribers.get(ws.subscribedRoomId);
+    set.delete(ws);
+    if (set.size === 0) roomSubscribers.delete(ws.subscribedRoomId);
+  }
+  ws.subscribedRoomId = null;
+}
+// 새 메시지가 저장될 때, 그 room을 구독 중인 커넥션 전원에게 실시간 전송
+function broadcastNewMessage(roomId, message) {
+  const set = roomSubscribers.get(roomId);
+  if (!set || set.size === 0) return;
+  const payload = JSON.stringify({ type: 'message', roomId, message });
+  for (const client of set) {
+    if (client.readyState === client.OPEN) { try { client.send(payload); } catch (e) {} }
+  }
+}
+// 신규(사용자요청 — 메신저 신뢰성 점검 중 발견한 결함 수정): 상대방이 지금 이 방을 실시간으로
+// 보고 있는 중(WebSocket으로 이 roomId를 구독 중)인지 확인. 이미 화면으로 실시간 수신하고 있는
+// 상대에게 굳이 중복 푸시를 보내지 않기 위한 판단 용도.
+function isRoomRecipientConnected(roomId, recipientRole, recipientId) {
+  const set = roomSubscribers.get(roomId);
+  if (!set || set.size === 0) return false;
+  for (const client of set) {
+    if (client.readyState === client.OPEN && client.user && client.user.role === recipientRole && String(client.user.sub) === String(recipientId)) return true;
+  }
+  return false;
+}
+
+// 결함정리(사용자요청 — 보안강화: WebSocket 최초 연결시점과 30초 하트비트 시점 모두에서
+// DB상 계정상태를 재검증): JWT가 아직 만료 전이라도, 그 사이에 탈퇴하거나 파트너 승인이
+// 취소(거부)된 경우 실시간으로 연결을 끊어야 함. 기존 REST 채팅 흐름(assertRoomAccess)은
+// verify_status를 따지지 않고 pending 파트너도 채팅을 허용하므로, 그 동작을 깨지 않도록
+// 여기서도 명시적으로 거부(rejected)된 경우만 차단한다(기존 기능 변경 최소화).
+function isAccountActiveForRealtime(user) {
+  if (!user || !user.sub) return false;
+  if (user.role === 'consumer') {
+    const u = db.prepare('SELECT withdrawn_at FROM users WHERE id=?').get(user.sub);
+    return !!u && !u.withdrawn_at;
+  }
+  if (user.role === 'partner') {
+    const p = db.prepare('SELECT verify_status FROM partners WHERE id=?').get(user.sub);
+    return !!p && p.verify_status !== 'rejected';
+  }
+  return false;
+}
+function broadcastReadState(roomId, readState) {
+  const set=roomSubscribers.get(roomId);if(!set||set.size===0)return;
+  const payload=JSON.stringify({type:'read',roomId,readState});
+  for(const client of set){if(client.readyState===client.OPEN){try{client.send(payload);}catch(e){}}}
+}
+
+httpServer.on('upgrade', (req, socket, head) => {
+  let url;
+  try { url = new URL(req.url, 'http://internal'); } catch (e) { socket.destroy(); return; }
+  if (url.pathname !== '/api/realtime') { socket.destroy(); return; }
+  // 결함정리(사용자요청 — 보안강화): 브라우저가 보낸 요청이면 반드시 Origin이 ALLOWED_ORIGINS
+  // 안에 있어야 함(다른 사이트가 이 WebSocket에 직접 연결하는 것 방지). Origin 헤더 자체가
+  // 없는 경우(브라우저가 아닌 서버간 통신 등)는 이 검증을 적용하지 않음(불필요하게 막지 않기 위함).
+  const origin = req.headers.origin;
+  if (origin && !ALLOWED_ORIGINS.includes(origin)) { socket.destroy(); return; }
+  // WebSocket 표준은 커스텀 헤더를 못 보내므로, 토큰은 쿼리파라미터로 전달받아 검증
+  // 참고(향후 개선 제안 — 이번 수정 범위 아님): 지금처럼 로그인용 JWT를 URL 쿼리에
+  // 그대로 실으면 서버 접근로그·브라우저 히스토리·프록시 로그 등에 토큰이 남을 위험이
+  // 있음. 더 안전한 방식은 REST API(예: POST /api/realtime/ticket, authRequired)로
+  // 1회용·수십초 유효의 짧은 "WebSocket 전용 접속 티켓"을 먼저 발급받고, WebSocket
+  // 연결시엔 그 티켓만 쿼리에 실어 서버가 1회 소비 후 폐기하는 구조. 다만 이는 별도의
+  // 티켓 발급 엔드포인트·저장소가 필요한 구조변경이라 이번 최소수정 범위에서는 적용하지 않음.
+  const token = url.searchParams.get('token');
+  let user;
+  try { user = jwt.verify(token || '', JWT_SECRET); } catch (e) { socket.destroy(); return; }
+  if (user.role !== 'consumer' && user.role !== 'partner') { socket.destroy(); return; }
+  // 결함정리(사용자요청 — 보안강화): 최초 연결 시점에도 DB 계정상태 재검증(JWT만으로는
+  // 그 사이 탈퇴하거나 파트너 승인이 취소됐는지 알 수 없음)
+  if (!isAccountActiveForRealtime(user)) { socket.destroy(); return; }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    ws.user = user;
+    wss.emit('connection', ws, req);
+  });
+});
+
+wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  // 결함정리(사용자요청 — 보안강화 검증 중 발견한 치명적 버그): maxPayload(64KB) 초과 메시지
+  // 수신시 ws 인스턴스에서 'error' 이벤트가 발생하는데, 이 핸들러가 없으면 Node.js 프로세스
+  // 전체가 처리되지 않은 예외로 크래시함(누구나 큰 메시지 하나로 서버 전체를 다운시킬 수 있는
+  // 심각한 DoS 취약점이었음). 반드시 조용히 캐치하고 그 연결만 종료.
+  ws.on('error', (err) => {
+    console.error('WebSocket 연결 오류(해당 연결만 종료):', err.code || err.message);
+    unsubscribeFromRoom(ws);
+    try { ws.terminate(); } catch (e) {}
+  });
+  ws.on('message', (raw) => {
+    let data;
+    try { data = JSON.parse(raw.toString()); } catch (e) { return; }
+    if (data && data.type === 'subscribe' && data.roomId) {
+      const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(data.roomId);
+      if (!assertRoomAccess(room, ws.user)) return; // 본인 방이 아니면 조용히 무시(정보노출 방지)
+      subscribeToRoom(ws, data.roomId);
+      // 구독 시점에 sinceSeq 이후 누락된 메시지가 있으면 즉시 보내줘서 끊김없이 이어지게 함
+      const sinceSeq = Number(data.sinceSeq) || 0;
+      const missed = db.prepare('SELECT * FROM chat_messages WHERE room_id=? AND seq > ? ORDER BY seq ASC').all(data.roomId, sinceSeq);
+      missed.forEach(m => { try { ws.send(JSON.stringify({ type: 'message', roomId: data.roomId, message: m })); } catch (e) {} });
+    }
+  });
+  ws.on('close', () => { unsubscribeFromRoom(ws); });
+});
+
+// 하트비트: 죽은 연결(30초간 pong 무응답) 정리, heartbeat 이벤트로 프론트 폴링전환 방지
+const heartbeatInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) { unsubscribeFromRoom(ws); return ws.terminate(); }
+    // 결함정리(사용자요청 — 보안강화): 접속을 오래 유지하는 동안 JWT가 만료되면 연결을 끊는다.
+    // (탈퇴/권한변경 후에도 이미 맺어진 WebSocket으로는 계속 메시지가 오가던 문제 방지)
+    if (ws.user && ws.user.exp && Date.now() >= ws.user.exp * 1000) { unsubscribeFromRoom(ws); return ws.terminate(); }
+    // 결함정리(사용자요청 — 보안강화): 하트비트마다 DB 계정상태도 재검증(접속을 오래 유지하는
+    // 동안 탈퇴하거나 파트너 승인이 취소된 경우에도 실시간으로 연결을 끊기 위함)
+    if (!isAccountActiveForRealtime(ws.user)) { unsubscribeFromRoom(ws); return ws.terminate(); }
+    ws.isAlive = false;
+    try { ws.ping(); } catch (e) {}
+  });
+}, 30000);
+wss.on('close', () => clearInterval(heartbeatInterval));
+
+async function purgeExpiredStoredFiles() {
+  const expired = db.prepare(`SELECT id, storage_key FROM stored_files
+    WHERE deleted_at IS NULL AND retention_until IS NOT NULL AND datetime(retention_until) <= datetime('now') LIMIT 100`).all();
+  for (const file of expired) {
+    try {
+      await objectStorage.deleteObject(file.storage_key);
+      db.prepare("UPDATE stored_files SET deleted_at=datetime('now') WHERE id=?").run(file.id);
+    } catch (error) {
+      console.error('보관기한 만료 파일 파기 실패:', file.id, error.message);
+    }
+  }
+}
+const storedFileCleanupInterval = setInterval(() => { purgeExpiredStoredFiles().catch(error => console.error('파일 파기 작업 실패:', error.message)); }, 24 * 60 * 60 * 1000);
+storedFileCleanupInterval.unref();
+wss.on('close', () => clearInterval(storedFileCleanupInterval));
+
+httpServer.listen(PORT, () => {
+  purgeExpiredStoredFiles().catch(error => console.error('초기 파일 파기 작업 실패:', error.message));
+  console.log(`루머 ROOMER 백엔드 실행중: http://localhost:${PORT}`);
+  // 신규(PC+모바일 동시테스트 지원): 같은 와이파이의 다른 기기(모바일)에서 접속할 정확한 주소를 자동으로 찾아서 안내
+  const os = require('os');
+  let nets = {};
+  try { nets = os.networkInterfaces(); } catch (error) { console.warn('로컬 네트워크 주소를 확인할 수 없습니다:', error.message); }
+  const addrs = [];
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal) addrs.push(net.address);
+    }
+  }
+  if (addrs.length) {
+    console.log('\n📱 모바일(같은 와이파이)에서 접속하려면:');
+    addrs.forEach(ip => console.log(`   http://${ip}:${PORT}/app`));
+    console.log('');
+  }
+});
