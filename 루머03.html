@@ -1361,6 +1361,16 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     </div>
     </div>
 
+    <!-- 신규(사용자요청 — 리텐션 아이디어 확장 반영 ①: 하자보수 신뢰배지 강조): 히어로 바로 아래,
+         눈에 잘 띄는 위치에 상시 노출. 기존 "책임지는 사후관리" 4박스 카피(1개월-사후관리 그리드) 재사용, 삭제 없음 -->
+    <div style="display:flex;align-items:center;gap:10px;background:var(--gold-accent-tint,#F4ECDD);border:1px solid rgba(176,141,87,.35);border-radius:var(--radius-input);padding:12px 14px;margin:16px 0">
+      <span id="trust-badge-shield-icon" style="flex-shrink:0;color:var(--gold-accent)"></span>
+      <div>
+        <div style="font-size:13.5px;font-weight:800;color:var(--charcoal)">준공 후 1년, 하자보수 무상 보장</div>
+        <div style="font-size:11px;color:var(--slate);margin-top:1px">계약부터 사후관리까지 앱 안에서 그대로 이어집니다</div>
+      </div>
+    </div>
+
     <!-- 신규(사용자요청): 히어로 바로 아래, 이미지 그리드 시작 전 섹션 제목 — "히어로하단" 명칭 변경
          요청(사용자요청)에 따라 "우리지역 대표업체"로 표기(AD_PLACEMENT_LABEL.heroSub와 동일한 문구로
          JS에서 채움: 아래 IIFE 참고) -->
@@ -1394,13 +1404,37 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
       </div>
     </div>
 
-    <!-- 신규(사용자요청 — 레퍼런스 앱 참고): "루머 칼럼" 섹션(인테리어 팁·트렌드 아티클) -->
+    <!-- 신규(사용자요청 — 리텐션 아이디어 확장 반영 ②: 시즌 프로모션 배너). 특정 할인율/기간을 임의로
+         만들어내지 않고, 실제 진행 중인 이벤트가 정해지면 문구만 교체하면 되도록 범용 카피로 작성함 -->
+    <div style="display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,var(--charcoal),var(--steelblue));border-radius:var(--radius-card);padding:16px;margin-top:20px;color:#fff">
+      <span id="season-banner-icon" style="flex-shrink:0"></span>
+      <div style="flex:1">
+        <div style="font-size:13.5px;font-weight:800">가을 이사철, 인테리어 준비하기 좋은 시기예요</div>
+        <div style="font-size:11px;color:rgba(255,255,255,.75);margin-top:2px">지금 앱에서 우리지역 업체 견적을 받아보세요</div>
+      </div>
+      <div onclick="setReturnTo('00'); go('search')" style="flex-shrink:0;background:rgba(255,255,255,.16);border-radius:999px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">견적받기</div>
+    </div>
+
+    <!-- 신규(사용자요청 — 리텐션 아이디어 확장 반영 ③: 친구 추천 배너). 실제 추천코드 발급/캐시지급
+         백엔드 로직은 아직 없음 — 지금은 다운로드·가입 유도용 배너 카피만 적용, 클릭 시 기존 가입 흐름으로 연결 -->
+    <div onclick="setReturnTo('00'); go('03')" style="display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px;margin-top:12px;cursor:pointer">
+      <span id="referral-banner-icon" style="flex-shrink:0;color:var(--gold-accent)"></span>
+      <div style="flex:1">
+        <div style="font-size:13.5px;font-weight:800;color:var(--charcoal)">친구 추천하고 캐시 받기</div>
+        <div style="font-size:11px;color:var(--slate);margin-top:2px">앱 가입하면 친구 초대 혜택을 확인할 수 있어요</div>
+      </div>
+      <span style="flex-shrink:0;color:var(--slate);font-size:13px">&rsaquo;</span>
+    </div>
+
+    <!-- 신규(사용자요청 — 레퍼런스 앱 참고): "루머 칼럼" 섹션(인테리어 팁·트렌드 아티클)
+         강화(사용자요청 — 리텐션 아이디어 확장 반영 ④): 앱 유도 CTA 추가 -->
     <div style="margin-top:28px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
         <div style="font-size:18px;font-weight:800;color:var(--charcoal)">루머 칼럼</div>
         <div onclick="setReturnTo('00'); go('column-list')" style="font-size:13px;color:var(--slate);cursor:pointer;text-decoration:underline">더보기</div>
       </div>
       <div id="roomer-column-list" style="display:flex;flex-direction:column;gap:14px"></div>
+      <div onclick="setReturnTo('00'); go('03')" style="text-align:center;margin-top:14px;padding:12px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:12.5px;font-weight:700;color:var(--steelblue);cursor:pointer">앱에서 더 많은 사례 보기</div>
     </div>
 
     <!-- 신규(사용자요청): 미니멀 푸터 — OMNIS 참고패턴("점주모드"처럼 사업자 진입을 완전 분리된 자리에 배치) -->
@@ -6328,6 +6362,10 @@ const ICONS = {
   // 신규(사용자요청 — "공간별 바로가기" 원형 아이콘 통일): 드레스룸(옷걸이)·그외공간(더보기 점점점)
   hanger: '<path d="M12 4a1.6 1.6 0 1 1-1.6 1.6"/><path d="M12 5.6v2"/><path d="M12 7.6 3.5 13a1.8 1.8 0 0 0 1 3.3h15a1.8 1.8 0 0 0 1-3.3z"/><path d="M5 16.3h14"/>',
   more: '<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
+  // 신규(사용자요청 — 게스트 홈 리텐션/신뢰 배너 3종용 아이콘 추가): 기존 아이콘 정의는 그대로 두고 추가만 함
+  shield: '<path d="M12 3l7 3v6c0 4.5-3 8-7 9-4-1-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  gift: '<rect x="4" y="9" width="16" height="11" rx="1"/><path d="M4 9h16v3H4z"/><path d="M12 9v11"/><path d="M12 9c-1.2-3-3-4-4.2-2.8C6.6 7.4 8 9 12 9z"/><path d="M12 9c1.2-3 3-4 4.2-2.8C17.4 7.4 16 9 12 9z"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15" rx="1.5"/><path d="M3.5 9.5h17"/><path d="M8 3v3.5M16 3v3.5"/>',
 };
 function icon(name,color,size){
   size=size||18; color=color||'currentColor';
@@ -6455,6 +6493,10 @@ function submitAppPrompt(){
 (function(){
   var s = document.getElementById('header-search-icon'); if (s) s.innerHTML = icon('pin', T.terracotta, 18);
   var bs = document.getElementById('header-big-search-icon'); if (bs) bs.innerHTML = icon('search', T.slate, 18);
+  // 신규(사용자요청 — 리텐션 아이디어 확장 반영: 신뢰배지/시즌배너/추천배너 아이콘)
+  var tbs = document.getElementById('trust-badge-shield-icon'); if (tbs) tbs.innerHTML = icon('shield', T.goldAccent, 26);
+  var sbi = document.getElementById('season-banner-icon'); if (sbi) sbi.innerHTML = icon('calendar', '#fff', 24);
+  var rbi = document.getElementById('referral-banner-icon'); if (rbi) rbi.innerHTML = icon('gift', T.goldAccent, 24);
   // 재설계(사용자요청 — 미니멀 팔레트 전환): 8개 공간 카테고리 아이콘 색을 파스텔 각색 대신 전부
   // 동일한 charcoal로 통일(아이콘 모양으로만 구분, SPACE_ICON_META와 동일한 원칙 적용)
   var catIcons = [
