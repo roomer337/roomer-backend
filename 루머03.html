@@ -1290,6 +1290,15 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
       <div style="width:56px;height:56px;border-radius:50%;background:var(--stone);display:flex;align-items:center;justify-content:center" id="cat-icon-plant"></div>
       <div style="font-size:12px;font-weight:600;color:var(--charcoal);text-align:center;line-height:1.3">발코니</div>
     </div>
+    <!-- 신규(사용자요청 — 공간 카테고리 확장 제안 반영): 드레스룸/상업 2개 추가로 8→10개, CATEGORIES(완공사례 필터)와 일치 -->
+    <div onclick="setReturnTo('00'); go('search'); setTimeout(function(){ document.getElementById('search-input').value='드레스룸'; runSearch('드레스룸'); }, 50)" style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;width:70px">
+      <div style="width:56px;height:56px;border-radius:50%;background:var(--stone);display:flex;align-items:center;justify-content:center" id="cat-icon-hanger"></div>
+      <div style="font-size:12px;font-weight:600;color:var(--charcoal);text-align:center;line-height:1.3">드레스룸</div>
+    </div>
+    <div onclick="setReturnTo('00'); go('search'); setTimeout(function(){ document.getElementById('search-input').value='상업'; runSearch('상업'); }, 50)" style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;width:70px">
+      <div style="width:56px;height:56px;border-radius:50%;background:var(--stone);display:flex;align-items:center;justify-content:center" id="cat-icon-building"></div>
+      <div style="font-size:12px;font-weight:600;color:var(--charcoal);text-align:center;line-height:1.3">상업</div>
+    </div>
   </div>
 
   <div class="content">
@@ -4446,7 +4455,7 @@ function registerPendingPartner(){
   if(typeof notifyAdmin==='function') notifyAdmin('신규 업체 등록 신청', app.name+' · AI 1차판정: '+aiPreVerdict(app).label, 'info', 'admin-pending-partners');
 }
 // 신규(사용자요청 — 2단계: 가입폼 확장): 전문분야 체크박스(공간카테고리 재사용), 대표사진 업로드
-var SPACE_CATEGORY_OPTIONS = ['거실','주방','욕실','침실','서재','현관','발코니'];
+var SPACE_CATEGORY_OPTIONS = ['거실','주방','욕실','침실','서재','현관','발코니','드레스룸','상업'];
 window._regSelectedCategories = [];
 window._regPortfolioImages = [];
 function renderRegSpaceCategories(){
@@ -6452,7 +6461,8 @@ function submitAppPrompt(){
     ['cat-icon-home','home',T.charcoal], ['cat-icon-sofa','sofa',T.charcoal],
     ['cat-icon-kitchen','kitchen',T.charcoal], ['cat-icon-bath','bath',T.charcoal],
     ['cat-icon-bed','bed',T.charcoal], ['cat-icon-book','book',T.charcoal],
-    ['cat-icon-door','door',T.charcoal], ['cat-icon-plant','plant',T.charcoal]
+    ['cat-icon-door','door',T.charcoal], ['cat-icon-plant','plant',T.charcoal],
+    ['cat-icon-hanger','hanger',T.charcoal], ['cat-icon-building','building',T.charcoal]
   ];
   catIcons.forEach(function(t){ var el=document.getElementById(t[0]); if(el) el.innerHTML = icon(t[1], t[2], 23); });
 })();
@@ -8008,7 +8018,7 @@ if(typeof updateAuthBtn00==='function') updateAuthBtn00();
   }catch(e){}
 })();
 
-const CATEGORIES = ['전체','거실','주방','침실','욕실','현관','드레스룸','서재','상업','그외공간'];
+const CATEGORIES = ['전체','거실','주방','침실','욕실','현관','드레스룸','서재','상업','발코니','그외공간'];
 // 공간별 카테고리 칩(2줄 wrap) + 실제 필터링 공용 헬퍼 (#00·#02·#07 공용)
 function buildCategoryChips(containerId, onSelect){
   var el=document.getElementById(containerId); if(!el) return;
