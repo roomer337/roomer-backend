@@ -3695,7 +3695,9 @@ app.get('/api/admin/dashboard/counts', adminAuthRequired(), (req, res) => {
   // buildAbuseQueue()(실제 대기열 화면과 동일한 기준 — 이미 조치된 노쇼는 제외)로 통일
   const abuseCandidates = buildAbuseQueue().length;
   const tier = db.prepare("SELECT COUNT(*) c FROM tier_upgrades WHERE status='admin_review'").get().c;
-  res.json({ success: true, data: { partners, dispute, abuse: abuseCandidates, inspect, inspectionQueue, settleHold, tier } });
+  // 신규(강남언니 벤치마킹 검토 후속 — 0단계): 답변 대기 중인 1:1 문의 건수를 관리자 대시보드에 노출
+  const supportOpen = db.prepare("SELECT COUNT(*) c FROM support_inquiries WHERE status='open'").get().c;
+  res.json({ success: true, data: { partners, dispute, abuse: abuseCandidates, inspect, inspectionQueue, settleHold, tier, supportOpen } });
 });
 
 // 신규(2026-09, 전수조사 발견 — 운영콘솔 "실시간 현황"): loadTodayStats()가
@@ -3960,6 +3962,119 @@ app.post('/api/share/sns', blockInProduction, authRequired, (req, res) => {
 app.post('/api/invite', authRequired, (req, res) => {
   const inviteId = randomUUID();
   res.json({ success:true, data:{ inviteId, inviteUrl: 'https://roomer.app/invite/'+inviteId } });
+});
+
+// ===== 13-2. 고객센터 1:1 문의 =====
+// 신규(강남언니 벤치마킹 검토 후속 — 0단계): "1:1 문의하기" 버튼이 alert('...프로토타입: 실제로는
+// 전송되지 않습니다')만 띄우고 실제로는 아무 데도 접수되지 않던 문제를 실제 접수·답변 흐름으로 교체.
+function mapSupportInquiry(row) {
+  return {
+    id: row.id,
+    userRole: row.user_role,
+    message: row.message,
+    status: row.status,
+    adminReply: row.admin_reply,
+    repliedAt: row.replied_at,
+    createdAt: row.created_at,
+  };
+}
+app.post('/api/support/inquiries', authRequired, (req, res) => {
+  const { message } = req.body;
+  if (!isNonEmptyString(message, 1000) || message.trim().length < 5) {
+    return validationError(res, '문의 내용을 5자 이상 1000자 이내로 입력해주세요');
+  }
+  const id = randomUUID();
+  db.prepare('INSERT INTO support_inquiries (id, user_role, user_id, message, status) VALUES (?,?,?,?,?)')
+    .run(id, req.user.role, req.user.sub, message.trim(), 'open');
+  res.json({ success: true, data: { id, status: 'open' } });
+});
+app.get('/api/support/inquiries/mine', authRequired, (req, res) => {
+  const rows = db.prepare('SELECT * FROM support_inquiries WHERE user_role=? AND user_id=? ORDER BY created_at DESC')
+    .all(req.user.role, req.user.sub);
+  res.json({ success: true, data: rows.map(mapSupportInquiry) });
+});
+app.get('/api/admin/support/inquiries', adminAuthRequired(), (req, res) => {
+  const status = req.query.status;
+  const rows = status
+    ? db.prepare('SELECT * FROM support_inquiries WHERE status=? ORDER BY created_at DESC').all(status)
+    : db.prepare('SELECT * FROM support_inquiries ORDER BY created_at DESC').all();
+  res.json({ success: true, data: rows.map(mapSupportInquiry) });
+});
+app.put('/api/admin/support/inquiries/:id/reply', adminAuthRequired(), (req, res) => {
+  const { reply } = req.body;
+  if (!isNonEmptyString(reply, 2000)) return validationError(res, '답변 내용을 입력해주세요');
+  const row = db.prepare('SELECT * FROM support_inquiries WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '문의를 찾을 수 없습니다' } });
+  db.prepare("UPDATE support_inquiries SET admin_reply=?, status='answered', replied_at=datetime('now') WHERE id=?")
+    .run(reply.trim(), req.params.id);
+  createNotification(row.user_role, row.user_id, 'support_replied', '문의하신 내용에 답변이 도착했어요', reply.trim().slice(0, 80), 'support', row.id);
+  res.json({ success: true, data: mapSupportInquiry(db.prepare('SELECT * FROM support_inquiries WHERE id=?').get(req.params.id)) });
+});
+
+// ===== 13-3. 고객센터 FAQ =====
+// 신규(사용자요청 — FAQ를 검색 가능한 방대한 자료로 확장, 2026-09): 기존 3개짜리 하드코딩 FAQ를
+// DB 기반으로 교체. 문항 수가 지금 규모(수백 개 이내)에서는 서버 검색 없이 프론트가 전체를 한 번에
+// 받아 즉시 필터링하는 편이 응답이 빠르고 서버 부담도 없어서, 여기서는 목록 조회 API만 제공한다.
+function mapFaq(row) {
+  return {
+    id: row.id,
+    audience: row.audience,
+    category: row.category,
+    question: row.question,
+    answer: row.answer,
+    keywords: row.keywords,
+    sortOrder: row.sort_order,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+app.get('/api/faqs', (req, res) => {
+  const audience = req.query.audience;
+  let rows;
+  if (audience && ['consumer', 'partner', 'common'].includes(audience)) {
+    rows = db.prepare("SELECT * FROM faqs WHERE status='published' AND audience IN (?, 'common') ORDER BY sort_order ASC")
+      .all(audience);
+  } else {
+    rows = db.prepare("SELECT * FROM faqs WHERE status='published' ORDER BY sort_order ASC").all();
+  }
+  res.json({ success: true, data: rows.map(mapFaq) });
+});
+app.get('/api/admin/faqs', adminAuthRequired(), (req, res) => {
+  const rows = db.prepare('SELECT * FROM faqs ORDER BY audience ASC, category ASC, sort_order ASC').all();
+  res.json({ success: true, data: rows.map(mapFaq) });
+});
+app.post('/api/admin/faqs', adminAuthRequired(), (req, res) => {
+  const { audience, category, question, answer, keywords } = req.body;
+  if (!['consumer', 'partner', 'common'].includes(audience)) return validationError(res, 'audience가 올바르지 않습니다(consumer/partner/common)');
+  if (!isNonEmptyString(category, 50)) return validationError(res, 'category를 입력해주세요');
+  if (!isNonEmptyString(question, 300)) return validationError(res, '질문을 입력해주세요');
+  if (!isNonEmptyString(answer, 3000)) return validationError(res, '답변을 입력해주세요');
+  const id = randomUUID();
+  const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order),-1) m FROM faqs WHERE audience=? AND category=?').get(audience, category).m;
+  db.prepare(`INSERT INTO faqs (id, audience, category, question, answer, keywords, sort_order, status) VALUES (?,?,?,?,?,?,?,'published')`)
+    .run(id, audience, category, question.trim(), answer.trim(), (keywords || '').trim(), maxOrder + 1);
+  res.json({ success: true, data: mapFaq(db.prepare('SELECT * FROM faqs WHERE id=?').get(id)) });
+});
+app.put('/api/admin/faqs/:id', adminAuthRequired(), (req, res) => {
+  const row = db.prepare('SELECT * FROM faqs WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'FAQ를 찾을 수 없습니다' } });
+  const { question, answer, keywords, category, status } = req.body;
+  if (question != null && !isNonEmptyString(question, 300)) return validationError(res, '질문이 올바르지 않습니다');
+  if (answer != null && !isNonEmptyString(answer, 3000)) return validationError(res, '답변이 올바르지 않습니다');
+  if (status != null && !['published', 'draft'].includes(status)) return validationError(res, 'status가 올바르지 않습니다');
+  db.prepare(`UPDATE faqs SET
+      question=COALESCE(?, question), answer=COALESCE(?, answer), keywords=COALESCE(?, keywords),
+      category=COALESCE(?, category), status=COALESCE(?, status), updated_at=datetime('now')
+    WHERE id=?`)
+    .run(question ? question.trim() : null, answer ? answer.trim() : null, keywords != null ? keywords.trim() : null, category || null, status || null, req.params.id);
+  res.json({ success: true, data: mapFaq(db.prepare('SELECT * FROM faqs WHERE id=?').get(req.params.id)) });
+});
+app.delete('/api/admin/faqs/:id', adminAuthRequired(), (req, res) => {
+  const row = db.prepare('SELECT id FROM faqs WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'FAQ를 찾을 수 없습니다' } });
+  db.prepare('DELETE FROM faqs WHERE id=?').run(req.params.id);
+  res.json({ success: true, data: { id: req.params.id } });
 });
 
 // ===== 14. 관리자 알림·정책 =====
