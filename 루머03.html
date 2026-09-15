@@ -6,6 +6,9 @@
 <title>루머 ROOMER — 인테리어 매칭 플랫폼</title>
 <!-- 신규(사용자요청): 오늘의집풍 둥근 느낌의 폰트로 전환 -->
 <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css">
+<!-- 신규(사용자요청 — 에디토리얼 럭셔리 리디자인): 히어로 헤드라인 등 "임팩트가 필요한 순간"에만
+     쓰는 세리프 폰트. 본문(Pretendard)은 그대로 두고 지정한 요소에만 .serif-editorial로 적용 -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@700;900&display=swap">
 <style>
 :root{
   /* ============================================================================
@@ -51,8 +54,14 @@
   --success:#3C6F51; --danger:#AF5C53; --warning:#A46F47; --warning-bg:#F3F1EE;
   --ondark-light:#D7DBDF; --ondark-mid:#B9C0C7; --ondark-dim:#98A0A8;
   --tone-mid:#33475A; --tone-light:#5C7185;
+  /* 신규(사용자요청 — 에디토리얼 럭셔리 리디자인): "검수 인증" 같은 신뢰 포인트 전용 금색 강조.
+     기존 --brass는 이미 앱 전체 24곳(뱃지·경고문구·아바타 자리 등)에서 steelblue 값으로
+     범용 강조색처럼 쓰이고 있어서, 그 값을 실제 금색으로 바꾸면 화면 전체가 의도치 않게
+     금색으로 바뀐다 — 그래서 손대지 않고 완전히 새 변수로 분리함. */
+  --gold-accent:#B08D57; --gold-accent-tint:#F4ECDD;
   --radius-input:10px; --radius-button:14px; --radius-card:18px; --radius-pill:24px;
 }
+.serif-editorial{font-family:'Noto Serif KR',serif}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);color:var(--charcoal);overflow-x:hidden}
 .scr{display:none}
@@ -111,7 +120,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 .signup-split .signup-card-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:14px 20px}
 /* 재설계(사용자요청): 좁은 화면에서 완전히 사라지지 않고 요약 배너(제목만)로 남도록 —
    display:none 대신 항상 표시하되, 상세 혜택리스트(#benefit-list)만 넓은 화면에서 노출 */
-.signup-benefit-panel{display:flex;flex-direction:column;justify-content:center;padding:12px 20px;background:linear-gradient(135deg, var(--charcoal), #446079);color:#fff}
+.signup-benefit-panel{display:flex;flex-direction:column;justify-content:center;padding:12px 20px;background:linear-gradient(135deg, var(--charcoal), #446079);color:#fff;border-bottom:2px solid var(--gold-accent)}
 #benefit-list{display:none}
 @media (min-width:600px){
   /* 결함 발견(claude.ai 실제 패널 749px로 재검증 중 확인): 900px 기준이 claude.ai 실제
@@ -142,7 +151,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
    비율로 잘려 보였다("광고면 폭이 좁게 보인다"는 지적의 원인) — 위저드가 약속한 16:7 그대로 쓰도록
    맞추되, 세로공간이 너무 커지지 않도록 max-width로 절대크기를 제한한다(히어로 슬라이드와 동일 원리). */
 .region-ad-box{width:100%;max-width:480px;aspect-ratio:16/7;height:auto;margin-left:auto;margin-right:auto}
-.hero-slide .slide-img{position:absolute;inset:0;display:none;background-size:cover;background-position:center}
+.hero-slide .slide-img{position:absolute;inset:0;display:none;background-size:cover;background-position:center;filter:saturate(.92) contrast(1.04)}
 .hero-slide .slide-img.on{display:block}
 .hero-disclaimer{position:absolute;left:16px;bottom:14px;color:rgba(255,255,255,.75);font-size:12.5px}
 .hero-dots{position:absolute;right:16px;bottom:14px;display:flex;gap:6px}
@@ -1326,12 +1335,12 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
              없으면 기존 기본 문구를 그대로 보여준다(renderHeroAdBadge()가 갱신). -->
         <div id="hero-top-pill" style="display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.92);color:var(--charcoal);border-radius:var(--radius-pill);padding:9px 16px;font-size:13px;font-weight:700;max-width:100%">
           <span id="hero-top-pill-ad-tag" style="display:none;background:var(--charcoal);color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:var(--radius-pill);flex-shrink:0">AD</span>
-          <span id="hero-top-pill-text" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">우리동네 추천디자인업체</span>
+          <span id="hero-top-pill-text" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">우리지역 추천디자인업체</span>
         </div>
       </div>
       <div style="position:absolute;left:18px;right:18px;bottom:40px;color:#fff;pointer-events:none">
         <div id="hero-eyebrow" style="font-size:12px;letter-spacing:1.5px;opacity:.85;margin-bottom:6px;font-weight:600">AI COMPLETED INTERIOR</div>
-        <div id="hero-title" style="font-size:23px;font-weight:800;line-height:1.35;text-shadow:0 2px 10px rgba(0,0,0,.4)">검수 인증된 시공사례<br>더 많이 만나보세요</div>
+        <div id="hero-title" class="serif-editorial" style="font-size:27px;font-weight:900;line-height:1.3;letter-spacing:-0.3px;text-shadow:0 2px 10px rgba(0,0,0,.4)">검수 인증된 시공사례<br>더 많이 만나보세요</div>
       </div>
       <div class="hero-dots" id="hero-dots-landing"></div>
       <!-- 신규(사용자요청 — 레퍼런스 앱 참고): "1 | 6" 형태 숫자 페이지네이터 -->
@@ -1391,11 +1400,14 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
         <span onclick="setReturnTo('00'); renderLegalDoc('about'); go('legal-doc')" style="cursor:pointer">루머(ROOMER) 소개</span> ·
         <span onclick="setReturnTo('00'); renderLegalDoc('bizinfo'); go('legal-doc')" style="cursor:pointer">사업자정보</span> ·
         <span onclick="setReturnTo('00'); renderLegalDoc('privacy'); go('legal-doc')" style="cursor:pointer">개인정보처리방침</span> ·
-        <span onclick="setReturnTo('00'); renderLegalDoc('terms'); go('legal-doc')" style="cursor:pointer">이용약관</span>
+        <span onclick="setReturnTo('00'); renderLegalDoc('terms'); go('legal-doc')" style="cursor:pointer">이용약관</span> ·
+        <span onclick="setReturnTo('00'); renderLegalDoc('location_policy'); go('legal-doc')" style="cursor:pointer">위치정보 처리방침</span>
       </div>
       <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--stone)">
         <span onclick="go('partner-landing')" style="cursor:pointer;font-size:12.5px;color:var(--steelblue);font-weight:600">파트너 가입 및 로그인</span>
       </div>
+      <!-- 신규(출시체크리스트 반영): 통신판매중개자 지위 상시 고지 -->
+      <div style="margin-top:10px;font-size:11px;color:var(--slate);line-height:1.6">루머(ROOMER)는 통신판매중개자이며, 통신판매의 당사자가 아닙니다.</div>
       <div class="logo" style="margin-top:10px;font-size:11.5px;font-weight:400;color:var(--ondark-mid)">© 2026 루머 ROOMER</div>
     </div>
   </div>
@@ -1538,7 +1550,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   <div class="signup-split">
     <div class="signup-benefit-panel">
       <div style="font-size:clamp(12px,1.3vw,14px);opacity:.7;margin-bottom:6px" id="lb-benefit-eyebrow"></div>
-      <div style="font-size:clamp(14.5px,1.8vw,18px);font-weight:800;line-height:1.35;margin-bottom:12px" id="t-benefit-main"></div>
+      <div class="serif-editorial" style="font-size:clamp(15.5px,1.9vw,19.5px);font-weight:900;line-height:1.35;margin-bottom:12px" id="t-benefit-main"></div>
       <div style="display:flex;flex-direction:column;gap:clamp(6px,1vw,9px)" id="benefit-list"></div>
     </div>
     <div class="signup-card-wrap">
@@ -1547,9 +1559,15 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
         <div class="caption" id="d-signup-03" style="margin-bottom:6px;font-size:13px"></div>
         <div id="badge-minimal-03" style="display:inline-flex;align-items:center;gap:5px;background:#3C6F5114;color:var(--success);font-size:11.5px;font-weight:700;padding:3px 8px;border-radius:var(--radius-pill);margin-bottom:8px"></div>
         <div id="consent-03" style="border:1px solid var(--stone);border-radius:var(--radius-card);padding:8px 10px;margin-bottom:8px"></div>
-        <button class="btn" style="margin-bottom:6px;padding:9px;font-size:14.5px;background:#FEE500;color:#191919" onclick="kakaoLogin()" id="btn-kakao-03"></button>
-        <button class="btn" style="margin-bottom:6px;padding:9px;font-size:14.5px;background:#03C75A;color:#fff" onclick="socialGo('네이버')" id="btn-naver-03"></button>
-        <button type="button" id="btn-more-signup" style="width:100%;background:none;border:none;padding:6px;font-size:13px;color:var(--slate);cursor:pointer;font-family:inherit"></button>
+        <!-- 재설계(사용자요청 — 에디토리얼 럭셔리): 카카오·네이버 풀와이드 버튼(화면에서 가장 채도
+             높은 도형이던 것) → 작은 원형 아이콘 2개로 축소하고, 아래 브랜드 CTA(스틸블루)를
+             화면의 주인공으로 승격. 토글 동작(더보기→휴대폰/이메일)은 기존 로직 그대로 유지 -->
+        <div style="text-align:center;font-size:11px;font-weight:700;color:var(--slate);letter-spacing:.3px;margin:2px 0 8px">간편 로그인</div>
+        <div style="display:flex;justify-content:center;gap:14px;margin-bottom:12px">
+          <button class="btn" style="width:44px;height:44px;padding:0;border-radius:50%;background:#FEE500;display:flex;align-items:center;justify-content:center;flex-shrink:0" onclick="kakaoLogin()" id="btn-kakao-03" aria-label="카카오로 시작하기"></button>
+          <button class="btn" style="width:44px;height:44px;padding:0;border-radius:50%;background:#03C75A;display:flex;align-items:center;justify-content:center;flex-shrink:0" onclick="socialGo('네이버')" id="btn-naver-03" aria-label="네이버로 시작하기"></button>
+        </div>
+        <button type="button" id="btn-more-signup" style="width:100%;background:var(--steelblue);color:#fff;border:none;border-radius:var(--radius-button);padding:12px;font-size:14.5px;font-weight:800;cursor:pointer;font-family:inherit;margin-bottom:6px"></button>
         <div id="more-signup-options" style="display:none">
           <button class="btn btn-outline" style="margin-bottom:6px;padding:9px" onclick="otpFromSignup('phone')" id="btn-phone-03"></button>
           <button class="btn btn-outline" style="padding:9px" onclick="otpFromSignup('email')" id="btn-email-03"></button>
@@ -1599,15 +1617,19 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
       <button class="btn" style="background:linear-gradient(135deg,var(--charcoal),var(--charcoal-dark) 60%,var(--brass));color:#fff;font-weight:800;padding:11px" onclick="openOTP('partner','signup','email')">파트너 신청하기</button>
       <button class="btn btn-outline" style="padding:11px" onclick="openOTP('partner','login','email')">파트너 로그인하기</button>
     </div>
-    <div style="background:linear-gradient(160deg,#142029,#142029 55%,var(--charcoal-dark));border-radius:var(--radius-card);padding:14px 18px;color:#fff;margin:0 0 10px;position:relative;overflow:hidden">
+    <!-- 재설계(사용자요청 — 에디토리얼 럭셔리): 이 카드가 기존에도 가장 "고급스럽다"는 인상을 주던
+         유일한 요소였음. var(--brass)는 앱 전체 24곳에서 이미 스틸블루값 범용 강조색으로 쓰이고
+         있어 그대로 두고, 이 카드 안에서만 새 변수 --gold-accent(진짜 금색)로 바꿔 프리미엄 톤을
+         살림 + 상단에 얇은 골드 헤어라인 추가 + 헤드라인 강조부만 세리프로 -->
+    <div style="background:linear-gradient(160deg,#142029,#142029 55%,var(--charcoal-dark));border-radius:var(--radius-card);border-top:2px solid var(--gold-accent);padding:14px 18px;color:#fff;margin:0 0 10px;position:relative;overflow:hidden">
       <div style="position:absolute;top:-30px;right:-30px;width:130px;height:130px;border-radius:50%;background:radial-gradient(circle,rgba(68,96,121,.16),transparent 70%)"></div>
-      <div style="font-size:10.5px;letter-spacing:2px;opacity:.75;font-weight:700;margin-bottom:6px;color:var(--brass)">PARTNER CENTER</div>
-      <div style="font-size:20px;font-weight:800;line-height:1.25;letter-spacing:-0.5px;position:relative">저가 입찰 전쟁, <span style="color:var(--brass);font-size:22px">이제 그만</span></div>
+      <div style="font-size:10.5px;letter-spacing:2px;opacity:.75;font-weight:700;margin-bottom:6px;color:var(--gold-accent)">PARTNER CENTER</div>
+      <div style="font-size:20px;font-weight:800;line-height:1.25;letter-spacing:-0.5px;position:relative">저가 입찰 전쟁, <span class="serif-editorial" style="color:var(--gold-accent);font-size:23px;font-weight:900">이제 그만</span></div>
       <div style="font-size:12.5px;color:rgba(255,255,255,.72);margin-top:8px;line-height:1.5;position:relative">광고비 태우고 헐값 견적 경쟁하던 시대는 끝났습니다. 저희가 플랫폼 내에서 대신 광고해 드립니다.</div>
-      <div style="font-size:13.5px;color:#fff;margin-top:6px;font-weight:800;position:relative">허수 리드 <span style="color:var(--brass)">0%</span> — 계약 성사시에만 수수료</div>
+      <div style="font-size:13.5px;color:#fff;margin-top:6px;font-weight:800;position:relative">허수 리드 <span style="color:var(--gold-accent)">0%</span> — 계약 성사시에만 수수료</div>
       <div style="margin-top:0;margin-bottom:10px;display:flex;gap:8px;position:relative">
-        <span style="border:1px solid rgba(68,96,121,.4);color:var(--brass);font-size:11px;font-weight:700;padding:3px 9px;border-radius:var(--radius-pill)">입점비 0원</span>
-        <span style="border:1px solid rgba(68,96,121,.4);color:var(--brass);font-size:11px;font-weight:700;padding:3px 9px;border-radius:var(--radius-pill)">언제든 중지 가능</span>
+        <span style="border:1px solid rgba(176,141,87,.45);color:var(--gold-accent);font-size:11px;font-weight:700;padding:3px 9px;border-radius:var(--radius-pill)">입점비 0원</span>
+        <span style="border:1px solid rgba(176,141,87,.45);color:var(--gold-accent);font-size:11px;font-weight:700;padding:3px 9px;border-radius:var(--radius-pill)">언제든 중지 가능</span>
       </div>
     </div>
     <div id="partner-proof" style="display:flex;gap:8px;margin-bottom:3px"></div>
@@ -3219,6 +3241,9 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
       <div onclick="closeSideMenu(); if(!window.currentUserLoggedIn){needSignup('my-support');}else{if(typeof renderMySupport==='function')renderMySupport();go('my-support')}" style="padding:10px 4px;font-size:14px;color:var(--slate);cursor:pointer">고객센터</div>
       <div style="padding:10px 4px;font-size:14px;color:var(--slate)">공지사항</div>
       <div onclick="closeSideMenu(); setReturnTo(window._sideMenuOpenedFrom||'00'); renderLegalDoc('terms'); go('legal-doc')" style="padding:10px 4px;font-size:13px;color:var(--slate);cursor:pointer">이용약관 · 개인정보처리방침</div>
+      <div onclick="closeSideMenu(); setReturnTo(window._sideMenuOpenedFrom||'00'); renderLegalDoc('location_policy'); go('legal-doc')" style="padding:10px 4px;font-size:13px;color:var(--slate);cursor:pointer">위치정보 처리방침</div>
+      <!-- 신규(출시체크리스트 반영): 통신판매중개자 지위 상시 고지 — 화면에는 없고 약관에만 있다는 지적 반영 -->
+      <div style="padding:10px 4px 2px;font-size:11.5px;color:var(--slate);line-height:1.6">루머(ROOMER)는 통신판매중개자이며, 통신판매의 당사자가 아닙니다.</div>
     </div>
   </div>
 </div>
@@ -3239,6 +3264,17 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   </div>
 </div>
 
+<!-- 신규(강남언니 벤치마킹 검토 후속 — 2단계: 계약인증 리뷰 시스템): 실제 계약(contractId)에
+     묶어서만 작성 가능한 리뷰 작성 모달 -->
+<div id="review-write-overlay" style="display:none;position:fixed;inset:0;background:rgba(20,32,41,.45);z-index:64;align-items:center;justify-content:center;padding:20px">
+  <div style="width:100%;max-width:400px;max-height:86vh;overflow-y:auto;background:#fff;border-radius:var(--radius-card);padding:24px;box-shadow:0 20px 48px rgba(0,0,0,.18)">
+    <div class="h2" style="margin-bottom:14px">리뷰 작성</div>
+    <div id="review-write-stars" style="margin-bottom:8px"></div>
+    <textarea id="review-write-comment" placeholder="솔직한 후기를 남겨주세요 (선택)" style="width:100%;box-sizing:border-box;border:1px solid var(--stone);border-radius:var(--radius-input);padding:10px 12px;font-size:15px;font-family:inherit;min-height:90px;resize:vertical;margin-bottom:14px"></textarea>
+    <button class="btn btn-primary" style="margin-bottom:8px" onclick="submitReview()">등록하기</button>
+    <button class="btn btn-outline" onclick="closeReviewComposer()">취소</button>
+  </div>
+</div>
 
 <!-- 결함수정(사용자 지적): 업체용 마이페이지가 없어 포트폴리오 업로드가 1회성 가입흐름에 얹혀있던 문제 -->
 <!-- 결함수정+신규: 업체용 알림함(하단탭 "포트폴리오"였던 자리를 대체) -->
@@ -3251,6 +3287,17 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
     <div style="margin-top:16px"><button class="btn btn-outline" onclick="go('partner-home')">닫기</button></div>
   </div>
   <nav class="tabbar" id="tabbar-partner-alert-list"></nav>
+</div>
+
+<!-- 신규(강남언니 벤치마킹 검토 후속 — 2단계): 업체가 받은 리뷰 확인 + 답글 작성 화면 -->
+<div class="scr" id="s-partner-reviews">
+  <header class="header"><div id="hdr-partner-reviews" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
+  <div class="content" style="">
+    <div class="h1" style="margin:20px 0 4px">받은 리뷰</div>
+    <div class="caption" style="margin-bottom:20px">소비자가 남긴 리뷰를 확인하고 답글을 남겨보세요</div>
+    <div id="partner-reviews-items"></div>
+  </div>
+  <nav class="tabbar" id="tabbar-partner-reviews"></nav>
 </div>
 
 <!-- 재설계(사용자요청 — 업체 마이페이지 통합 2단계): s-partner-mypage 화면 삭제(대시보드에 통합됨).
@@ -6279,7 +6326,7 @@ function icon(name,color,size){
 }
 // 재설계(사용자요청 — 미니멀 팔레트 전환): terracotta/brass도 새 steelblue와 같은 값으로 합쳐서
 // icon(name, T.terracotta, ...) 처럼 이미 곳곳에 박혀있는 호출부는 그대로 두고 색상만 갱신되게 함.
-const T = {charcoal:'#142029', terracotta:'#446079', steelblue:'#446079', success:'#3C6F51', slate:'var(--slate)', brass:'#446079'};
+const T = {charcoal:'#142029', terracotta:'#446079', steelblue:'#446079', success:'#3C6F51', slate:'var(--slate)', brass:'#446079', goldAccent:'#B08D57'};
 
 // 신규(사용자요청 — 네이티브 alert() 전수조사 후 리디자인, 2026-09):
 // 캡처로 제보받은 "'https://roomer-backend.onrender.com' 페이지 내용:" 같은 못생긴 브라우저 기본
@@ -6483,6 +6530,7 @@ renderStdHeader('hdr-ad-apply', "closeToReturn()");
 renderStdHeader('hdr-ad-cart', "go('ad-apply')");
 renderStdHeader('hdr-ad-content', "closeToReturn()");
 renderStdHeader('hdr-partner-alert-list', "closeToReturn()");
+renderStdHeader('hdr-partner-reviews', "closeToReturn()");
 renderStdHeader('hdr-partner-withdraw', "closeToReturn()");
 renderStdHeader('hdr-partner-portfolio', "closeToReturn()");
 renderStdHeader('hdr-partner-profile-edit', "go('partner-home')");
@@ -6637,6 +6685,8 @@ function go(id){
   if(id === 'wallet' && typeof renderWallet==='function'){ renderWallet(); }
   if(id === 'referral' && typeof renderReferral==='function'){ renderReferral(); }
   if(id === 'partner-stats' && typeof renderPartnerStats==='function'){ renderPartnerStats(); }
+  if(id === 'my-contracts' && typeof renderMyContracts==='function'){ renderMyContracts(); }
+  if(id === 'partner-reviews' && typeof renderPartnerReviews==='function'){ renderPartnerReviews(); }
   if(id === 'admin-alerts' && typeof renderAdminAlerts==='function'){ renderAdminAlerts(); }
   if(id === 'admin-alert-settings' && typeof renderAdminAlertSettings==='function'){ renderAdminAlertSettings(); }
   if(id === 'admin-policy' && typeof renderAdminPolicy==='function'){ renderAdminPolicy(); }
@@ -7332,7 +7382,7 @@ function renderRoomerDownloadQr(targetId){
 // window.authToken 초기화·apiFetch·세션복원 함수 등 나머지 최상위 코드가 전부 실행되지 않아, 새로고침할
 // 때마다 로그인 세션이 조용히 풀리는 치명적 결함으로 이어졌음 — Playwright로 재현·확인). 실제 판매 정원/
 // 가격은 여전히 서버가 단일 진실공급원이며, 여기서는 화면에 쓰는 라벨과 조회 헬퍼만 앞당겨 정의한다.
-var AD_PLACEMENT_LABEL = { hero:'우리동네 추천디자인업체', heroSub:'우리지역 대표업체', regionTop:'지역추천업체' };
+var AD_PLACEMENT_LABEL = { hero:'우리지역 추천디자인업체', heroSub:'우리지역 대표업체', regionTop:'지역추천업체' };
 var AD_REGION_CAPACITY_DEFAULT = 6;
 window._activeAdsRegion = undefined;
 window._activeAdsCache = [];
@@ -7620,10 +7670,23 @@ AI 매칭 플랫폼입니다.
 보유기간 경과 또는 처리목적 달성 시 지체 없이 파기하며,
 전자적 파일은 복구 불가능한 방법으로 영구 삭제합니다.
 
-제6조 (개인정보의 제3자 제공)
-계약 진행을 위해 필요한 최소한의 정보만 계약 상대방(업체 또는
+제6조 (개인정보의 제3자 제공 및 처리위탁)
+① 계약 진행을 위해 필요한 최소한의 정보만 계약 상대방(업체 또는
 소비자)에게 제공하며, 정보주체의 동의 없이는 외부에 제공하지
 않습니다.
+② 회사는 서비스 제공을 위해 다음과 같이 개인정보 처리업무를
+위탁하고 있으며, 위탁계약 시 개인정보가 안전하게 관리될 수 있도록
+필요한 사항을 규정합니다.
+· 결제 처리: PG사(토스페이먼츠) — 결제·정산 처리
+· 본인확인: 본인확인기관 — 휴대폰 본인인증
+· 문자메시지 발송: 알리고(Aligo) — 인증번호·알림 문자 발송
+③ 위탁 기간은 서비스 이용계약 종료 시 또는 위탁 목적 달성 시까지이며,
+위탁계약 종료 시 위탁받은 개인정보는 지체 없이 파기하거나 회사에
+반환하도록 합니다.
+④ 위 위탁업체는 모두 국내에 소재한 사업자이며, 개인정보를 국외로
+이전·보관하지 않습니다.
+⑤ 위탁업체가 추가·변경되는 경우, 본 개인정보처리방침을 통해
+지체 없이 고지합니다.
 
 제7조 (정보주체의 권리·의무 및 행사방법)
 이용자는 언제든지 자신의 개인정보 열람, 정정, 삭제, 처리정지를
@@ -7642,10 +7705,7 @@ AI 매칭 플랫폼입니다.
 개인정보침해신고센터(privacy.kisa.or.kr / 국번없이 118) 등에
 분쟁조정을 신청할 수 있습니다.
 
-부칙: 이 방침은 2026년 8월 29일부터 시행합니다.
-
-※ 이 문서는 표준 항목을 참고한 초안이며, 실제 서비스 출시 전
-반드시 법무 검토가 필요합니다.` },
+부칙: 이 방침은 2026년 8월 29일부터 시행합니다.` },
   terms: { title:'이용약관', body:
 `제1조 (목적)
 이 약관은 루머(ROOMER, 이하 "회사")가 제공하는 서비스 이용과
@@ -7721,10 +7781,73 @@ AI 매칭 플랫폼입니다.
 이 약관과 관련한 분쟁에 대한 소송은 민사소송법상의 관할법원에
 제기합니다.
 
-부칙: 이 약관은 2026년 8월 29일부터 시행합니다.
+부칙: 이 약관은 2026년 8월 29일부터 시행합니다.` },
+  location_policy: { title:'위치정보 처리방침', body:
+`제1조 (목적)
+루머(ROOMER)는 위치정보의 보호 및 이용 등에 관한 법률에 따라
+이용자의 개인위치정보를 안전하게 보호하고 관련 고충을 신속하게
+처리하기 위하여 다음과 같이 위치정보 처리방침을 수립·공개합니다.
 
-※ 이 문서는 표준 항목을 참고한 초안이며, 실제 서비스 출시 전
-반드시 법무 검토가 필요합니다.` }
+제2조 (회사 정보)
+· 상호: (주)루머(ROOMER)
+· 대표자: 조은혜
+· 위치기반서비스사업 신고번호: [신고 완료 후 기재 예정]
+· 문의: roomer0829@naver.com
+
+제3조 (개인위치정보의 수집 방법 및 항목)
+① 회사는 이용자가 "현재 위치로 찾기" 기능을 직접 실행할 때에만
+개인위치정보(위도·경도 좌표)를 수집합니다. 이용자의 동의 없이
+자동으로 위치를 수집하지 않습니다.
+② 수집된 좌표는 지도 API(카카오)를 통해 "시/도-시군구-행정동"
+수준의 지역 정보로 변환하는 목적에만 순간적으로 이용되며, 변환
+직후 즉시 폐기됩니다.
+③ 위도·경도 원본 좌표 자체는 어떠한 데이터베이스에도 저장하지
+않습니다. 최종적으로 저장되는 정보는 이용자가 확인·선택한
+"서울 강남구"와 같은 문자열 형태의 활성 지역 정보뿐입니다.
+
+제4조 (개인위치정보의 이용 및 제공)
+① 수집된 지역 정보는 이용자에게 인근 지역의 업체를 추천·매칭하는
+목적으로만 이용됩니다.
+② 회사는 개인위치정보를 이용자의 동의 없이 제3자에게 제공하지
+않습니다. 다만 법령에 특별한 규정이 있는 경우는 예외로 합니다.
+③ 업체(파트너)가 직접 입력한 사업장 주소는 지도 표시를 위해
+외부 지도 서비스에 주소 문자열로 전달될 뿐이며, 이 과정에서
+회사는 좌표를 별도로 수집·저장하지 않습니다.
+
+제5조 (개인위치정보의 보유 및 이용기간)
+① 활성 지역 정보는 이용자가 직접 변경하거나 회원 탈퇴 시까지
+보관되며, 탈퇴 시 지체 없이 파기합니다.
+② 좌표 변환 과정에서 발생하는 원본 좌표는 응답 즉시 폐기되며
+별도로 보관하지 않습니다.
+
+제6조 (개인위치정보주체의 권리)
+이용자는 언제든지 다음의 권리를 행사할 수 있습니다.
+① 개인위치정보의 수집·이용·제공에 대한 동의의 전부 또는 일부를
+철회할 권리(설정에서 위치 기반 추천 동의 해제)
+② 개인위치정보의 수집·이용·제공사실 확인자료의 열람 또는 고지를
+요구할 권리(고객센터 문의)
+③ 위 권리 행사는 마이페이지 설정 또는 고객센터(roomer0829@naver.com)를
+통해 하실 수 있습니다.
+
+제7조 (법정대리인의 권리)
+회사는 만 14세 미만 아동의 회원가입을 받지 않으므로, 만 14세
+미만 아동의 개인위치정보를 수집하지 않습니다.
+
+제8조 (개인위치정보관리책임자)
+· 성명: 정경훈
+· 연락처: roomer0829@naver.com
+
+제9조 (손해배상)
+회사는 위치정보의 보호 및 이용 등에 관한 법률 제27조에 따라
+고의 또는 과실로 이용자에게 손해를 발생시킨 경우 이에 대해
+손해배상 책임을 집니다.
+
+제10조 (처리방침의 개정)
+이 처리방침이 변경되는 경우 회사는 변경사항을 시행일로부터
+최소 7일 전에 공지합니다.
+
+부칙: 이 처리방침은 [위치기반서비스사업 신고 완료 후 시행일 기재
+예정]부터 시행합니다.` }
 };
 function renderLegalDoc(key){
   var doc = LEGAL_DOCS[key]; if(!doc) return;
@@ -8305,7 +8428,8 @@ function paintHeroSubAds(slots){
     // 재설계(사용자요청 — 실사진 반영): 예약형 광고는 항상 실제 업로드 사진(imageUrl)이 있다
     // (콘텐츠 등록을 마쳐야만 /api/ads/active에 잡히므로) — 없을 때만 히어로 사진풀로 대체
     var bgUrl = (a && a.imageUrl) || photoFor(idx);
-    var bgStyle = bgUrl ? ('background:url('+bgUrl+') center/cover') : 'background:var(--stone)';
+    // 신규(사용자요청 — 에디토리얼 럭셔리): 업체별로 제각각인 사진 톤을 필터로 통일해 화보처럼 정돈된 느낌을 줌
+    var bgStyle = bgUrl ? ('background:url('+bgUrl+') center/cover;filter:saturate(.92) contrast(1.04)') : 'background:var(--stone)';
     if(a && a.column){
       var col = a.columnData;
       var safeColumnId = encodeURIComponent(String(col.id || ''));
@@ -8434,8 +8558,10 @@ SIGNUP_BENEFITS.forEach(function(b){
 });
 document.getElementById('t-signup-03').textContent = '30초면 가입 끝';
 document.getElementById('d-signup-03').textContent = '소셜 계정 하나로 시작 · 추가 정보는 필요할 때만 받아요';
-document.getElementById('btn-kakao-03').textContent = '카카오로 시작하기';
-document.getElementById('btn-naver-03').textContent = '네이버로 시작하기';
+// 재설계(사용자요청 — 에디토리얼 럭셔리): 원형 아이콘 버튼이라 텍스트 대신 브랜드 글리프를 넣음
+// (버튼의 aria-label에 기존 문구를 그대로 남겨 접근성은 유지)
+document.getElementById('btn-kakao-03').innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4C6.5 4 2 7.3 2 11.4c0 2.6 1.8 4.9 4.5 6.2-.2.7-.8 2.7-.9 3.1 0 0-.02.16.08.22.1.06.22.02.22.02.3-.04 3.4-2.2 3.9-2.6.7.1 1.4.15 2.2.15 5.5 0 10-3.3 10-7.4C22 7.3 17.5 4 12 4z" fill="#3C1E1E"/></svg>';
+document.getElementById('btn-naver-03').innerHTML = '<span style="color:#fff;font-weight:900;font-size:19px;font-family:Arial,sans-serif">N</span>';
 document.getElementById('btn-phone-03').textContent = '휴대폰 번호로 시작하기';
 document.getElementById('btn-email-03').textContent = '이메일로 시작하기';
 document.getElementById('btn-more-signup').textContent = '휴대폰·이메일로 가입하기';
@@ -14290,6 +14416,7 @@ function openPartnerAlert(id){
   resolveAndActivateRoomForNotification(a, function(dest){ if(dest) go(dest); });
 }
 buildTabbar('tabbar-partner-alert-list', true, null);
+buildTabbar('tabbar-partner-reviews', true, null);
 buildTabbar('tabbar-consumer-alert-list', true, null);
 buildTabbar('tabbar-quote-inbox', true, null);
 // 결함수정+신규: 카톡처럼 알림·메신저 탭에 안읽음 배지 표시
@@ -15720,11 +15847,116 @@ function renderMyQuotes(){
     + '</div>';
   }).join('');
 }
+// ===== 신규(강남언니 벤치마킹 검토 후속 — 2단계: 계약인증 리뷰 시스템) =====
+// 예전 리뷰 기능은 증빙 없는 자기신고+캐시적립이라 어뷰징 때문에 삭제된 이력이 있어, 이번엔
+// 실제 계약(contractId)에 묶어서만 작성 가능하게 만든다. 참고: 이 서비스는 "공사 완료" 단계를
+// 별도로 추적하지 않아서, "완료된 계약만"이 아니라 "실제 계약이 존재하는 건"을 작성 자격으로 삼는다.
+var REVIEW_RATING_FIELDS = [
+  ['overall', '종합 만족도'], ['quoteAccuracy', '견적 정확성'], ['quality', '시공 품질'],
+  ['schedule', '기한 준수'], ['communication', '의사소통']
+];
+window._reviewDraft = null;
+function openReviewComposer(contractId){
+  window._reviewDraft = { contractId: contractId, overall:0, quoteAccuracy:0, quality:0, schedule:0, communication:0 };
+  renderReviewStars();
+  var ta = document.getElementById('review-write-comment'); if(ta) ta.value = '';
+  document.getElementById('review-write-overlay').style.display = 'flex';
+}
+function closeReviewComposer(){ var ov = document.getElementById('review-write-overlay'); if(ov) ov.style.display = 'none'; }
+function setReviewStar(field, value){ if(!window._reviewDraft) return; window._reviewDraft[field] = value; renderReviewStars(); }
+function renderReviewStars(){
+  var el = document.getElementById('review-write-stars'); if(!el || !window._reviewDraft) return;
+  var d = window._reviewDraft;
+  el.innerHTML = REVIEW_RATING_FIELDS.map(function(f){
+    var field = f[0], label = f[1], val = d[field]||0;
+    var stars = [1,2,3,4,5].map(function(n){
+      return '<span onclick="setReviewStar(\''+field+'\','+n+')" style="cursor:pointer;font-size:22px;line-height:1;color:'+(n<=val?'#D9A441':'var(--stone)')+'">★</span>';
+    }).join('');
+    return '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"><span style="font-size:14px;color:var(--charcoal)">'+label+'</span><span>'+stars+'</span></div>';
+  }).join('');
+}
+async function submitReview(){
+  var d = window._reviewDraft; if(!d) return;
+  var missing = REVIEW_RATING_FIELDS.filter(function(f){ return !d[f[0]]; });
+  if(missing.length){ alert('모든 항목에 별점을 매겨주세요.'); return; }
+  var comment = (document.getElementById('review-write-comment').value||'').trim();
+  try{
+    var res = await apiFetch('/api/reviews', { method:'POST', body: JSON.stringify({
+      contractId: d.contractId, ratingOverall: d.overall, ratingQuoteAccuracy: d.quoteAccuracy,
+      ratingQuality: d.quality, ratingSchedule: d.schedule, ratingCommunication: d.communication, comment: comment
+    })});
+    closeReviewComposer();
+    alert('리뷰가 등록됐어요.' + (res && res.rewardAmount ? ' ('+res.rewardAmount.toLocaleString()+'원 적립)' : ''));
+    if(typeof renderMyContracts==='function') renderMyContracts();
+  }catch(e){ alert(e.message || '리뷰 등록에 실패했습니다.'); }
+}
+function renderReviewCardHtml(review, forPartner){
+  var stars = '★'.repeat(review.ratingOverall) + '☆'.repeat(5-review.ratingOverall);
+  var html = '<div style="border-top:1px solid var(--ivory);padding-top:12px;margin-top:4px"><div style="color:#D9A441;font-size:15px;margin-bottom:4px">'+stars+'</div>';
+  if(review.comment) html += '<div style="font-size:14px;color:var(--charcoal);line-height:1.6;margin-bottom:6px">'+escapeConsumerIdentityHtml(review.comment)+'</div>';
+  if(review.partnerReply){
+    html += '<div style="background:var(--ivory);border-radius:8px;padding:8px 10px;font-size:13px;color:var(--charcoal);margin-top:6px"><b>업체 답글</b><br>'+escapeConsumerIdentityHtml(review.partnerReply)+'</div>';
+  } else if(forPartner){
+    html += '<button class="btn btn-outline" style="margin-top:6px;padding:6px 10px;font-size:13px" onclick="openReviewReplyComposer(\''+review.id+'\')">답글 작성</button>';
+  }
+  html += '</div>';
+  return html;
+}
+async function loadMyContractReviewBox(){
+  var box = document.getElementById('my-contract-review-box'); if(!box) return;
+  var contractId = typeof getCurrentRoomServerId==='function' ? getCurrentRoomServerId('contractId') : null;
+  if(!contractId){ box.innerHTML=''; return; }
+  try{
+    var review = await apiFetch('/api/contracts/'+encodeURIComponent(contractId)+'/review');
+    box.innerHTML = renderReviewCardHtml(review, false);
+  }catch(e){
+    box.innerHTML = '<button class="btn btn-primary" onclick="openReviewComposer(\''+contractId+'\')">리뷰 작성하기</button>';
+  }
+}
+function openReviewReplyComposer(reviewId){
+  var text = prompt('답글을 입력해주세요 (500자 이내)');
+  if(text === null) return;
+  text = text.trim();
+  if(!text){ alert('답글 내용을 입력해주세요.'); return; }
+  apiFetch('/api/reviews/'+encodeURIComponent(reviewId)+'/reply', { method:'PUT', body: JSON.stringify({ reply: text }) })
+    .then(function(){ alert('답글이 등록됐어요.'); if(typeof renderPartnerReviews==='function') renderPartnerReviews(); })
+    .catch(function(e){ alert(e.message || '답글 등록에 실패했습니다.'); });
+}
+async function renderPartnerReviews(){
+  var el = document.getElementById('partner-reviews-items'); if(!el) return;
+  el.innerHTML = '<div class="caption" style="text-align:center;padding:20px 0">불러오는 중...</div>';
+  try{
+    var list = await apiFetch('/api/partners/me/reviews');
+    if(!list || !list.length){ el.innerHTML = emptyStateBox('아직 등록된 리뷰가 없어요.'); return; }
+    el.innerHTML = list.map(function(r){ return '<div class="onboard-card" style="text-align:left;margin-bottom:12px">'+renderReviewCardHtml(r, true)+'</div>'; }).join('');
+  }catch(e){ el.innerHTML = '<div class="caption" style="color:var(--danger);text-align:center;padding:20px 0">불러오지 못했습니다: '+e.message+'</div>'; }
+}
+// 업체 상세페이지(cprofile) 리뷰 탭 — 예전엔 모든 업체에 동일한 가짜 리뷰 문구("꼼꼼하게 잘
+// 해주셨어요")가 하드코딩돼 있었음(결함). 실제 계약인증 리뷰 데이터로 교체. 비로그인 사용자에게는
+// 기존 지역명 블러+자물쇠 패턴과 동일하게 리뷰 본문을 흐리게 보여준다.
+async function loadCprofileReviews(partnerId, loggedIn){
+  var el = document.getElementById('review-item'); if(!el || !partnerId) return;
+  el.innerHTML = '<div class="caption" style="padding:8px 0">리뷰를 불러오는 중...</div>';
+  try{
+    var list = await apiFetch('/api/partners/'+encodeURIComponent(partnerId)+'/reviews', {noRetry:true});
+    if(!list || !list.length){ el.innerHTML = '<div class="caption" style="padding:8px 0">아직 등록된 리뷰가 없어요.</div>'; return; }
+    el.innerHTML = list.map(function(r){
+      var stars = '★'.repeat(r.ratingOverall) + '☆'.repeat(5-r.ratingOverall);
+      var commentHtml = r.comment ? escapeConsumerIdentityHtml(r.comment) : '(내용 없음)';
+      if(!loggedIn) commentHtml = '<span style="filter:blur(4px);user-select:none">'+commentHtml+'</span>';
+      var html = '<div style="border-top:1px solid var(--ivory);padding:12px 0"><div style="color:#D9A441;font-size:14px;margin-bottom:4px">'+stars+'</div><div style="font-size:14px;color:var(--charcoal);line-height:1.6">'+commentHtml+'</div>';
+      if(r.partnerReply) html += '<div style="background:var(--ivory);border-radius:8px;padding:8px 10px;font-size:12.5px;color:var(--charcoal);margin-top:6px"><b>업체 답글</b><br>'+escapeConsumerIdentityHtml(r.partnerReply)+'</div>';
+      html += '</div>';
+      return html;
+    }).join('');
+  }catch(e){ el.innerHTML = '<div class="caption" style="padding:8px 0">리뷰를 불러오지 못했습니다.</div>'; }
+}
 function renderMyContracts(){
   const el = document.getElementById('my-contracts-items'); if(!el) return;
   const mj = window.measJob;
   if(!mj || mj.status !== 'contract_confirmed'){ el.innerHTML = emptyStateBox('아직 확정된 계약이 없어요.<br>실측·견적 절차가 끝나면 여기서 확인할 수 있어요.'); return; }
-  el.innerHTML = '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">'+icon('checkCircle',T.success,14)+'<span style="font-size:14.5px;font-weight:700;color:var(--success)">계약 확정</span></div><div style="font-size:15px;color:var(--charcoal);line-height:1.7">최종 계약금액이 확인되었습니다.<br>진행 상황은 메신저에서 계속 확인할 수 있어요.</div><button class="btn btn-outline" style="margin-top:12px" onclick="go(\'chat\')">메신저로 이동</button></div>';
+  el.innerHTML = '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">'+icon('checkCircle',T.success,14)+'<span style="font-size:14.5px;font-weight:700;color:var(--success)">계약 확정</span></div><div style="font-size:15px;color:var(--charcoal);line-height:1.7">최종 계약금액이 확인되었습니다.<br>진행 상황은 메신저에서 계속 확인할 수 있어요.</div><button class="btn btn-outline" style="margin-top:12px" onclick="go(\'chat\')">메신저로 이동</button><div id="my-contract-review-box" style="margin-top:12px"></div></div>';
+  loadMyContractReviewBox();
 }
 window.userPaymentMethods = window.userPaymentMethods || [];
 // 결함정리(2026-09, 전수조사 발견 — 실연동): 이 화면에서 카드번호를 직접 입력받아 처리하던 방식은
@@ -16180,9 +16412,10 @@ function renderPartnerSupport(){
       ['medal','다퉈도, 끝까지 갑니다','메신저 기록이 그대로 증거가 돼서 분쟁이 흐지부지 안 끝나요']
     ];
     b.innerHTML='';
-    BEN.forEach(function(x){
+    // 재설계(사용자요청 — 에디토리얼 럭셔리): 스캔성을 높이려고 번호 배지만 추가, 카피·좌측 강조선은 그대로 유지
+    BEN.forEach(function(x,idx){
       var d=document.createElement('div'); d.style.cssText='background:#fff;border-left:3px solid var(--brass);border-radius:0 var(--radius-input) var(--radius-input) 0;padding:6px 11px;box-shadow:0 1px 4px rgba(20,32,41,.06)';
-      d.innerHTML='<div style="font-size:13px;font-weight:800;color:var(--charcoal)">'+x[1]+'</div><div style="font-size:11px;color:var(--slate);margin-top:1px;line-height:1.3">'+x[2]+'</div>';
+      d.innerHTML='<div style="display:flex;gap:9px;align-items:flex-start"><span style="flex-shrink:0;width:18px;height:18px;border-radius:50%;background:var(--steelblue);color:#fff;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;margin-top:1px">'+(idx+1)+'</span><div><div style="font-size:13px;font-weight:800;color:var(--charcoal)">'+x[1]+'</div><div style="font-size:11px;color:var(--slate);margin-top:1px;line-height:1.3">'+x[2]+'</div></div></div>';
       b.appendChild(d);
     });
   }
@@ -16605,6 +16838,7 @@ const PARTNER_QUICKACTIONS = [
   ['medal', T.brass, '#44607914', '등급 승급', function(){ setReturnTo('partner-home'); openTierUpgrade(); }],
   ['sparkle', T.terracotta, '#4460790d', '내 통계', function(){ setReturnTo('partner-home'); renderPartnerStats(); go('partner-stats'); }],
   ['sparkle', T.brass, '#44607914', '광고관리', function(){ setReturnTo('partner-home'); renderMyAds(); go('my-ads'); }],
+  ['sparkle', T.steelblue, '#4460790d', '받은 리뷰', function(){ setReturnTo('partner-home'); renderPartnerReviews(); go('partner-reviews'); }],
 ];
 const quickactionGrid = document.getElementById('quickaction-grid');
 // 신규(사용자요청): 마이페이지 메뉴와 동일한 방식(좌측 색상칩+텍스트+우측 화살표, 세로 스택)으로 전환
@@ -16718,7 +16952,7 @@ function renderCprofile(){
   document.getElementById('review-score').innerHTML = (p.rating||'-')+' <span style="font-size:12.5px;color:var(--slate);font-weight:400">('+(p.reviews||0)+'건)</span>';
   document.getElementById('rf1').textContent = '전체';
   document.getElementById('rf2').textContent = '사진 포함';
-  document.getElementById('review-item').innerHTML = '"꼼꼼하게 잘 해주셨어요"<br><span style="color:var(--slate);font-size:12.5px">'+icon('shieldCheck',T.steelblue,11)+' 플랫폼 검증 완료 업체입니다</span>';
+  loadCprofileReviews(p.id, loggedIn);
   var regionTxt = p.gu || p.region || (p.category?p.category+' 시공 전문':'전체 시공');
   var regionHtml = loggedIn ? regionTxt : ('<span style="filter:blur(4px);user-select:none">'+regionTxt+'</span> <span style="color:var(--slate);font-size:12.5px">'+lockIcon+' 가입 시 공개</span>');
   // 신규(사용자요청 — 3단계): 업체정보 탭에 전문분야·연락가능시간 추가
