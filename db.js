@@ -563,8 +563,38 @@ CREATE TABLE IF NOT EXISTS admin_events (
   conversions INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
 );
+-- 신규(강남언니 벤치마킹 검토 후속 — 0단계): 실제로는 아무 데도 접수되지 않던 "1:1 문의하기"
+-- 프로토타입 alert()를 실제 문의 접수·답변 기능으로 교체하기 위한 테이블.
+CREATE TABLE IF NOT EXISTS support_inquiries (
+  id TEXT PRIMARY KEY,
+  user_role TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  message TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  admin_reply TEXT,
+  replied_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+-- 신규(사용자요청 — 고객센터 FAQ를 검색 가능한 방대한 자료로 확장): 기존에 코드에 3개씩
+-- 하드코딩돼있던 FAQ를 DB로 옮겨서 (a) 관리자가 나중에 직접 추가·수정하고 (b) 검색이 가능하게 한다.
+CREATE TABLE IF NOT EXISTS faqs (
+  id TEXT PRIMARY KEY,
+  audience TEXT NOT NULL DEFAULT 'common', -- consumer / partner / common
+  category TEXT NOT NULL,
+  question TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  keywords TEXT,
+  sort_order INTEGER DEFAULT 0,
+  view_count INTEGER DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'published', -- published / draft
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
 `);
 db.exec('CREATE INDEX IF NOT EXISTS idx_search_queries_query_created ON search_queries(query, created_at)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_support_inquiries_user ON support_inquiries(user_role, user_id, created_at)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_support_inquiries_status ON support_inquiries(status, created_at)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_faqs_audience_status ON faqs(audience, status, sort_order)');
 
 // 루머27 무중단 마이그레이션: CREATE TABLE IF NOT EXISTS만으로는 기존 SQLite에 새 열이 생기지 않는다.
 function ensureColumn(table, column, definition) {
@@ -695,5 +725,21 @@ CREATE TABLE IF NOT EXISTS admin_member_actions (
 );
 `);
 db.exec('CREATE INDEX IF NOT EXISTS idx_admin_member_actions_target ON admin_member_actions(target_type, target_id, created_at DESC)');
+
+// 신규(사용자요청 — 고객센터 FAQ 확장): faqs 테이블이 완전히 비어있을 때만 초기 콘텐츠(100개)를
+// 채워 넣는다. 이미 데이터가 있다면(관리자가 추가·수정했을 수 있으므로) 절대 건드리지 않는다.
+(function seedFaqsIfEmpty() {
+  const { randomUUID } = require('crypto');
+  const count = db.prepare('SELECT COUNT(*) c FROM faqs').get().c;
+  if (count > 0) return;
+  const seed = require('./faq-seed.js');
+  const insert = db.prepare(`INSERT INTO faqs (id, audience, category, question, answer, keywords, sort_order, status)
+    VALUES (?,?,?,?,?,?,?,'published')`);
+  const insertAll = db.transaction((rows) => {
+    rows.forEach((f) => insert.run(randomUUID(), f.audience, f.category, f.question, f.answer, f.keywords || '', f.sort_order || 0));
+  });
+  insertAll(seed);
+  console.log(`[FAQ 시드] faqs 테이블이 비어있어 초기 콘텐츠 ${seed.length}건을 채웠습니다.`);
+})();
 
 module.exports = db;
