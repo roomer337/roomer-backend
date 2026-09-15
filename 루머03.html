@@ -2444,9 +2444,13 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   <header class="header"><div id="hdr-my-support" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
   <div class="content" style="">
     <div class="h1" style="margin:20px 0 4px">고객센터</div>
-    <div class="caption" style="margin-bottom:20px">자주 묻는 질문을 확인하거나 문의를 남겨주세요</div>
+    <div class="caption" style="margin-bottom:14px">자주 묻는 질문을 확인하거나 문의를 남겨주세요</div>
+    <input id="my-faq-search" type="text" placeholder="궁금한 내용을 검색해보세요 (예: 수수료, 환불, 계약금)" oninput="onFaqSearchInput('consumer', this.value)" style="width:100%;padding:12px 14px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;box-sizing:border-box;margin-bottom:10px">
+    <div id="my-faq-categories" style="display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;margin-bottom:14px;-webkit-overflow-scrolling:touch"></div>
     <div id="my-support-items"></div>
-    <button class="btn btn-outline" style="margin-top:14px" onclick="alert('1:1 문의가 접수되었습니다. (프로토타입: 실제로는 전송되지 않습니다)')">1:1 문의하기</button>
+    <button class="btn btn-outline" style="margin-top:14px" onclick="openSupportComposer('consumer')">1:1 문의하기</button>
+    <div class="caption" style="margin:18px 0 8px;font-weight:700;color:var(--charcoal)">내 문의 내역</div>
+    <div id="my-support-inquiries"></div>
     <div style="margin-top:20px"><button class="btn btn-primary" onclick="closeToReturn()">닫기</button></div>
   </div>
   <nav class="tabbar" id="tabbar-my-support"></nav>
@@ -2690,6 +2694,58 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   <header class="header" style="background:var(--charcoal)"><div style="display:flex;align-items:center;gap:10px;width:100%"><button onclick="go('admin-dispute-queue')" style="background:none;border:none;color:#fff;font-size:30px;cursor:pointer;font-weight:700">&lsaquo;</button><span style="color:#fff;font-size:17.5px;font-weight:800">분쟁 상세·조정</span></div></header>
   <div class="content" style="">
     <div id="admin-dispute-detail-body"></div>
+  </div>
+</div>
+
+<!-- 신규(강남언니 벤치마킹 검토 후속 — 0단계): 고객 1:1 문의 관리자 큐. 분쟁조정 큐와 동일 패턴 -->
+<div class="scr" id="s-admin-support">
+  <header class="header" style="background:var(--charcoal)"><div style="display:flex;align-items:center;gap:10px;width:100%"><button onclick="go('admin-home')" style="background:none;border:none;color:#fff;font-size:30px;cursor:pointer;font-weight:700">&lsaquo;</button><span style="color:#fff;font-size:17.5px;font-weight:800">고객 문의</span></div></header>
+  <div class="content" style="">
+    <div class="filter-row" id="asq-filter" style="padding:0;margin:12px 0 16px"></div>
+    <div id="admin-support-list"></div>
+    <div style="margin-top:16px"><button class="btn btn-outline" onclick="go('admin-home')">닫기</button></div>
+  </div>
+</div>
+
+<div class="scr" id="s-admin-support-detail">
+  <header class="header" style="background:var(--charcoal)"><div style="display:flex;align-items:center;gap:10px;width:100%"><button onclick="go('admin-support')" style="background:none;border:none;color:#fff;font-size:30px;cursor:pointer;font-weight:700">&lsaquo;</button><span style="color:#fff;font-size:17.5px;font-weight:800">문의 상세·답변</span></div></header>
+  <div class="content" style="">
+    <div id="admin-support-detail-body"></div>
+  </div>
+</div>
+
+<!-- 신규(사용자요청 — 고객센터 FAQ 확장): 관리자 FAQ 관리 화면. 이벤트 관리(admin-events)와 동일한
+     목록+새로만들기 패턴 -->
+<div class="scr" id="s-admin-faqs">
+  <header class="header" style="background:var(--charcoal)"><div style="display:flex;align-items:center;gap:10px;width:100%"><button onclick="go('admin-home')" style="background:none;border:none;color:#fff;font-size:30px;cursor:pointer;font-weight:700">&lsaquo;</button><span style="color:#fff;font-size:17.5px;font-weight:800">FAQ 관리</span></div></header>
+  <div class="content" style="">
+    <div class="caption" style="margin:12px 0 14px;line-height:1.6">고객센터에 노출되는 FAQ를 추가·수정·삭제합니다.</div>
+    <button class="btn btn-primary" style="margin-bottom:12px" onclick="openAdminFaqNew()">+ 새 FAQ 추가</button>
+    <input id="admin-faq-search" type="text" placeholder="질문·답변 내용으로 찾기" oninput="renderAdminFaqList()" style="width:100%;padding:11px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;box-sizing:border-box;margin-bottom:10px">
+    <div class="filter-row" id="admin-faq-filter" style="padding:0;margin-bottom:14px"></div>
+    <div id="admin-faq-list"></div>
+    <div style="margin-top:16px"><button class="btn btn-outline" onclick="go('admin-home')">닫기</button></div>
+  </div>
+</div>
+
+<div class="scr" id="s-admin-faq-edit">
+  <header class="header" style="background:var(--charcoal)"><div style="display:flex;align-items:center;gap:10px;width:100%"><button onclick="go('admin-faqs')" style="background:none;border:none;color:#fff;font-size:30px;cursor:pointer;font-weight:700">&lsaquo;</button><span style="color:#fff;font-size:17.5px;font-weight:800" id="admin-faq-edit-title">FAQ 편집</span></div></header>
+  <div class="content" style="">
+    <label class="caption" style="font-weight:700;display:block;margin:14px 0 6px">대상</label>
+    <div id="admin-faq-audience-chips" style="display:flex;gap:8px;margin-bottom:14px"></div>
+    <label class="caption" style="font-weight:700;display:block;margin-bottom:6px">카테고리</label>
+    <input type="text" id="admin-faq-category" placeholder="예) signup, quote, settlement 등" style="width:100%;padding:11px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;box-sizing:border-box;margin-bottom:14px">
+    <label class="caption" style="font-weight:700;display:block;margin-bottom:6px">질문</label>
+    <input type="text" id="admin-faq-question" placeholder="자주 묻는 질문" style="width:100%;padding:11px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;box-sizing:border-box;margin-bottom:14px">
+    <label class="caption" style="font-weight:700;display:block;margin-bottom:6px">답변</label>
+    <textarea id="admin-faq-answer" placeholder="답변 내용" style="width:100%;min-height:120px;padding:11px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;box-sizing:border-box;margin-bottom:14px"></textarea>
+    <label class="caption" style="font-weight:700;display:block;margin-bottom:6px">검색 키워드 (쉼표로 구분, 선택)</label>
+    <input type="text" id="admin-faq-keywords" placeholder="예) 수수료,환불,계약금" style="width:100%;padding:11px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;box-sizing:border-box;margin-bottom:14px">
+    <label class="caption" style="font-weight:700;display:block;margin-bottom:6px">게시 상태</label>
+    <div id="admin-faq-status-chips" style="display:flex;gap:8px;margin-bottom:20px"></div>
+    <button class="btn btn-primary" style="margin-bottom:10px" onclick="saveAdminFaq()">저장</button>
+    <button class="btn btn-outline" id="admin-faq-delete-btn" style="display:none;color:var(--danger);border-color:var(--danger);margin-bottom:10px" onclick="deleteAdminFaq()">삭제</button>
+    <button class="btn btn-outline" onclick="go('admin-faqs')">취소</button>
   </div>
 </div>
 
@@ -3298,9 +3354,13 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
   <header class="header"><div id="hdr-partner-support" style="display:flex;align-items:center;width:100%;gap:10px"></div></header>
   <div class="content" style="">
     <div class="h1" style="margin:20px 0 4px">고객센터</div>
-    <div class="caption" style="margin-bottom:20px">자주 묻는 질문을 확인하거나 문의를 남겨주세요</div>
+    <div class="caption" style="margin-bottom:14px">자주 묻는 질문을 확인하거나 문의를 남겨주세요</div>
+    <input id="partner-faq-search" type="text" placeholder="궁금한 내용을 검색해보세요 (예: 수수료, 정산, 승급)" oninput="onFaqSearchInput('partner', this.value)" style="width:100%;padding:12px 14px;border:1px solid var(--stone);border-radius:var(--radius-input);font-size:15px;font-family:inherit;box-sizing:border-box;margin-bottom:10px">
+    <div id="partner-faq-categories" style="display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;margin-bottom:14px;-webkit-overflow-scrolling:touch"></div>
     <div id="partner-support-items"></div>
-    <button class="btn btn-outline" style="margin-top:14px" onclick="alert('1:1 문의가 접수되었습니다. (프로토타입: 실제로는 전송되지 않습니다)')">1:1 문의하기</button>
+    <button class="btn btn-outline" style="margin-top:14px" onclick="openSupportComposer('partner')">1:1 문의하기</button>
+    <div class="caption" style="margin:18px 0 8px;font-weight:700;color:var(--charcoal)">내 문의 내역</div>
+    <div id="partner-support-inquiries"></div>
     <div style="margin-top:20px"><button class="btn btn-outline" onclick="closeToReturn()">닫기</button></div>
   </div>
 </div>
@@ -4129,7 +4189,7 @@ function exportSettlement(){
 window._adminCountsCache = null;
 function adminCounts(){
   if(window.MVP.live){
-    if(window._adminCountsCache === null){ refreshAdminCountsFromServer(); return {dispute:0,abuse:0,inspect:0,inspectionQueue:0,settleHold:0,tier:0}; }
+    if(window._adminCountsCache === null){ refreshAdminCountsFromServer(); return {dispute:0,abuse:0,inspect:0,inspectionQueue:0,settleHold:0,tier:0,support:0}; }
     return window._adminCountsCache;
   }
   return {
@@ -4138,14 +4198,16 @@ function adminCounts(){
     inspect: (window.INSPECT_QUEUE||[]).filter(function(i){return i.status==='pending';}).length,
     inspectionQueue: (window.INSPECTIONS||[]).filter(function(i){return (i.plan==='photo'||i.plan==='expert')&&i.status==='awaiting_photo';}).length,
     settleHold: (window.SETTLEMENTS||[]).filter(function(s){return s.status==='hold';}).length,
-    tier: (window.TIER_UPGRADES||[]).filter(function(u){return u.status!=='approved'&&u.status!=='rejected';}).length
+    tier: (window.TIER_UPGRADES||[]).filter(function(u){return u.status!=='approved'&&u.status!=='rejected';}).length,
+    // 신규(강남언니 벤치마킹 검토 후속 — 0단계): 비라이브(프로토타입) 모드에서는 문의 큐 카운트를 별도로 관리하지 않으므로 0 고정
+    support: 0
   };
 }
 function refreshAdminCountsFromServer(){
   apiFetch('/api/admin/dashboard/counts').then(function(data){
-    window._adminCountsCache = { dispute:data.dispute, abuse:data.abuse, inspect:data.inspect, inspectionQueue:data.inspectionQueue||0, settleHold:data.settleHold, tier:data.tier };
+    window._adminCountsCache = { dispute:data.dispute, abuse:data.abuse, inspect:data.inspect, inspectionQueue:data.inspectionQueue||0, settleHold:data.settleHold, tier:data.tier, support:data.supportOpen||0 };
     if(typeof renderAdminHome==='function') renderAdminHome();
-  }).catch(function(e){ console.error('관리자 카운트 조회 실패:', e.message); window._adminCountsCache = {dispute:0,abuse:0,inspect:0,inspectionQueue:0,settleHold:0,tier:0}; });
+  }).catch(function(e){ console.error('관리자 카운트 조회 실패:', e.message); window._adminCountsCache = {dispute:0,abuse:0,inspect:0,inspectionQueue:0,settleHold:0,tier:0,support:0}; });
 }
 var ADMIN_QUEUES=[
   {key:'consumerMembers', label:'소비자 회원관리', desc:'전체 소비자 조회·검색·정지', icon:'shieldOutline', target:'admin-consumers', ready:true},
@@ -4156,6 +4218,8 @@ var ADMIN_QUEUES=[
   {key:'inspectionQueue', label:'감리 처리 대기열', desc:'사진감리·전문가감리 답변작성', icon:'fileText', target:'admin-inspection-queue', ready:true},
   {key:'settleHold', label:'정산 감독', desc:'전체 업체·보류 건', icon:'fileText', target:'admin-settle', ready:true},
   {key:'tier', label:'승급 심사', desc:'파트너 등급 승급', icon:'medal', target:'admin-tier', ready:true},
+  {key:'support', label:'고객 문의', desc:'1:1 문의 답변', icon:'fileText', target:'admin-support', ready:true},
+  {key:'faqs', label:'FAQ 관리', desc:'고객센터 자주묻는질문 추가·수정', icon:'fileText', target:'admin-faqs', ready:true},
   {key:'policy', label:'정책 설정', desc:'캐시·요금제·수수료율', icon:'sparkle', target:'admin-policy', ready:true},
   {key:'events', label:'이벤트 관리', desc:'시즌 캠페인 생성·운영', icon:'sparkle', target:'admin-events', ready:true},
   {key:'newPartner', label:'신규 업체 등록', desc:'서류·사진 심사, AI 1차판정', icon:'building', target:'admin-pending-partners', ready:true},
@@ -4656,10 +4720,10 @@ setInterval(function(){
 
 function renderAdminHome(){
   var c=adminCounts();
-  var total=c.dispute+c.abuse+c.inspect+c.settleHold+c.tier;
+  var total=c.dispute+c.abuse+c.inspect+c.settleHold+c.tier+(c.support||0);
   var today=document.getElementById('admin-today');
   if(today){
-    var chips=[['분쟁',c.dispute],['어뷰징',c.abuse],['검수',c.inspect],['정산 보류',c.settleHold],['승급',c.tier]];
+    var chips=[['분쟁',c.dispute],['어뷰징',c.abuse],['검수',c.inspect],['정산 보류',c.settleHold],['승급',c.tier],['문의',c.support||0]];
     today.innerHTML='<div style="background:var(--charcoal);border-radius:var(--radius-card);padding:16px;color:#fff"><div style="font-size:13.5px;color:var(--ondark-mid);margin-bottom:8px">처리 대기 총 <b style="color:#fff;font-size:17.5px">'+total+'</b>건</div><div style="display:flex;flex-wrap:wrap;gap:6px">'
       + chips.map(function(x){ var n=x[1]; return '<span style="display:inline-flex;align-items:center;gap:4px;background:rgba(255,255,255,.1);padding:4px 10px;border-radius:var(--radius-pill);font-size:13px;font-weight:600">'+x[0]+' <b style="color:'+(n>0?'var(--danger)':'var(--success)')+'">'+n+'</b></span>'; }).join('')
       + '</div></div>';
@@ -4844,6 +4908,171 @@ function renderAdminDisputeQueue(){
 }
 function setAdqFilter(f){ window.adqFilter=f; renderAdminDisputeQueue(); }
 function openAdminDispute(id){ window.currentDisputeId=id; renderAdminDisputeDetail(); go('admin-dispute-detail'); }
+
+/* ===== 신규(강남언니 벤치마킹 검토 후속 — 0단계): 고객 1:1 문의 관리자 큐 ===== */
+window.SUPPORT_INQUIRIES = window.SUPPORT_INQUIRIES || [];
+window._adminSupportLoading = false; window._adminSupportLoaded = false; window.asqFilter = window.asqFilter || 'open';
+function renderAdminSupportQueue(){
+  var fl=document.getElementById('asq-filter');
+  if(fl){ var fs=[['open','답변대기'],['answered','답변완료'],['all','전체']]; fl.innerHTML=fs.map(function(x){ return '<button type="button" class="chip'+(window.asqFilter===x[0]?' active':'')+'" onclick="setAsqFilter(\''+x[0]+'\')">'+x[1]+'</button>'; }).join(''); }
+  var listEl0=document.getElementById('admin-support-list');
+  if(window.MVP.live){
+    if(!window._adminSupportLoading && !window._adminSupportLoaded){
+      window._adminSupportLoading=true;
+      apiFetch('/api/admin/support/inquiries').then(function(list){
+        window.SUPPORT_INQUIRIES=list||[];
+        window._adminSupportLoading=false; window._adminSupportLoaded=true; renderAdminSupportQueue();
+      }).catch(function(e){ window._adminSupportLoading=false; if(listEl0) listEl0.innerHTML=emptyStateBox('문의 목록을 불러오지 못했습니다.'); });
+    }
+    if(!window._adminSupportLoaded){ if(listEl0) listEl0.innerHTML='<div class="caption" style="text-align:center;padding:20px 0">불러오는 중...</div>'; return; }
+  }
+  var all=(window.SUPPORT_INQUIRIES||[]).slice();
+  var list=all.filter(function(q){ if(window.asqFilter==='all')return true; return q.status===window.asqFilter; });
+  var el=document.getElementById('admin-support-list'); if(!el) return;
+  if(!list.length){ el.innerHTML='<div class="caption" style="text-align:center;color:var(--slate);padding:30px 0">해당하는 문의가 없어요.</div>'; return; }
+  el.innerHTML=list.map(function(q){ var answered=q.status==='answered';
+    return '<button type="button" onclick="openAdminSupportInquiry(\''+q.id+'\')" style="width:100%;display:flex;align-items:center;gap:11px;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px;margin-bottom:8px;cursor:pointer;font-family:inherit;text-align:left">'
+      + '<span style="flex-shrink:0;width:36px;height:36px;border-radius:9px;background:var(--ivory);display:flex;align-items:center;justify-content:center">'+icon('fileText',T.charcoal,17)+'</span>'
+      + '<span style="flex:1;overflow:hidden"><span style="display:block;font-size:15px;font-weight:700;color:var(--charcoal);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeConsumerIdentityHtml(q.message)+'</span><span style="display:block;font-size:13px;color:var(--slate);margin-top:1px">'+(q.userRole==='partner'?'업체':'소비자')+' · '+(q.createdAt||'').slice(0,10)+'</span></span>'
+      + '<span style="flex-shrink:0;background:'+(answered?T.success:'var(--terracotta)')+';color:#fff;font-size:11.5px;font-weight:700;padding:3px 8px;border-radius:var(--radius-pill)">'+(answered?'답변완료':'답변대기')+'</span></button>';
+  }).join('');
+}
+function setAsqFilter(f){ window.asqFilter=f; renderAdminSupportQueue(); }
+function openAdminSupportInquiry(id){ window.currentSupportInquiryId=id; renderAdminSupportDetail(); go('admin-support-detail'); }
+function renderAdminSupportDetail(){
+  var q=(window.SUPPORT_INQUIRIES||[]).find(function(x){ return x.id===window.currentSupportInquiryId; });
+  var el=document.getElementById('admin-support-detail-body'); if(!el) return;
+  if(!q){ el.innerHTML='<div class="caption">문의를 찾을 수 없어요.</div>'; return; }
+  var answered=q.status==='answered';
+  el.innerHTML = '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px;margin:16px 0">'
+    + '<div style="font-size:12.5px;color:var(--slate);margin-bottom:6px">'+(q.userRole==='partner'?'업체':'소비자')+' · '+(q.createdAt||'').slice(0,16).replace('T',' ')+'</div>'
+    + '<div style="font-size:15.5px;color:var(--charcoal);line-height:1.7;white-space:pre-wrap">'+escapeConsumerIdentityHtml(q.message)+'</div>'
+    + '</div>'
+    + (answered
+        ? '<div style="background:var(--ivory);border-radius:var(--radius-card);padding:16px"><div style="font-size:12.5px;color:var(--slate);margin-bottom:6px">운영팀 답변 · '+(q.repliedAt||'').slice(0,16).replace('T',' ')+'</div><div style="font-size:15px;color:var(--charcoal);line-height:1.7;white-space:pre-wrap">'+escapeConsumerIdentityHtml(q.adminReply)+'</div></div>'
+        : '<textarea id="admin-support-reply-input" placeholder="답변을 입력해주세요" style="width:100%;min-height:120px;border:1px solid var(--stone);border-radius:var(--radius-input);padding:12px;font-size:15px;font-family:inherit;box-sizing:border-box"></textarea>'
+          + '<button class="btn btn-primary" style="margin-top:12px" onclick="submitAdminSupportReply(\''+q.id+'\')">답변 등록</button>');
+}
+function submitAdminSupportReply(id){
+  var input=document.getElementById('admin-support-reply-input');
+  var reply=(input?input.value:'').trim();
+  if(reply.length<2){ alert('답변 내용을 입력해주세요.'); return; }
+  apiFetch('/api/admin/support/inquiries/'+id+'/reply', { method:'PUT', body: JSON.stringify({ reply: reply }) })
+    .then(function(updated){
+      var idx=(window.SUPPORT_INQUIRIES||[]).findIndex(function(x){ return x.id===id; });
+      if(idx>-1) window.SUPPORT_INQUIRIES[idx]=updated;
+      window._adminCountsCache=null; // 큐 배지 재계산
+      alert('답변을 등록했어요.');
+      renderAdminSupportDetail();
+    })
+    .catch(function(e){ alert(e.message||'답변 등록 중 오류가 발생했어요.'); });
+}
+
+/* ===== 신규(사용자요청 — 고객센터 FAQ 확장): 관리자 FAQ 관리 CRUD ===== */
+window.ADMIN_FAQS = window.ADMIN_FAQS || [];
+window._adminFaqLoaded = false; window._adminFaqLoading = false; window.adminFaqAudienceFilter = window.adminFaqAudienceFilter || 'all';
+window._adminFaqEditingId = null;
+function loadAdminFaqs(cb){
+  if(window._adminFaqLoading) return;
+  window._adminFaqLoading = true;
+  apiFetch('/api/admin/faqs').then(function(list){
+    window.ADMIN_FAQS = list||[]; window._adminFaqLoaded = true; window._adminFaqLoading = false;
+    if(typeof cb==='function') cb();
+  }).catch(function(e){
+    window._adminFaqLoading = false;
+    var el=document.getElementById('admin-faq-list'); if(el) el.innerHTML=emptyStateBox('FAQ 목록을 불러오지 못했습니다.');
+  });
+}
+function renderAdminFaqScreen(){
+  var fl=document.getElementById('admin-faq-filter');
+  if(fl){ var fs=[['all','전체'],['consumer','소비자'],['partner','업체']]; fl.innerHTML=fs.map(function(x){ return '<button type="button" class="chip'+(window.adminFaqAudienceFilter===x[0]?' active':'')+'" onclick="setAdminFaqAudienceFilter(\''+x[0]+'\')">'+x[1]+'</button>'; }).join(''); }
+  if(!window._adminFaqLoaded){ document.getElementById('admin-faq-list').innerHTML='<div class="caption" style="text-align:center;padding:20px 0">불러오는 중...</div>'; loadAdminFaqs(renderAdminFaqList); return; }
+  renderAdminFaqList();
+}
+function setAdminFaqAudienceFilter(a){ window.adminFaqAudienceFilter=a; renderAdminFaqScreen(); }
+function renderAdminFaqList(){
+  var el = document.getElementById('admin-faq-list'); if(!el) return;
+  var q = (document.getElementById('admin-faq-search')||{}).value || '';
+  q = q.trim().toLowerCase();
+  var list = (window.ADMIN_FAQS||[]).filter(function(f){
+    if(window.adminFaqAudienceFilter!=='all' && f.audience!==window.adminFaqAudienceFilter) return false;
+    if(!q) return true;
+    return (f.question+' '+f.answer).toLowerCase().indexOf(q)>-1;
+  });
+  if(!list.length){ el.innerHTML='<div class="caption" style="text-align:center;color:var(--slate);padding:30px 0">해당하는 FAQ가 없어요.</div>'; return; }
+  el.innerHTML = list.map(function(f){
+    var audLabel = f.audience==='partner'?'업체':(f.audience==='common'?'공통':'소비자');
+    var draft = f.status==='draft';
+    return '<button type="button" onclick="openAdminFaqEdit(\''+f.id+'\')" style="width:100%;display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:13px 14px;margin-bottom:8px;cursor:pointer;font-family:inherit;text-align:left">'
+      + '<span style="flex:1;overflow:hidden"><span style="display:block;font-size:15px;font-weight:700;color:var(--charcoal);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeConsumerIdentityHtml(f.question)+'</span><span style="display:block;font-size:12px;color:var(--slate);margin-top:2px">'+audLabel+' · '+escapeConsumerIdentityHtml(f.category)+(draft?' · <span style="color:var(--terracotta)">비공개</span>':'')+'</span></span>'
+      + icon('chevronRight',T.slate,16)
+      + '</button>';
+  }).join('');
+}
+function openAdminFaqNew(){
+  window._adminFaqEditingId = null;
+  document.getElementById('admin-faq-edit-title').textContent = '새 FAQ 추가';
+  document.getElementById('admin-faq-category').value = '';
+  document.getElementById('admin-faq-question').value = '';
+  document.getElementById('admin-faq-answer').value = '';
+  document.getElementById('admin-faq-keywords').value = '';
+  window._adminFaqDraftAudience = 'consumer';
+  window._adminFaqDraftStatus = 'published';
+  renderAdminFaqAudienceChips(); renderAdminFaqStatusChips();
+  document.getElementById('admin-faq-delete-btn').style.display = 'none';
+  go('admin-faq-edit');
+}
+function openAdminFaqEdit(id){
+  var f = (window.ADMIN_FAQS||[]).find(function(x){ return x.id===id; });
+  if(!f) return;
+  window._adminFaqEditingId = id;
+  document.getElementById('admin-faq-edit-title').textContent = 'FAQ 편집';
+  document.getElementById('admin-faq-category').value = f.category;
+  document.getElementById('admin-faq-question').value = f.question;
+  document.getElementById('admin-faq-answer').value = f.answer;
+  document.getElementById('admin-faq-keywords').value = f.keywords||'';
+  window._adminFaqDraftAudience = f.audience;
+  window._adminFaqDraftStatus = f.status;
+  renderAdminFaqAudienceChips(); renderAdminFaqStatusChips();
+  document.getElementById('admin-faq-delete-btn').style.display = 'block';
+  go('admin-faq-edit');
+}
+function renderAdminFaqAudienceChips(){
+  var wrap = document.getElementById('admin-faq-audience-chips'); if(!wrap) return;
+  var opts = [['consumer','소비자'],['partner','업체'],['common','공통']];
+  wrap.innerHTML = opts.map(function(o){ return '<button type="button" class="chip'+(window._adminFaqDraftAudience===o[0]?' active':'')+'" onclick="window._adminFaqDraftAudience=\''+o[0]+'\';renderAdminFaqAudienceChips()">'+o[1]+'</button>'; }).join('');
+}
+function renderAdminFaqStatusChips(){
+  var wrap = document.getElementById('admin-faq-status-chips'); if(!wrap) return;
+  var opts = [['published','공개'],['draft','비공개(초안)']];
+  wrap.innerHTML = opts.map(function(o){ return '<button type="button" class="chip'+(window._adminFaqDraftStatus===o[0]?' active':'')+'" onclick="window._adminFaqDraftStatus=\''+o[0]+'\';renderAdminFaqStatusChips()">'+o[1]+'</button>'; }).join('');
+}
+function saveAdminFaq(){
+  var category = document.getElementById('admin-faq-category').value.trim();
+  var question = document.getElementById('admin-faq-question').value.trim();
+  var answer = document.getElementById('admin-faq-answer').value.trim();
+  var keywords = document.getElementById('admin-faq-keywords').value.trim();
+  if(!category || !question || !answer){ alert('카테고리·질문·답변을 모두 입력해주세요.'); return; }
+  var payload = { audience: window._adminFaqDraftAudience, category: category, question: question, answer: answer, keywords: keywords, status: window._adminFaqDraftStatus };
+  var req = window._adminFaqEditingId
+    ? apiFetch('/api/admin/faqs/'+window._adminFaqEditingId, { method:'PUT', body: JSON.stringify(payload) })
+    : apiFetch('/api/admin/faqs', { method:'POST', body: JSON.stringify(payload) });
+  req.then(function(){
+    alert('저장했어요.');
+    window._adminFaqLoaded = false; // 다음 진입시 최신 목록 재조회
+    window._faqCache = {}; // 소비자/업체 화면 FAQ 캐시도 무효화
+    go('admin-faqs'); loadAdminFaqs(renderAdminFaqList);
+  }).catch(function(e){ alert(e.message||'저장 중 오류가 발생했어요.'); });
+}
+function deleteAdminFaq(){
+  if(!window._adminFaqEditingId) return;
+  if(!confirm('이 FAQ를 삭제할까요?')) return;
+  apiFetch('/api/admin/faqs/'+window._adminFaqEditingId, { method:'DELETE' }).then(function(){
+    window._adminFaqLoaded = false; window._faqCache = {};
+    go('admin-faqs'); loadAdminFaqs(renderAdminFaqList);
+  }).catch(function(e){ alert(e.message||'삭제 중 오류가 발생했어요.'); });
+}
+
 function renderAdminDisputeDetail(){
   var el=document.getElementById('admin-dispute-detail-body'); if(!el) return;
   var d=(window.DISPUTES||[]).filter(function(x){return x.id===window.currentDisputeId;})[0];
@@ -6397,6 +6626,8 @@ function go(id){
   // 결함정리(사용자요청 — 마이페이지 통합): s-partner-mypage 화면도 삭제되어 이 조건은 도달하지 않음
   // (renderPartnerMypage()는 'partner-home' 훅에서 자동 호출됨)
   if(id === 'admin-dispute-queue' && typeof renderAdminDisputeQueue==='function'){ renderAdminDisputeQueue(); }
+  if(id === 'admin-support' && typeof renderAdminSupportQueue==='function'){ renderAdminSupportQueue(); }
+  if(id === 'admin-faqs' && typeof renderAdminFaqScreen==='function'){ renderAdminFaqScreen(); }
   if(id === 'admin-inspect' && typeof renderAdminInspect==='function'){ renderAdminInspect(); }
   if(id === 'admin-settle' && typeof renderAdminSettle==='function'){ renderAdminSettle(); }
   if(id === 'admin-abuse' && typeof renderAdminAbuse==='function'){ renderAdminAbuse(); }
@@ -7356,12 +7587,12 @@ AI 매칭 플랫폼입니다.
 `상호명: (주)루머(ROOMER)
 대표자: 조은혜
 사업자등록번호: 602-14-83425
-통신판매업신고번호: 제0000-서울강남-00000호
-주소: 서울특별시 강남구 테헤란로 000
+통신판매업신고번호: 제2026-제주대정-068호
+주소: 제주특별자치도 서귀포시 대정읍 에듀시티로240번길 9, 104동 407층
 고객센터: 1000-0000 (평일 09:00~18:00)
 이메일: roomer0829@naver.com
 
-※ 통신판매업신고번호·주소·고객센터 전화번호는 아직 확정 전 임시값이며, 확정되는 대로 갱신될 예정입니다.` },
+※ 고객센터 전화번호는 아직 확정 전 임시값이며, 확정되는 대로 갱신될 예정입니다.` },
   privacy: { title:'개인정보처리방침', body:
 `제1조 (개인정보의 처리 목적)
 루머(ROOMER)는 다음의 목적을 위해 개인정보를 처리합니다.
@@ -7426,6 +7657,14 @@ AI 매칭 플랫폼입니다.
    말합니다.
 ③ "계약"이란 소비자와 업체가 플랫폼을 통해 체결하는 시공 계약을
    말합니다.
+
+제2조의2 (통신판매중개자로서의 지위)
+① 회사는 「전자상거래 등에서의 소비자보호에 관한 법률」에 따른
+   통신판매중개자이며, 통신판매의 당사자가 아닙니다.
+② 등록된 시공 정보, 견적 및 계약 내용, 그로 인해 발생하는 거래에
+   대한 책임은 원칙적으로 해당 업체에 있습니다.
+③ 다만 회사는 이용자 보호를 위해 업체 입점 심사, 계약 이행
+   모니터링, 분쟁 조정 지원 등 합리적인 노력을 다합니다.
 
 제3조 (약관의 효력 및 변경)
 회사는 관계법령을 위반하지 않는 범위에서 약관을 변경할 수 있으며,
@@ -15596,16 +15835,142 @@ function renderMyAlerts(){
       }).join('')
     + '</div>';
 }
+// 신규(강남언니 벤치마킹 검토 후속 — 0단계): "1:1 문의하기"가 alert()만 띄우고 실제로는 아무 데도
+// 접수되지 않던 문제를 실제 서버 접수·조회·관리자 답변 흐름으로 교체. 소비자/업체 화면에서 공용.
+function openSupportComposer(role){
+  var msg = prompt('문의하실 내용을 입력해주세요 (5자 이상)');
+  if(msg === null) return; // 취소
+  msg = msg.trim();
+  if(msg.length < 5){ alert('문의 내용을 5자 이상 입력해주세요.'); return; }
+  var containerId = role === 'partner' ? 'partner-support-inquiries' : 'my-support-inquiries';
+  apiFetch('/api/support/inquiries', { method:'POST', body: JSON.stringify({ message: msg }) })
+    .then(function(){ alert('문의가 접수됐어요. 답변은 이 화면 아래 "내 문의 내역"에서 확인하실 수 있어요.'); loadSupportInquiries(containerId); })
+    .catch(function(e){ alert(e.message || '문의 접수 중 오류가 발생했어요. 잠시 후 다시 시도해주세요.'); });
+}
+async function loadSupportInquiries(containerId){
+  var wrap = document.getElementById(containerId); if(!wrap) return;
+  wrap.innerHTML = '<div class="caption">불러오는 중…</div>';
+  try{
+    var list = await apiFetch('/api/support/inquiries/mine', { method:'GET' });
+    renderSupportInquiryList(containerId, list);
+  }catch(e){
+    wrap.innerHTML = '<div class="caption" style="color:var(--danger)">문의 내역을 불러오지 못했어요.</div>';
+  }
+}
+function renderSupportInquiryList(containerId, list){
+  var wrap = document.getElementById(containerId); if(!wrap) return;
+  if(!list || !list.length){ wrap.innerHTML = '<div class="caption" style="padding:2px 0 4px">아직 남기신 문의가 없어요.</div>'; return; }
+  wrap.innerHTML = list.map(function(q){
+    var answered = q.status === 'answered';
+    var statusLabel = answered ? '답변완료' : '답변대기';
+    var statusColor = answered ? T.success : T.slate;
+    var replyHtml = q.adminReply ? ('<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--stone);font-size:13.5px;color:var(--charcoal);line-height:1.6"><b>운영팀 답변</b><br>'+escapeConsumerIdentityHtml(q.adminReply)+'</div>') : '';
+    return '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px 16px;margin-bottom:10px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-size:12px;font-weight:700;color:'+statusColor+'">'+statusLabel+'</span><span style="font-size:11.5px;color:var(--slate)">'+(q.createdAt||'').slice(0,10)+'</span></div>'
+      + '<div style="font-size:14.5px;color:var(--charcoal);line-height:1.6;white-space:pre-wrap">'+escapeConsumerIdentityHtml(q.message)+'</div>'
+      + replyHtml
+      + '</div>';
+  }).join('');
+}
+/* ===== 신규(사용자요청 — 고객센터 FAQ를 검색 가능한 방대한 자료로 확장, 2026-09) =====
+   기존 3개짜리 하드코딩 FAQ를 DB(faqs 테이블, 100여 개) 기반으로 교체하고, 화면 진입 시 전체를
+   한 번에 받아와 브라우저에서 즉시 검색·필터링한다(문항 규모가 수백 개 이내라 서버 왕복 없이
+   이 방식이 가장 빠르다). 검색 결과가 없으면 그 검색어를 기존 search_queries에 남기고
+   1:1 문의로 유도한다 — "무결과 검색어"를 나중에 관리자가 볼 수 있는 씨앗이 된다. */
+var FAQ_CATEGORY_LABELS = {
+  signup:'가입·로그인', quote:'견적·계약', contract:'계약·결제', construction:'시공·하자',
+  dispute:'분쟁 처리', app:'앱·기타', settlement:'수수료·정산', ad:'광고·포트폴리오', tier:'등급·승급'
+};
+var FAQ_CATEGORY_ORDER = ['signup','quote','contract','construction','settlement','ad','tier','dispute','app'];
+window._faqCache = window._faqCache || {}; // { consumer:[...], partner:[...] }
+window._faqState = window._faqState || { consumer:{q:'',cat:'all'}, partner:{q:'',cat:'all'} };
+window._faqOpenId = window._faqOpenId || null; // 현재 펼쳐진 FAQ id(같은 화면에서 하나만 펼침)
+
+function faqIds(role){ return role==='partner' ? {items:'partner-support-items', cats:'partner-faq-categories', search:'partner-faq-search'} : {items:'my-support-items', cats:'my-faq-categories', search:'my-faq-search'}; }
+
+async function loadFaqSection(role){
+  var ids = faqIds(role);
+  var el = document.getElementById(ids.items); if(!el) return;
+  if(!window._faqCache[role]){
+    el.innerHTML = '<div class="caption" style="text-align:center;padding:20px 0">불러오는 중…</div>';
+    try{
+      window._faqCache[role] = await apiFetch('/api/faqs?audience='+role, { method:'GET' });
+    }catch(e){
+      el.innerHTML = '<div class="caption" style="color:var(--danger);text-align:center;padding:20px 0">FAQ를 불러오지 못했어요.</div>';
+      return;
+    }
+  }
+  renderFaqCategories(role);
+  renderFaqList(role);
+}
+function renderFaqCategories(role){
+  var ids = faqIds(role);
+  var wrap = document.getElementById(ids.cats); if(!wrap) return;
+  var list = window._faqCache[role] || [];
+  var present = FAQ_CATEGORY_ORDER.filter(function(c){ return list.some(function(f){ return f.category===c; }); });
+  var state = window._faqState[role];
+  var chips = [['all','전체']].concat(present.map(function(c){ return [c, FAQ_CATEGORY_LABELS[c]||c]; }));
+  wrap.innerHTML = chips.map(function(c){
+    return '<button type="button" class="chip'+(state.cat===c[0]?' active':'')+'" style="flex-shrink:0" onclick="setFaqCategory(\''+role+'\',\''+c[0]+'\')">'+c[1]+'</button>';
+  }).join('');
+}
+function setFaqCategory(role, cat){ window._faqState[role].cat = cat; window._faqOpenId=null; renderFaqCategories(role); renderFaqList(role); }
+function onFaqSearchInput(role, value){
+  window._faqState[role].q = value; window._faqOpenId=null;
+  clearTimeout(window._faqSearchDebounce);
+  window._faqSearchDebounce = setTimeout(function(){ renderFaqList(role); }, 120);
+}
+function faqHighlight(escapedText, rawQuery){
+  var q = (rawQuery||'').trim();
+  if(!q) return escapedText;
+  var escQ = escapeConsumerIdentityHtml(q).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  try{ return escapedText.replace(new RegExp('('+escQ+')','ig'), '<mark style="background:#F4D9A0;color:inherit;border-radius:2px">$1</mark>'); }
+  catch(e){ return escapedText; }
+}
+function renderFaqList(role){
+  var ids = faqIds(role);
+  var el = document.getElementById(ids.items); if(!el) return;
+  var state = window._faqState[role];
+  var list = window._faqCache[role] || [];
+  var tokens = state.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  var filtered = list.filter(function(f){
+    if(state.cat!=='all' && f.category!==state.cat) return false;
+    if(!tokens.length) return true;
+    var hay = (f.question+' '+f.answer+' '+(f.keywords||'')).toLowerCase();
+    return tokens.every(function(t){ return hay.indexOf(t)>-1; });
+  });
+  if(!filtered.length){
+    if(tokens.length){
+      apiFetch('/api/search/log', { method:'POST', body: JSON.stringify({ query: '[FAQ]'+state.q.trim() }), noRetry:true }).catch(function(){});
+    }
+    el.innerHTML = '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:24px 18px;text-align:center">'
+      + '<div style="font-size:15px;color:var(--charcoal);font-weight:700;margin-bottom:6px">검색 결과가 없어요</div>'
+      + '<div style="font-size:13.5px;color:var(--slate);line-height:1.6;margin-bottom:14px">다른 단어로 검색해보시거나, 1:1 문의로 직접 물어봐주세요.</div>'
+      + '<button type="button" class="btn btn-primary" onclick="openSupportComposer(\''+role+'\')">1:1 문의하기</button>'
+      + '</div>';
+    return;
+  }
+  el.innerHTML = filtered.map(function(f){
+    var open = window._faqOpenId===f.id;
+    var qHtml = faqHighlight(escapeConsumerIdentityHtml(f.question), state.q);
+    var aHtml = faqHighlight(escapeConsumerIdentityHtml(f.answer), state.q);
+    return '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);margin-bottom:8px;overflow:hidden">'
+      + '<button type="button" onclick="toggleFaqItem(\''+role+'\',\''+f.id+'\')" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;background:none;border:none;padding:14px 16px;cursor:pointer;font-family:inherit;text-align:left">'
+      + '<span style="font-size:15.5px;font-weight:700;color:var(--charcoal);line-height:1.5">'+qHtml+'</span>'
+      + '<span style="flex-shrink:0;display:inline-block;transition:transform .15s;transform:rotate('+(open?90:0)+'deg)">'+icon('chevronRight',T.slate,16)+'</span>'
+      + '</button>'
+      + (open ? '<div style="padding:0 16px 16px;font-size:14.5px;color:var(--slate);line-height:1.7;white-space:pre-wrap">'+aHtml+'</div>' : '')
+      + '</div>';
+  }).join('');
+}
+function toggleFaqItem(role, id){
+  window._faqOpenId = (window._faqOpenId===id) ? null : id;
+  renderFaqList(role);
+}
 function renderMySupport(){
   const el = document.getElementById('my-support-items'); if(!el) return;
-  var FAQ = [
-    ['견적은 언제 받을 수 있나요?','업체가 실측 후 보통 1~3일 내 최종견적서를 보내드려요.'],
-    ['계약금은 안전한가요?','계약금은 플랫폼을 통해 안전하게 관리되며, 하자 발생 시 이행보증금으로 보호됩니다.'],
-    ['업체와 분쟁이 생기면요?','메신저에서 "분쟁 신고"를 이용하시면 운영팀이 확인 후 조정해드려요.']
-  ];
-  el.innerHTML = FAQ.map(function(f){
-    return '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px 16px;margin-bottom:10px"><div style="font-size:16px;font-weight:700;color:var(--charcoal);margin-bottom:5px">'+f[0]+'</div><div style="font-size:14.5px;color:var(--slate);line-height:1.6">'+f[1]+'</div></div>';
-  }).join('');
+  loadFaqSection('consumer');
+  loadSupportInquiries('my-support-inquiries');
 }
 renderMypage();
 // 결함정리(사용자요청 — 소비자 마이페이지 통합): tabbar-mypage 컨테이너는 s-mypage 화면과 함께 삭제됨
@@ -15799,14 +16164,8 @@ function renderPartnerAlerts(){
 }
 function renderPartnerSupport(){
   const el = document.getElementById('partner-support-items'); if(!el) return;
-  var FAQ = [
-    ['정산은 언제 되나요?','계약 확정 후 정산 내역에서 진행 상황을 확인할 수 있어요.'],
-    ['수수료율은 어떻게 정해지나요?','등급별로 자동 적용되며, 승급하면 수수료가 낮아져요.'],
-    ['소비자와 분쟁이 생기면요?','메신저에서 "분쟁 신고"를 이용하시면 운영팀이 확인 후 조정해드려요.']
-  ];
-  el.innerHTML = FAQ.map(function(f){
-    return '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px 16px;margin-bottom:10px"><div style="font-size:16px;font-weight:700;color:var(--charcoal);margin-bottom:5px">'+f[0]+'</div><div style="font-size:14.5px;color:var(--slate);line-height:1.6">'+f[1]+'</div></div>';
-  }).join('');
+  loadFaqSection('partner');
+  loadSupportInquiries('partner-support-inquiries');
 }
 // 파트너 전용 랜딩 콘텐츠 (B2B) — 소비자 경로와 완전 분리된 업체 입구
 (function(){
