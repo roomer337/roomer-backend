@@ -7,6 +7,74 @@ const db = new Database(process.env.DB_PATH || 'roomer.db');
 
 db.pragma('foreign_keys = ON');
 
+// ===== 신규(강남언니 벤치마킹 검토 후속 — 1단계: 민감정보 암호화) =====
+// users.phone, partners.phone/business_reg_number/ceo_name/applicant_name,
+// partner_identity_verifications.phone/applicant_name 처럼 실명·연락처·사업자번호에 해당하는
+// 컬럼을 DB 파일에 평문으로 저장하지 않고 AES-256-GCM으로 암호화해서 저장한다.
+// 주의(운영 배포 필수): PII_ENCRYPTION_KEY 환경변수(64자리 hex = 32바이트)가 반드시 필요하다.
+// JWT_SECRET과 동일한 패턴으로, 없으면 개발용 고정키로 동작하되 운영환경(NODE_ENV=production)에서는
+// 서버 시작 자체를 막는다 — 약한 키로 조용히 암호화하다가 나중에 키를 잃어버리는 사고를 방지하기 위함.
+const crypto = require('crypto');
+const PII_KEY_HEX = process.env.PII_ENCRYPTION_KEY || (process.env.NODE_ENV === 'production' ? null : '00'.repeat(32));
+if (!PII_KEY_HEX) throw new Error('운영환경에서는 PII_ENCRYPTION_KEY 환경변수(64자리 hex, 32바이트)가 반드시 필요합니다.');
+if (!process.env.PII_ENCRYPTION_KEY) {
+  console.warn('⚠️  경고: PII_ENCRYPTION_KEY 환경변수가 설정되지 않아 개발용 기본키를 사용 중입니다. ' +
+    '배포 전 반드시 강력한 랜덤 키로 설정하세요(생성 예: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))").');
+}
+const PII_KEY = Buffer.from(PII_KEY_HEX, 'hex');
+if (PII_KEY.length !== 32) throw new Error('PII_ENCRYPTION_KEY는 32바이트(64자리 hex 문자열)여야 합니다.');
+
+const PII_ENC_PREFIX = 'encv1:'; // 이 접두사가 없는 값은 "아직 암호화되지 않은 평문"으로 간주(마이그레이션 전 기존 데이터·테스트 시드와 호환)
+function encryptPii(plaintext) {
+  if (plaintext === null || plaintext === undefined) return plaintext;
+  const text = String(plaintext);
+  if (text === '') return text; // 빈 문자열은 암호화 오버헤드 없이 그대로 저장
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', PII_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return PII_ENC_PREFIX + Buffer.concat([iv, authTag, encrypted]).toString('base64');
+}
+function decryptPii(value) {
+  if (typeof value !== 'string' || !value.startsWith(PII_ENC_PREFIX)) return value; // 평문·null·undefined는 그대로 반환
+  try {
+    const raw = Buffer.from(value.slice(PII_ENC_PREFIX.length), 'base64');
+    const iv = raw.subarray(0, 12), authTag = raw.subarray(12, 28), ciphertext = raw.subarray(28);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', PII_KEY, iv);
+    decipher.setAuthTag(authTag);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+  } catch (e) {
+    console.error('[PII 복호화 실패] 키가 바뀌었거나 데이터가 손상되었을 수 있습니다:', e.message);
+    return null; // 잘못된 값을 그대로 노출하지 않고 안전하게 null 반환
+  }
+}
+// SELECT 결과 행(row)에 아래 컬럼명이 있으면 자동으로 복호화한다. 컬럼명 기준이라 어느 테이블의
+// SELECT든(users/partners/partner_identity_verifications 등) 자동으로 적용되고, 값이 평문이면
+// decryptPii()가 그대로 통과시키므로 아직 암호화 전인 기존 데이터도 안전하다.
+const PII_FIELDS = ['phone', 'business_reg_number', 'ceo_name', 'applicant_name'];
+function decryptPiiRow(row) {
+  if (!row || typeof row !== 'object') return row;
+  for (const f of PII_FIELDS) { if (f in row) row[f] = decryptPii(row[f]); }
+  return row;
+}
+function decryptPiiRows(rows) { if (Array.isArray(rows)) rows.forEach(decryptPiiRow); return rows; }
+
+// db.prepare()가 반환하는 Statement의 .get()/.all()만 감싸서 자동 복호화한다. 이렇게 하면 기존에
+// 흩어진 수십 곳의 SELECT 호출부를 하나하나 고치지 않아도 항상 복호화된 값을 받는다.
+// (반대로 INSERT/UPDATE로 값을 "쓸" 때는 SQL 텍스트만으로 어떤 ? 파라미터가 어떤 컬럼인지 확실히
+// 알 수 없어 자동화가 위험하므로, 각 저장 지점에서 db.encryptPii()를 직접 호출하도록 남겨둔다.)
+const _originalPrepare = db.prepare.bind(db);
+db.prepare = function (sql) {
+  const stmt = _originalPrepare(sql);
+  const originalGet = stmt.get.bind(stmt);
+  const originalAll = stmt.all.bind(stmt);
+  stmt.get = (...args) => decryptPiiRow(originalGet(...args));
+  stmt.all = (...args) => decryptPiiRows(originalAll(...args));
+  return stmt;
+};
+db.encryptPii = encryptPii;
+db.decryptPii = decryptPii;
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -725,6 +793,49 @@ CREATE TABLE IF NOT EXISTS admin_member_actions (
 );
 `);
 db.exec('CREATE INDEX IF NOT EXISTS idx_admin_member_actions_target ON admin_member_actions(target_type, target_id, created_at DESC)');
+
+// 신규(강남언니 벤치마킹 검토 후속 — 1단계: 관리자 접근 감사로그): 관리자가 업체의 증빙서류
+// (사업자등록증 사본, 사무실 사진 등 stored_files의 private 파일)를 열람할 때마다 남기는 로그.
+// 누가·언제·무엇을 열람했는지 기록해서, 민감정보 오남용을 사후에 추적할 수 있게 한다.
+db.exec(`
+CREATE TABLE IF NOT EXISTS admin_access_logs (
+  id TEXT PRIMARY KEY,
+  admin_id TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  purpose TEXT,
+  ip_address TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_admin_access_logs_resource ON admin_access_logs(resource_type, resource_id, created_at DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_admin_access_logs_admin ON admin_access_logs(admin_id, created_at DESC)');
+
+// 신규(강남언니 벤치마킹 검토 후속 — 2단계: 계약인증 리뷰 시스템): 실제 계약(contract_id)에
+// 묶여서만 작성 가능한 리뷰. 예전에 있던 "자기신고형 리뷰+캐시적립" 기능은 증빙 없이 어뷰징이
+// 가능해 완전히 삭제된 이력이 있어(아래 UNIQUE 제약으로 계약당 리뷰 1개만 허용), 이번엔 실제
+// contracts 테이블의 존재 자체를 증빙으로 삼는다.
+// 참고: 이 서비스는 아직 "공사 완료" 단계를 별도로 추적하지 않는다(계약 확정 이후 상태를 바꾸는
+// 로직이 없음) — 그래서 "완료된 계약만" 대신 "실제 계약이 존재하는 건"을 작성 자격으로 삼았다.
+db.exec(`
+CREATE TABLE IF NOT EXISTS reviews (
+  id TEXT PRIMARY KEY,
+  contract_id TEXT NOT NULL UNIQUE REFERENCES contracts(id),
+  consumer_id TEXT NOT NULL REFERENCES users(id),
+  partner_id TEXT NOT NULL REFERENCES partners(id),
+  rating_overall INTEGER NOT NULL,
+  rating_quote_accuracy INTEGER NOT NULL,
+  rating_quality INTEGER NOT NULL,
+  rating_schedule INTEGER NOT NULL,
+  rating_communication INTEGER NOT NULL,
+  comment TEXT,
+  partner_reply TEXT,
+  partner_replied_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_reviews_partner ON reviews(partner_id, created_at DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_reviews_consumer ON reviews(consumer_id)');
 
 // 신규(사용자요청 — 고객센터 FAQ 확장): faqs 테이블이 완전히 비어있을 때만 초기 콘텐츠(100개)를
 // 채워 넣는다. 이미 데이터가 있다면(관리자가 추가·수정했을 수 있으므로) 절대 건드리지 않는다.
