@@ -150,10 +150,16 @@ app.use((req, res, next) => {
         requester = payload.role + ':' + payload.sub;
       }
     } catch (e) { /* 토큰 없거나 유효하지 않으면 null(익명)로 기록 */ }
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} → ${res.statusCode} (${duration}ms) by ${requester || 'anonymous'}`);
+    // 결함수정(2026-09-16, 위치정보 감사 중 발견): /api/geo/reverse는 정밀 GPS 좌표(lat,lng)를
+    // 쿼리파라미터로 받는데, 기존에는 req.originalUrl을 그대로 로그에 남겨서 이 좌표가
+    // request_logs 테이블에 평문으로 영구 보관되고 있었다(위치정보 처리방침의 "좌표 미저장"
+    // 원칙과 불일치). 이 라우트만 쿼리스트링을 제외한 경로만 기록하도록 수정. 다른 라우트의
+    // 쿼리스트링(예: 인기검색어 통계용 검색어 로그)은 기존과 동일하게 유지한다.
+    const loggedPath = req.path === '/api/geo/reverse' ? req.path : req.originalUrl;
+    console.log(`[${new Date().toISOString()}] ${req.method} ${loggedPath} → ${res.statusCode} (${duration}ms) by ${requester || 'anonymous'}`);
     try {
       db.prepare('INSERT INTO request_logs (method, path, status_code, duration_ms, user_id) VALUES (?,?,?,?,?)')
-        .run(req.method, req.originalUrl, res.statusCode, duration, requester);
+        .run(req.method, loggedPath, res.statusCode, duration, requester);
     } catch (e) { console.error('로그 DB 기록 실패:', e.message); }
   });
   next();
