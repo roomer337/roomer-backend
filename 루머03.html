@@ -1609,6 +1609,10 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
         <div style="display:flex;justify-content:center;gap:14px;margin-bottom:12px">
           <button class="btn" style="width:44px;height:44px;padding:0;border-radius:50%;background:#FEE500;display:flex;align-items:center;justify-content:center;flex-shrink:0" onclick="kakaoLogin()" id="btn-kakao-03" aria-label="카카오로 시작하기"></button>
           <button class="btn" style="width:44px;height:44px;padding:0;border-radius:50%;background:#03C75A;display:flex;align-items:center;justify-content:center;flex-shrink:0" onclick="socialGo('네이버')" id="btn-naver-03" aria-label="네이버로 시작하기"></button>
+          <!-- 신규(사용자요청 — Apple 앱스토어 심사 가이드라인 4.8 대응): 카카오·네이버와 동일한 원형
+               버튼 스타일. 검정+흰색은 애플 공식 "Sign in with Apple" 버튼 규정색이라 카카오(#FEE500)·
+               네이버(#03C75A)와 같은 원칙으로 팔레트 규칙(:root/T)에서 제외한다. -->
+          <button class="btn" style="width:44px;height:44px;padding:0;border-radius:50%;background:#000;display:flex;align-items:center;justify-content:center;flex-shrink:0" onclick="socialGo('애플')" id="btn-apple-03" aria-label="Apple로 시작하기"></button>
         </div>
         <button type="button" id="btn-more-signup" style="width:100%;background:var(--steelblue);color:#fff;border:none;border-radius:var(--radius-button);padding:12px;font-size:14.5px;font-weight:800;cursor:pointer;font-family:inherit;margin-bottom:6px"></button>
         <div id="more-signup-options" style="display:none">
@@ -8614,6 +8618,7 @@ document.getElementById('d-signup-03').textContent = '소셜 계정 하나로 �
 // (버튼의 aria-label에 기존 문구를 그대로 남겨 접근성은 유지)
 document.getElementById('btn-kakao-03').innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4C6.5 4 2 7.3 2 11.4c0 2.6 1.8 4.9 4.5 6.2-.2.7-.8 2.7-.9 3.1 0 0-.02.16.08.22.1.06.22.02.22.02.3-.04 3.4-2.2 3.9-2.6.7.1 1.4.15 2.2.15 5.5 0 10-3.3 10-7.4C22 7.3 17.5 4 12 4z" fill="#3C1E1E"/></svg>';
 document.getElementById('btn-naver-03').innerHTML = '<span style="color:#fff;font-weight:900;font-size:19px;font-family:Arial,sans-serif">N</span>';
+document.getElementById('btn-apple-03').innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M16.5 12.3c0-2.1 1.7-3.1 1.8-3.2-1-1.4-2.5-1.6-3-1.6-1.3-.1-2.5.7-3.1.7-.6 0-1.6-.7-2.7-.7-1.4 0-2.6.8-3.3 2-1.4 2.5-.4 6.1 1 8.1.7 1 1.5 2.1 2.6 2 1-.1 1.4-.6 2.7-.6s1.6.6 2.7.6c1.1 0 1.8-1 2.5-2 .8-1.1 1.1-2.2 1.1-2.3-.1 0-2.2-.8-2.2-3zM14.6 6c.6-.7 1-1.7.9-2.7-.9 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6 1 .1 1.9-.5 2.5-1.2z"/></svg>';
 document.getElementById('btn-phone-03').textContent = '휴대폰 번호로 시작하기';
 document.getElementById('btn-email-03').textContent = '이메일로 시작하기';
 document.getElementById('btn-more-signup').textContent = '휴대폰·이메일로 가입하기';
@@ -8674,8 +8679,71 @@ function socialGo(provider){
       return;
     }
   }
-  finishConsumerLight();  // 역할선택 제거: 소비자 전용 경로 (네이버 미연동·애플은 여전히 즉시가입)
+  // 신규(사용자요청 — Apple 앱스토어 심사 가이드라인 4.8 대응): 카카오·네이버와 동일한 리다이렉트
+  // 패턴. 대표님이 "로그인만(이름·이메일 미수집)"으로 정하셔서 scope 없이 response_type=code만
+  // 요청 — 이 경우 애플 문서상 response_mode=query(단순 GET 리다이렉트)가 허용되어, 폼포스트 없이
+  // 카카오·네이버와 완전히 동일한 흐름으로 구현 가능하다.
+  if(provider === '애플'&&window.MVP.live){
+    var ap = window.APPLE_OAUTH;
+    if(ap && ap.enabled && ap.clientId && ap.redirectUri){
+      if(!oauthCallbackIsSameOrigin(ap.redirectUri)){ alert('Apple 로그인 콜백 주소가 현재 서비스 주소와 다릅니다. 같은 주소의 백엔드 콜백으로 설정해주세요.'); return; }
+      savePendingOAuthContext('apple');
+      var aUrl = 'https://appleid.apple.com/auth/authorize'
+        +'?response_type=code'
+        +'&response_mode=query'
+        +'&client_id='+encodeURIComponent(ap.clientId)
+        +'&redirect_uri='+encodeURIComponent(ap.redirectUri)
+        +'&state='+encodeURIComponent(createAppleOAuthState());
+      window.location.href = aUrl;
+      return;
+    }
+  }
+  finishConsumerLight();  // 역할선택 제거: 소비자 전용 경로 (네이버·애플 미연동 시 즉시가입)
 }
+// 신규(사용자요청 — Apple 실연동): 카카오·네이버와 동일한 패턴의 Apple OAuth 설정.
+// developer.apple.com에서 Services ID(=client_id) 등록 후 Render 환경변수(APPLE_TEAM_ID·
+// APPLE_KEY_ID·APPLE_PRIVATE_KEY)까지 등록되면 서버가 code→id_token 교환을 처리한다.
+window.APPLE_OAUTH = {
+  clientId: 'com.roomer.web',    // 사용자 발급 완료(Apple Developer, Services ID)
+  redirectUri: 'https://roomer-backend.onrender.com/oauth/apple/callback',   // Services ID에 Return URL로 등록 완료
+  enabled: true      // 실연동 활성화(사용자요청)
+};
+function createAppleOAuthState(){
+  var value = (window.crypto && typeof window.crypto.randomUUID === 'function')
+    ? window.crypto.randomUUID()
+    : Date.now().toString(36) + Math.random().toString(36).slice(2);
+  try{ sessionStorage.setItem('roomer_apple_oauth_state', value); }catch(e){}
+  return value;
+}
+function consumeAppleOAuthState(returnedState){
+  var saved = '';
+  try{ saved = sessionStorage.getItem('roomer_apple_oauth_state') || ''; sessionStorage.removeItem('roomer_apple_oauth_state'); }catch(e){}
+  return !!saved && !!returnedState && saved === returnedState;
+}
+function handleAppleOAuthCallback(){
+  var qs = new URLSearchParams(location.search);
+  var authError = qs.get('error');
+  if(authError){ console.error('Apple 로그인이 취소되었거나 실패했습니다:', authError); return; }
+  var code = qs.get('code');
+  var returnedState = qs.get('state');
+  if(!code || location.pathname.indexOf('/oauth/apple/callback') === -1) return;
+  if(!consumeAppleOAuthState(returnedState)){ console.error('Apple 로그인 보안 state 검증에 실패했습니다.'); return; }
+  var oauthContext=consumePendingOAuthContext('apple');
+  if(!oauthContext){ console.error('Apple 로그인 동의정보가 없거나 만료됐습니다.'); return; }
+  apiFetch('/api/auth/social/apple/callback', {method:'POST', body:JSON.stringify({
+    code:code, redirectUri:(window.APPLE_OAUTH||{}).redirectUri, consent:oauthContext.consent
+  })}).then(function(data){
+    applyConsumerAuthResponse(data,'애플');
+    finishConsumerLight({skipRemoteAuth:true});
+    try{ history.replaceState({}, document.title, location.pathname); }catch(e){}
+  }).catch(function(e){
+    console.error('Apple 로그인 callback 처리 실패:', e.message);
+    try{ history.replaceState({}, document.title, '/app/'); }catch(ignore){}
+    alert('Apple 로그인에 실패했어요: '+(e.message||'서버 설정을 확인해주세요.'));
+    go('03');
+  });
+}
+handleAppleOAuthCallback();
 // 신규(사용자요청 — 네이버 실연동 준비): 카카오와 동일한 패턴의 네이버 OAuth 설정.
 // developers.naver.com에서 앱 등록 후 Client ID·Secret 발급받으면 clientId·redirectUri를 채우고
 // enabled를 true로 바꾸면 실제 네이버 로그인으로 연동됩니다. (Client Secret은 서버에서만 사용)
