@@ -7,7 +7,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { randomUUID, createHmac } = require('crypto');
+const { randomUUID, createHmac, createPublicKey } = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -520,6 +520,134 @@ app.post('/api/auth/social/naver/callback', socialAuthLimiter, async (req, res) 
   } catch (e) {
     console.error('네이버 로그인 처리 중 오류:', e.message);
     res.status(500).json({ success: false, error: { code: 'NAVER_CALLBACK_ERROR', message: '네이버 로그인 처리 중 오류가 발생했어요.' } });
+  }
+});
+
+// 신규(사용자요청 — Apple 앱스토어 심사 가이드라인 4.8 대응, 코드 골격 준비): 카카오/네이버와 동일한
+// "소셜로그인 콜백 → users upsert → JWT 발급" 패턴을 따르되, Apple 특유의 검증 방식(JWT id_token을
+// Apple 공개키(JWKS)로 직접 서명검증 — 카카오/네이버처럼 액세스토큰으로 프로필 API를 조회하는 방식이
+// 아니라, Apple은 애초에 사용자 식별정보를 id_token 안에 담아서 줌)에 맞춰 별도 구현.
+//
+// 아직 실제 Apple Developer 키(Team ID·Services ID·Key ID·.p8)가 없는 상태라, 지금은 카카오/네이버와
+// 같은 "미설정 시 501 안내" 패턴으로 안전하게 막아두고, 키가 준비되면 Render 환경변수만 등록하면
+// 바로 동작하도록 골격을 짜둔다. 프론트(웹 JS SDK 또는 Capacitor 네이티브 Sign in with Apple 플러그인)
+// 연동은 별도 단계 — 이 라우트는 어느 쪽에서 오든 identityToken(또는 code)만 받으면 처리 가능하다.
+const APPLE_JWKS_URL = 'https://appleid.apple.com/auth/keys';
+const APPLE_ISSUER = 'https://appleid.apple.com';
+const APPLE_JWKS_TTL_MS = 60 * 60 * 1000; // Apple 권장: 응답의 Cache-Control을 따르는 게 이상적이나, 우선 1시간 고정 캐시로 단순화
+let appleJwksCache = { keys: null, fetchedAt: 0 };
+
+async function getApplePublicKeys() {
+  const now = Date.now();
+  if (appleJwksCache.keys && (now - appleJwksCache.fetchedAt) < APPLE_JWKS_TTL_MS) return appleJwksCache.keys;
+  const res = await fetch(APPLE_JWKS_URL);
+  if (!res.ok) throw Object.assign(new Error('Apple JWKS 조회 실패'), { code: 'APPLE_JWKS_ERROR' });
+  const body = await res.json();
+  appleJwksCache = { keys: body.keys || [], fetchedAt: now };
+  return appleJwksCache.keys;
+}
+
+// identityToken(Apple id_token)을 서명검증하고 payload(sub, email 등)를 반환한다.
+// APPLE_TEST_MODE=true일 때만 서명검증을 건너뛰고 페이로드를 그대로 신뢰한다(GEO_TEST_MODE와 동일한
+// 취지 — 외부망이 막힌 테스트/개발 환경에서 로직만 검증하기 위함). 운영 배포본에는 이 환경변수를
+// 절대 설정하면 안 된다(설정 시 위조된 토큰도 통과되어 심각한 보안 문제가 됨).
+async function verifyAppleIdToken(idToken) {
+  if (process.env.APPLE_TEST_MODE === 'true') {
+    const payload = jwt.decode(idToken);
+    if (!payload || !payload.sub) throw Object.assign(new Error('테스트 토큰에 sub가 없습니다'), { code: 'APPLE_TOKEN_ERROR' });
+    return payload;
+  }
+  const decoded = jwt.decode(idToken, { complete: true });
+  if (!decoded || !decoded.header || !decoded.header.kid) {
+    throw Object.assign(new Error('Apple id_token 형식이 올바르지 않습니다'), { code: 'APPLE_TOKEN_ERROR' });
+  }
+  const keys = await getApplePublicKeys();
+  const jwk = keys.find(k => k.kid === decoded.header.kid);
+  if (!jwk) throw Object.assign(new Error('일치하는 Apple 공개키를 찾지 못했습니다'), { code: 'APPLE_TOKEN_ERROR' });
+  const publicKey = createPublicKey({ key: jwk, format: 'jwk' });
+  try {
+    return jwt.verify(idToken, publicKey, {
+      algorithms: ['RS256'],
+      issuer: APPLE_ISSUER,
+      audience: process.env.APPLE_CLIENT_ID
+    });
+  } catch (e) {
+    throw Object.assign(new Error('Apple id_token 서명 검증 실패: ' + e.message), { code: 'APPLE_TOKEN_ERROR' });
+  }
+}
+
+// 인가코드(code)만 받은 경우(웹 리다이렉트 등)에 한해, Apple 토큰 교환 API를 호출해 id_token을 받아온다.
+// Apple은 카카오처럼 고정된 client_secret이 아니라 "매번 우리가 직접 서명해서 만드는 JWT"를
+// client_secret으로 요구한다(ES256, 발급자=Team ID, 대상=Services ID, 서명키=.p8 파일).
+function generateAppleClientSecret() {
+  const privateKey = (process.env.APPLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'); // Render 환경변수에 개행이 \n 문자로 들어온 경우 복원
+  return jwt.sign(
+    { iss: process.env.APPLE_TEAM_ID, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 300, aud: APPLE_ISSUER, sub: process.env.APPLE_CLIENT_ID },
+    privateKey,
+    { algorithm: 'ES256', header: { kid: process.env.APPLE_KEY_ID } }
+  );
+}
+async function exchangeAppleCode(code, redirectUri) {
+  const clientSecret = generateAppleClientSecret();
+  const tokenRes = await fetch('https://appleid.apple.com/auth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: process.env.APPLE_CLIENT_ID,
+      client_secret: clientSecret,
+      code,
+      redirect_uri: redirectUri || 'https://roomer-backend.onrender.com/oauth/apple/callback'
+    })
+  });
+  const tokenBody = await tokenRes.json();
+  if (!tokenRes.ok || !tokenBody.id_token) {
+    console.error('Apple 토큰 교환 실패:', tokenBody);
+    throw Object.assign(new Error('Apple 토큰 교환 실패'), { code: 'APPLE_TOKEN_ERROR' });
+  }
+  return tokenBody;
+}
+
+app.post('/api/auth/social/apple/callback', socialAuthLimiter, async (req, res) => {
+  // identityToken: 웹 JS SDK/네이티브 Sign in with Apple 플러그인이 즉시 돌려주는 id_token(가장 흔한 경로).
+  // code: identityToken을 못 받는 일부 리다이렉트 흐름에서만 사용(서버가 대신 교환).
+  // name: Apple이 "최초 로그인 1회"에 한해서만 클라이언트로 내려주는 이름 — 있으면 닉네임으로 사용.
+  const { identityToken, code, redirectUri, name, consent } = req.body;
+  if (!hasRequiredConsent(consent)) return validationError(res, '필수 이용약관과 개인정보 수집 동의가 필요합니다');
+  if (!identityToken && !isNonEmptyString(code, 2000)) return validationError(res, 'identityToken 또는 code가 필요합니다');
+  if (!process.env.APPLE_CLIENT_ID) {
+    return res.status(501).json({ success: false, error: { code: 'APPLE_NOT_CONFIGURED', message: 'Apple 로그인이 아직 설정되지 않았어요.' } });
+  }
+  try {
+    let idToken = identityToken;
+    if (!idToken) {
+      if (!process.env.APPLE_TEAM_ID || !process.env.APPLE_KEY_ID || !process.env.APPLE_PRIVATE_KEY) {
+        return res.status(501).json({ success: false, error: { code: 'APPLE_NOT_CONFIGURED', message: 'Apple 로그인 인가코드 교환에 필요한 키가 아직 설정되지 않았어요.' } });
+      }
+      const tokenBody = await exchangeAppleCode(code, redirectUri);
+      idToken = tokenBody.id_token;
+    }
+    const payload = await verifyAppleIdToken(idToken);
+    const appleId = String(payload.sub);
+    const nickname = (isNonEmptyString(name, 60) && name) || '애플회원';
+    const email = payload.email || null;
+    // users 테이블 upsert(기존 회원이면 그대로, 신규면 29,000크레딧 지급) — 카카오/네이버와 동일 구조
+    let user = db.prepare('SELECT * FROM users WHERE social_provider=? AND social_id=?').get('apple', appleId);
+    if (!user) {
+      const id = randomUUID();
+      db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, email, cash_balance) VALUES (?,?,?,?,?,?)')
+        .run(id, 'apple', appleId, nickname, email, 29000);
+      user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+    }
+    db.prepare('UPDATE users SET consent_marketing=?, consent_location=? WHERE id=?').run(consent.marketing === true ? 1 : 0, consent.location === true ? 1 : 0, user.id);
+    user = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+    const jwtToken = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
+    res.json({ success: true, data: { token: jwtToken, user, providerUserId: appleId, nickname, email } });
+  } catch (e) {
+    console.error('Apple 로그인 처리 중 오류:', e.message);
+    const code2 = e.code === 'APPLE_TOKEN_ERROR' ? 'APPLE_TOKEN_ERROR' : 'APPLE_CALLBACK_ERROR';
+    const status = e.code === 'APPLE_TOKEN_ERROR' ? 400 : 500;
+    res.status(status).json({ success: false, error: { code: code2, message: e.code === 'APPLE_TOKEN_ERROR' ? 'Apple 인증에 실패했어요. 다시 로그인해주세요.' : 'Apple 로그인 처리 중 오류가 발생했어요.' } });
   }
 });
 
@@ -4591,7 +4719,7 @@ app.get(['/location-policy', '/location-policy/'], (req, res) => sendLegalPage('
 // 카카오/네이버가 리다이렉트하는 /oauth/*/callback 경로는 API가 아니라 "앱 화면"이 다시 열려야
 // 하는 경로임(그래야 프론트의 handleKakaoOAuthCallback/handleNaverOAuthCallback이 code를 읽어
 // 처리함). 이 경로들에서도 앱 파일을 그대로 서빙하도록 명시적으로 라우트 추가.
-app.get(['/oauth/kakao/callback', '/oauth/naver/callback'], (req, res) => {
+app.get(['/oauth/kakao/callback', '/oauth/naver/callback', '/oauth/apple/callback'], (req, res) => {
   sendRoomerApp(req, res);
 });
 
