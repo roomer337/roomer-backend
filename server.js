@@ -64,7 +64,12 @@ app.use(helmet({
 })); // 결함수정: 기본 보안헤더(X-Frame-Options 등) 전혀 없었음
 // 공개 서버의 임의 origin 접근을 막고, 같은 서비스와 명시한 프론트 주소만 허용한다.
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || 'https://roomer-backend.onrender.com').split(',').map(v => v.trim()).filter(Boolean);
-app.use(cors({ origin(origin, callback) { callback(null, !origin || ALLOWED_ORIGINS.includes(origin)); } }));
+// 결함수정(Capacitor 앱 대응): 프론트(apiFetch)가 모든 요청에 credentials:'include'를 쓰는데,
+// 브라우저 스펙상 이건 "cross-origin + 쿠키/인증정보 포함" 요청이라 서버가 credentials:true를
+// 명시적으로 응답하지 않으면 origin이 허용목록에 있어도 브라우저가 응답을 통째로 차단한다.
+// 웹 배포본은 페이지 주소=API 주소(동일 origin)라 이 문제가 안 드러났지만, 앱은 화면(localhost)과
+// API(roomer-backend.onrender.com) 주소가 달라 진짜 cross-origin이라 이 옵션이 반드시 필요하다.
+app.use(cors({ origin(origin, callback) { callback(null, !origin || ALLOWED_ORIGINS.includes(origin)); }, credentials: true }));
 // 심사용 사진·PDF data URL이 함께 전송되는 현재 단일-HTML 구조용 제한이다.
 app.use(express.json({ limit: '8mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
