@@ -3819,6 +3819,41 @@ window.nativeHaptic = function(style){
     SB.setStyle({ style: 'DARK' }); // 밝은 배경이므로 상태바 아이콘은 어둡게
   }catch(e){}
 })();
+// ===== 신규(2026-09-18, 대표님 지시 "매번 빌드하지 않는 방법"): 라이브 업데이트 안전장치 =====
+//
+// [반드시 필요한 이유 — 이 코드가 없으면 업데이트가 전부 되돌려집니다]
+// @capgo/capacitor-updater는 새 화면 번들을 적용한 뒤, 앱이 "정상적으로 떴다"고 스스로 알려주기를
+// 기다린다. 정해진 시간 안에 이 신호(notifyAppReady)가 오지 않으면 "새 번들이 앱을 망가뜨렸다"고
+// 판단해 이전 번들로 자동 롤백한다. 즉 이 한 줄이 "잘못된 화면이 배포돼도 앱이 벽돌이 되지 않게"
+// 지켜주는 안전장치다.
+//
+// [언제 부르나]
+// 화면이 실제로 그려지고 핵심 함수들이 살아있는 것을 확인한 뒤에만 부른다. 그래야 번들이 깨졌을 때
+// 이 신호가 가지 않아 롤백이 제대로 동작한다. (무조건 즉시 부르면 깨진 번들도 '정상'으로 보고되어
+// 안전장치가 무력화된다)
+(function(){
+  try{
+    if(!window._isNativeApp) return;
+    var U = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorUpdater;
+    if(!U) return; // 플러그인이 없는 예전 빌드에서도 조용히 무시
+    var notified = false;
+    function markReady(){
+      if(notified) return;
+      // 화면 전환 시스템과 API 호출부가 살아있어야 "정상 구동"으로 인정한다.
+      var healthy = (typeof window.go === 'function' || typeof go === 'function')
+                 && typeof apiFetch === 'function'
+                 && document.querySelector('.scr');
+      if(!healthy) return;
+      notified = true;
+      try{ U.notifyAppReady(); }catch(e){}
+    }
+    if(document.readyState === 'complete') setTimeout(markReady, 800);
+    else window.addEventListener('load', function(){ setTimeout(markReady, 800); });
+    // 혹시 load 이벤트를 놓쳤을 경우를 대비한 예비 확인(최대 10초)
+    var tries = 0;
+    var t = setInterval(function(){ markReady(); if(notified || ++tries > 20) clearInterval(t); }, 500);
+  }catch(e){}
+})();
 window.ROOMER_APP_DOWNLOAD_URL = 'https://roomer-backend.onrender.com/app/';
 // 신규(사용자요청 — 단순화): 서버로 접속한 경우(file:// 아님), 파일이 교체되면 3초 안에 자동으로 새로고침
 // → 수정한 루머03.html로 교체만 하면 PC/모바일 양쪽 다 저절로 반영됨(수동 새로고침 불필요)
@@ -6772,6 +6807,7 @@ function go(id){
   if(id === 'consumer-home' && typeof updateConsumerAlertBadge==='function'){ updateConsumerAlertBadge(); }
   if(id === 'consumer-alert-list' && window.CONSUMER_ALERTS){ if(typeof loadServerNotifications==='function')loadServerNotifications().then(function(){renderConsumerAlertList();}); else renderConsumerAlertList(); }
   if(id === '07' && typeof renderMemberFeed==='function'){ renderMemberFeed(); }
+  if(id === '07' && typeof loadMemberFeedFromServer==='function'){ loadMemberFeedFromServer(); }
   if(id === 'request' && typeof renderRequestRecipient==='function'){ if(typeof ensureQuoteRequestDraft==='function') ensureQuoteRequestDraft(); renderRequestRecipient(); }
   if(id === 'cprofile' && typeof renderCprofile==='function'){ renderCprofile(); }
   // 결함정리(사용자요청 — 마이페이지 통합): s-partner-mypage 화면도 삭제되어 이 조건은 도달하지 않음
@@ -8176,11 +8212,22 @@ const GUEST_CARDS = [];
 function buildCard(c, withPartner, partnerName, allowSave){
   const card = document.createElement('div');
   card.className = 'card';
+  // 확장(2026-09-18): 실제 시공사진이 있으면 사진으로 보여준다. 없으면 기존 그라데이션 그대로.
+  // (기존에는 색상 그라데이션만 그릴 수 있어서, 서버에 포트폴리오 사진이 있어도 피드에 못 썼다)
+  var slides = (Array.isArray(c.photos) && c.photos.length) ? c.photos : null;
   let imgsHtml = '';
-  c.colors.forEach(function(col,i){
-    imgsHtml += '<div class="card-img'+(i===0?' on':'')+'" style="background:linear-gradient(135deg,'+col+','+col+'cc)"></div>';
-  });
-  let dotsHtml = c.colors.map(function(_,i){ return '<span class="'+(i===0?'on':'')+'"></span>'; }).join('');
+  if(slides){
+    slides.forEach(function(src,i){
+      // 주의: style 속성 자체가 큰따옴표로 감싸여 있으므로 URL은 작은따옴표로 감싼다.
+      // (JSON.stringify를 쓰면 큰따옴표가 들어가 속성이 그 자리에서 끊겨 이미지가 통째로 안 보인다)
+      imgsHtml += '<div class="card-img'+(i===0?' on':'')+'" style="background-image:url(\''+String(src).replace(/'/g,'%27')+'\');background-size:cover;background-position:center"></div>';
+    });
+  } else {
+    c.colors.forEach(function(col,i){
+      imgsHtml += '<div class="card-img'+(i===0?' on':'')+'" style="background:linear-gradient(135deg,'+col+','+col+'cc)"></div>';
+    });
+  }
+  let dotsHtml = (slides || c.colors).map(function(_,i){ return '<span class="'+(i===0?'on':'')+'"></span>'; }).join('');
   let partnerHtml = withPartner ? '<div class="card-partner">'+icon('shieldCheck',T.steelblue,13)+' '+partnerName+'</div>' : '';
   // 결함수정: 회원 피드에 찜하기(저장) 버튼 자체가 없어서 가입 후엔 아무것도 저장할 수 없던 문제 → 추가
   let saveHtml = allowSave ? '<button type="button" class="card-save-btn" data-keyword="'+c.keyword+'" style="position:absolute;top:8px;right:8px;z-index:2;width:30px;height:30px;border-radius:50%;border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;background:rgba(20,32,41,.55)"></button>' : '';
@@ -8733,12 +8780,19 @@ function socialGo(provider){
     if(nv && nv.enabled && nv.clientId && nv.redirectUri){
       if(!oauthCallbackIsSameOrigin(nv.redirectUri)){ alert('네이버 로그인 콜백 주소가 현재 서비스 주소와 다릅니다. 같은 주소의 백엔드 콜백으로 설정해주세요.'); return; }
       savePendingOAuthContext('naver');
-      var nUrl = 'https://nid.naver.com/oauth2.0/authorize'
-        +'?response_type=code'
-        +'&client_id='+encodeURIComponent(nv.clientId)
-        +'&redirect_uri='+encodeURIComponent(nv.redirectUri)
-        +'&state='+encodeURIComponent(createNaverOAuthState());
-      window.location.href = nUrl;
+      function buildNaverAuthUrl(state){
+        return 'https://nid.naver.com/oauth2.0/authorize'
+          +'?response_type=code'
+          +'&client_id='+encodeURIComponent(nv.clientId)
+          +'&redirect_uri='+encodeURIComponent(nv.redirectUri)
+          +'&state='+encodeURIComponent(state);
+      }
+      // 설치형 앱: 웹뷰를 떠나면 네이버 앱에 흐름을 빼앗기므로 시스템 브라우저로 처리한다(위 설명 참고)
+      if(nativeOauthAvailable()){
+        startNativeOAuth('naver', '네이버', buildNaverAuthUrl, completeNaverLogin);
+        return;
+      }
+      window.location.href = buildNaverAuthUrl(createNaverOAuthState());
       return;
     }
   }
@@ -8751,13 +8805,20 @@ function socialGo(provider){
     if(ap && ap.enabled && ap.clientId && ap.redirectUri){
       if(!oauthCallbackIsSameOrigin(ap.redirectUri)){ alert('Apple 로그인 콜백 주소가 현재 서비스 주소와 다릅니다. 같은 주소의 백엔드 콜백으로 설정해주세요.'); return; }
       savePendingOAuthContext('apple');
-      var aUrl = 'https://appleid.apple.com/auth/authorize'
-        +'?response_type=code'
-        +'&response_mode=query'
-        +'&client_id='+encodeURIComponent(ap.clientId)
-        +'&redirect_uri='+encodeURIComponent(ap.redirectUri)
-        +'&state='+encodeURIComponent(createAppleOAuthState());
-      window.location.href = aUrl;
+      function buildAppleAuthUrl(state){
+        return 'https://appleid.apple.com/auth/authorize'
+          +'?response_type=code'
+          +'&response_mode=query'
+          +'&client_id='+encodeURIComponent(ap.clientId)
+          +'&redirect_uri='+encodeURIComponent(ap.redirectUri)
+          +'&state='+encodeURIComponent(state);
+      }
+      // 설치형 앱: 애플은 임베디드 웹뷰 로그인을 정책으로 금지한다 — 반드시 시스템 브라우저로 연다
+      if(nativeOauthAvailable()){
+        startNativeOAuth('apple', 'Apple', buildAppleAuthUrl, completeAppleLogin);
+        return;
+      }
+      window.location.href = buildAppleAuthUrl(createAppleOAuthState());
       return;
     }
   }
@@ -8838,6 +8899,154 @@ function oauthCallbackIsSameOrigin(uri){
     return new URL(uri,location.href).origin===new URL(base,location.href).origin;
   }catch(e){ return false; }
 }
+// ============================================================================
+// 신규(2026-09-18 — 대표님이 실기기 테스트 중 발견한 치명적 버그): 설치형 앱의 소셜 로그인.
+//
+// [증상] 앱에서 로그인을 누르면 갑자기 네이버 앱 안에서 화면이 열리고, 로그인을 끝내도
+//        우리 앱은 계속 로그아웃 상태로 남는다.
+// [원인] 앱은 화면을 https://localhost 로 띄우는데, window.location.href로 소셜 로그인 주소
+//        (nid.naver.com 등)로 이동하는 순간 Capacitor가 "우리 주소가 아님"으로 판단해 그 주소를
+//        **외부 앱에 넘겨버린다**. 네이버 주소는 네이버 앱이 선점하고 있어 네이버 앱이 열리고,
+//        로그인도 콜백도 전부 그 바깥에서 끝난다. 인가코드가 우리 앱에 도달할 방법이 없다.
+// [해결] 웹뷰를 떠나는 대신 **시스템 브라우저(크롬 커스텀탭)** 로 로그인하고, 결과는 서버의
+//        일회용 중계 세션을 통해 앱만 회수한다. 구글·애플이 요구하는 표준 방식이기도 하다.
+//        (딥링크로 즉시 복귀 + 딥링크가 막히는 기기를 위한 주기 확인 폴백 — 둘 중 하나만 되면 성공)
+//
+// 웹 브라우저에서 접속한 경우에는 이 경로를 전혀 타지 않는다(기존 동작 그대로).
+// ============================================================================
+window.NATIVE_OAUTH = { scheme:'roomer', pollMs:1500, timeoutMs:180000, graceAfterCloseMs:8000 };
+function nativeOauthAvailable(){
+  if(!window._isNativeApp) return false;
+  var P = (window.Capacitor && window.Capacitor.Plugins) || {};
+  return !!(P.Browser && typeof P.Browser.open === 'function');
+}
+function closeNativeOauthBrowser(){
+  try{
+    var P = (window.Capacitor && window.Capacitor.Plugins) || {};
+    if(P.Browser && typeof P.Browser.close === 'function') P.Browser.close();
+  }catch(e){ /* 이미 닫혔으면 무시 */ }
+}
+// provider: 'kakao'|'naver'|'apple' / label: 사용자에게 보여줄 이름
+// buildAuthUrl(state): 각 소셜의 인가 URL을 만들어 돌려주는 함수
+// onCode(code, state): 인가코드를 회수했을 때 기존 로그인 완료 경로로 넘겨주는 함수
+function startNativeOAuth(provider, label, buildAuthUrl, onCode){
+  var P = (window.Capacitor && window.Capacitor.Plugins) || {};
+  var pending = { cancelled:false, inflight:false, browserClosedAt:0 };
+  window._nativeOauthPending = pending;
+  function stop(){ pending.cancelled = true; try{ clearTimeout(pending.timer); }catch(e){} }
+  function fail(msg){ if(pending.cancelled) return; stop(); closeNativeOauthBrowser(); alert(label+' 로그인에 실패했어요: '+msg); }
+
+  apiFetch('/api/auth/oauth-session', {method:'POST', body:JSON.stringify({provider:provider})})
+    .then(function(sess){
+      pending.sessionId = sess.sessionId;
+      pending.claimSecret = sess.claimSecret;
+      // 시스템 브라우저로 연다 — 앱 웹뷰가 아니라서 구글·애플 정책에 맞고, 로그인이 끝나면
+      // 서버가 이 창을 통해 앱으로 되돌려 보낸다.
+      return P.Browser.open({ url: buildAuthUrl(sess.state) }).then(function(){ return sess; });
+    })
+    .then(function(){
+      var started = Date.now();
+      // 사용자가 브라우저를 직접 닫았을 수도, 딥링크로 앱이 떠오르며 닫혔을 수도 있다.
+      // 둘을 구분할 수 없으므로, 닫힌 뒤에도 잠깐(graceAfterCloseMs) 더 확인해보고 조용히 멈춘다.
+      try{
+        if(P.Browser && typeof P.Browser.addListener === 'function'){
+          pending.closeSub = P.Browser.addListener('browserFinished', function(){ pending.browserClosedAt = Date.now(); });
+        }
+      }catch(e){ /* 리스너를 못 걸어도 폴링은 그대로 동작 */ }
+
+      function poll(){
+        if(pending.cancelled || pending.inflight) return;
+        if(Date.now() - started > window.NATIVE_OAUTH.timeoutMs){ stop(); closeNativeOauthBrowser(); return; }
+        if(pending.browserClosedAt && (Date.now() - pending.browserClosedAt) > window.NATIVE_OAUTH.graceAfterCloseMs){
+          stop(); return; // 사용자가 로그인을 그만둔 것으로 보고 조용히 종료(팝업으로 귀찮게 하지 않는다)
+        }
+        pending.inflight = true;
+        apiFetch('/api/auth/oauth-session/claim', {method:'POST', noRetry:true, silentAuthFail:true,
+          body: JSON.stringify({ sessionId: pending.sessionId, claimSecret: pending.claimSecret })})
+          .then(function(d){
+            pending.inflight = false;
+            if(pending.cancelled) return;
+            if(d && d.status === 'ready' && d.code){
+              stop();
+              closeNativeOauthBrowser();
+              onCode(d.code, d.state);
+              return;
+            }
+            pending.timer = setTimeout(poll, window.NATIVE_OAUTH.pollMs);
+          })
+          .catch(function(e){
+            pending.inflight = false;
+            fail(e.message || '잠시 후 다시 시도해주세요.');
+          });
+      }
+      pending.poll = poll;
+      pending.timer = setTimeout(poll, window.NATIVE_OAUTH.pollMs);
+    })
+    .catch(function(e){
+      stop();
+      alert(label+' 로그인을 시작하지 못했어요: '+(e.message||'잠시 후 다시 시도해주세요.'));
+    });
+}
+// 딥링크(roomer://oauth?s=...)로 앱이 앞으로 나오면 폴링 주기를 기다리지 않고 즉시 확인한다.
+// 딥링크가 동작하지 않는 기기에서도 위 폴링이 결과를 가져오므로, 이것은 "빨라지는" 장치일 뿐이다.
+(function registerNativeOauthDeepLink(){
+  try{
+    var P = (window.Capacitor && window.Capacitor.Plugins) || {};
+    if(!P.App || typeof P.App.addListener !== 'function') return;
+    P.App.addListener('appUrlOpen', function(evt){
+      var url = (evt && evt.url) || '';
+      if(url.indexOf(window.NATIVE_OAUTH.scheme + '://oauth') !== 0) return;
+      closeNativeOauthBrowser();
+      var p = window._nativeOauthPending;
+      if(p && !p.cancelled && typeof p.poll === 'function'){
+        try{ clearTimeout(p.timer); }catch(e){}
+        p.browserClosedAt = 0;   // 딥링크로 돌아온 것이므로 "사용자가 취소함"으로 오해하지 않는다
+        p.poll();
+      }
+    });
+  }catch(e){ /* 웹에서는 App 플러그인이 없으므로 조용히 통과 */ }
+})();
+// 인가코드를 손에 쥔 뒤의 마무리 — 웹 콜백과 완전히 같은 서버 API를 쓴다.
+// (웹은 sessionStorage의 state로 위조를 막고, 앱은 앱만 아는 claimSecret으로 막는다)
+function completeNaverLogin(code, state){
+  var ctx = consumePendingOAuthContext('naver');
+  if(!ctx){ alert('네이버 로그인 동의정보가 만료됐어요. 다시 시도해주세요.'); return; }
+  apiFetch('/api/auth/social/naver/callback', {method:'POST', body:JSON.stringify({
+    code:code, state:state, redirectUri:(window.NAVER_OAUTH||{}).redirectUri, consent:ctx.consent
+  })}).then(function(data){
+    applyConsumerAuthResponse(data,'네이버');
+    finishConsumerLight({skipRemoteAuth:true});
+  }).catch(function(e){
+    alert('네이버 로그인에 실패했어요: '+(e.message||'서버 설정을 확인해주세요.'));
+    go('03');
+  });
+}
+function completeAppleLogin(code){
+  var ctx = consumePendingOAuthContext('apple');
+  if(!ctx){ alert('Apple 로그인 동의정보가 만료됐어요. 다시 시도해주세요.'); return; }
+  apiFetch('/api/auth/social/apple/callback', {method:'POST', body:JSON.stringify({
+    code:code, redirectUri:(window.APPLE_OAUTH||{}).redirectUri, consent:ctx.consent
+  })}).then(function(data){
+    applyConsumerAuthResponse(data,'애플');
+    finishConsumerLight({skipRemoteAuth:true});
+  }).catch(function(e){
+    alert('Apple 로그인에 실패했어요: '+(e.message||'서버 설정을 확인해주세요.'));
+    go('03');
+  });
+}
+function completeKakaoLogin(code){
+  var ctx = consumePendingOAuthContext('kakao');
+  if(!ctx){ alert('카카오 로그인 동의정보가 만료됐어요. 다시 시도해주세요.'); return; }
+  apiFetch('/api/auth/social/kakao/callback', {method:'POST', body:JSON.stringify({
+    code:code, redirectUri:(window.KAKAO_OAUTH||{}).redirectUri, consent:ctx.consent
+  })}).then(function(data){
+    applyKakaoAuthResponse(data, 'server');
+    finishConsumerLight({skipRemoteAuth:true});
+  }).catch(function(e){
+    alert('카카오 로그인에 실패했어요: '+(e.message||'서버 설정을 확인해주세요.'));
+    go('03');
+  });
+}
 function savePendingOAuthContext(provider){
   try{ sessionStorage.setItem('roomer_oauth_context_'+provider,JSON.stringify({consent:window.userProfile.consent||{},createdAt:Date.now()})); }catch(e){}
 }
@@ -8917,13 +9126,20 @@ function kakaoLogin(){
     if(!oauthCallbackIsSameOrigin(k.redirectUri)){ alert('카카오 로그인 콜백 주소가 현재 서비스 주소와 다릅니다. 같은 주소의 백엔드 콜백으로 설정해주세요.'); return; }
     savePendingOAuthContext('kakao');
     // ▶ 실제 카카오 인가 요청으로 이동 (사용자는 카카오 로그인·동의 화면을 보게 됨)
-    var url='https://kauth.kakao.com/oauth/authorize'
-      +'?client_id='+encodeURIComponent(k.restApiKey)
-      +'&redirect_uri='+encodeURIComponent(k.redirectUri)
-      +'&response_type=code'
-      +'&scope='+encodeURIComponent(k.scope||'')
-      +'&state='+encodeURIComponent(createKakaoOAuthState());
-    window.location.href=url;   // → 카카오가 콜백 URL로 ?code=... 반환 (서버가 처리)
+    function buildKakaoAuthUrl(state){
+      return 'https://kauth.kakao.com/oauth/authorize'
+        +'?client_id='+encodeURIComponent(k.restApiKey)
+        +'&redirect_uri='+encodeURIComponent(k.redirectUri)
+        +'&response_type=code'
+        +'&scope='+encodeURIComponent(k.scope||'')
+        +'&state='+encodeURIComponent(state);
+    }
+    // 설치형 앱: 웹뷰를 떠나면 카카오톡 앱에 흐름을 빼앗겨 앱으로 돌아오지 못한다 → 시스템 브라우저로 처리
+    if(nativeOauthAvailable()){
+      startNativeOAuth('kakao', '카카오', buildKakaoAuthUrl, completeKakaoLogin);
+      return;
+    }
+    window.location.href=buildKakaoAuthUrl(createKakaoOAuthState());   // → 카카오가 콜백 URL로 ?code=... 반환 (서버가 처리)
     return;
   }
   if(!canUsePrototypeSocialAuth()){
@@ -10280,6 +10496,51 @@ function syncRegisteredPartnerCard(){
 const gridMember = document.getElementById('grid-member');
 // 3단계(#35) 지역 1위 배지 — 같은 구(gu) 안에서만 순위 계산(전체 순위 아님, 지역별 순위)
 // 재설계(사용자요청): "OO구 1위 업체" 타이틀 마케팅 전략 보류에 이어 완전 삭제 결정 — regionRankMap() 및 관련 배지 로직 전부 제거
+// ===== 결함수정(2026-09-18 스크린샷 촬영 중 발견 — 소비자 메인 피드가 영구히 비어 있던 문제) =====
+// [증상] 승인된 업체가 아무리 많아도 소비자 홈(s-07)의 피드가 항상 "승인된 파트너가 아직 없습니다"만
+//        표시했다. 실제 서비스에서 가장 중요한 화면이 통째로 비어 있던 셈이다.
+// [원인] 이 피드가 그리는 MEMBER_CARDS 배열에 값을 넣는 코드가 프로젝트 전체에서 단 한 곳
+//        (syncRegisteredPartnerCard)뿐인데, 그 함수 첫 줄이 `if(window.MVP.live) return null;` 이다.
+//        즉 프로토타입 모드에서만 동작하고 실서버(웹·앱 모두 live)에서는 아무 일도 하지 않았다.
+//        원래 주석에도 "실서버는 업체목록 API가 내려줘야 한다"고 적혀 있는데, 그 연결이 빠져 있었다.
+// [수정] 승인된 업체 목록 API로 피드를 채운다. 업체가 등록한 시공사진이 있으면 사진을,
+//        없으면 기존과 같은 색상 카드를 보여준다.
+function loadMemberFeedFromServer(){
+  if(!window.MVP.live) return;              // 프로토타입 모드는 종전 동작 유지
+  if(!window.currentUserLoggedIn) return;   // 회원 전용 피드
+  apiFetch('/api/partners/search', {method:'GET', noRetry:true}).then(function(list){
+    if(!Array.isArray(list) || !list.length) return;
+    var palette=['#142029','#446079','#33475A','#7A828A','#0D141A','#5C7185'];
+    var cards = list.map(function(p, i){
+      var region = safePortfolioText(p.region || '', 60);
+      var parts = region.split(/\s+/).filter(Boolean);
+      var photos = [];
+      try{
+        var raw = p.portfolio_images || p.portfolioImages;
+        var arr = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : []);
+        photos = (arr || []).map(safePortfolioImageUrl).filter(Boolean).slice(0, 4);
+      }catch(e){ photos = []; }
+      var name = safePortfolioText(p.business_name || p.businessName || '파트너', 60) || '파트너';
+      return {
+        id: p.id, partnerId: p.id,
+        colors: [palette[i % palette.length], palette[(i + 2) % palette.length]],
+        photos: photos,
+        partner: name,
+        keyword: safePortfolioText(p.intro || (parts[0] || '') + ' ' + (p.tier || ''), 40) || name,
+        views: '신규', saves: 0,
+        category: '그외공간', buildingType: '아파트', style: '모던',
+        sido: parts[0] || '전국', gu: parts[1] || '전체',
+        tier: p.tier || '부분공사가능업체',
+        contracts: Number(p.contracts_count) || 0, reviews: Number(p.reviews_count) || 0,
+        rating: Number(p.rating) || 0, totalDisplay: '-',
+        years: Number(p.years_experience) || 0, responseRate: 0
+      };
+    });
+    MEMBER_CARDS.length = 0;
+    cards.forEach(function(c){ MEMBER_CARDS.push(c); });
+    renderMemberFeed();
+  }).catch(function(e){ console.error('회원 피드 로딩 실패:', e.message); });
+}
 function renderMemberFeed(){
   syncRegisteredPartnerCard();
   gridMember.innerHTML = '';
@@ -10331,6 +10592,7 @@ function filterMemberFeedInline(q){
   });
 }
 renderMemberFeed();
+try{ loadMemberFeedFromServer(); }catch(e){}
 
 // 결함 발견(사용자 재신고 후속) -> 사용자 요청: alert 안내 대신 실제 화면으로 진입하도록 buildTabbar 공용함수로 통일
 // 인증상태를 앞선 세션 복원 코드가 이미 설정했다면 유지한다. 무조건 false로 덮어쓰면
@@ -11937,6 +12199,31 @@ function getChatActorForRole(role, room){
   return {role:'consumer', id:room.consumerId || consumerIdentity.userId || null, name:room.consumerName || consumerIdentity.displayName || '소비자 회원'};
 }
 function getCurrentChatActor(room){ return getChatActorForRole(isPartner() ? 'partner' : 'consumer', room); }
+// 결함수정(2026-09-18, 두 계정 실제 대화 검증 중 화면에서 발견): 상대방이 보낸 메시지의 시각이
+// 항상 9시간 전으로 표시되던 문제.
+// [원인] 서버(SQLite)는 시각을 "2026-09-18 04:23:05" 형태(UTC인데 표시가 없음)로 내려준다.
+//        자바스크립트의 new Date("2026-09-18 04:23:05")는 이 문자열을 UTC가 아니라 "브라우저의
+//        현지시각"으로 해석한다. 그래서 한국에서 보면 13:23에 온 메시지가 04:23으로 찍혔다.
+//        내가 보낸 메시지는 브라우저가 직접 만든 ISO 시각(…Z)이라 정상이어서, 한 대화 안에서
+//        내 말풍선은 13:22, 상대 말풍선은 04:22로 9시간 어긋나 보였다.
+// [수정] 시간대 표시가 없는 서버 형식은 UTC로 명시해서 해석한다.
+function parseServerTime(value){
+  if(value instanceof Date) return value;
+  if(value == null || value === '') return null;
+  var str = String(value).trim();
+  // "YYYY-MM-DD HH:MM:SS" 처럼 시간대 표시가 없는 서버(SQLite) 형식 → UTC로 간주
+  if(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/.test(str)){
+    return new Date(str.replace(' ', 'T') + 'Z');
+  }
+  return new Date(str); // ISO(…Z, +09:00 등)는 그대로 정확히 해석됨
+}
+// 목록 화면용: "09-18 13:22" 형태로 현지시각 표기
+function formatServerTimeShort(value){
+  var d = parseServerTime(value);
+  if(!d || Number.isNaN(d.getTime())) return '';
+  var p = function(n){ return String(n).padStart(2,'0'); };
+  return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
 function normalizeChatMessage(message, roomId, options){
   var msg = message || {};
   var opts = options || {};
@@ -11958,8 +12245,8 @@ function normalizeChatMessage(message, roomId, options){
   msg.triggeredByRole = msg.triggeredByRole || msg.triggered_by_role || actorRole || null;
   msg.createdAt = msg.createdAt || msg.created_at || msg.timestamp || new Date().toISOString();
   if(!msg.t){
-    var dt = new Date(msg.createdAt);
-    msg.t = Number.isNaN(dt.getTime()) ? '' : String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0');
+    var dt = parseServerTime(msg.createdAt);
+    msg.t = (!dt || Number.isNaN(dt.getTime())) ? '' : String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0');
   }
   var suppliedSeq = Number(msg.seq);
   if(room){
@@ -12536,7 +12823,7 @@ function renderRealChatlist(chatListEl, rooms){
     var realUnread = Number(room.unreadCount || room.unread_count || 0);
     var realRight = realUnread>0
       ? '<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:4px"><div class="caption">'+((room.lastTime||'').slice(5,16))+'</div><div style="min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:var(--terracotta);color:#fff;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center">'+(realUnread>99?'99+':realUnread)+'</div></div>'
-      : '<div class="caption" style="flex-shrink:0">'+((room.lastTime||'').slice(5,16))+'</div>';
+      : '<div class="caption" style="flex-shrink:0">'+formatServerTimeShort(room.lastTime)+'</div>';
     row.innerHTML =
       '<div style="width:44px;height:44px;border-radius:50%;background:var(--brass);flex-shrink:0"></div>'+
       '<div style="flex:1;min-width:0"><div style="font-size:16.5px;font-weight:700;margin-bottom:2px">'+quoteBadge+safeRealRoomName+'</div>'+
@@ -12616,7 +12903,7 @@ function renderQuoteInbox(){
       + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px"><span style="font-size:16px;font-weight:700;color:var(--charcoal)">'+safeName+'</span><span style="font-size:11px;font-weight:700;color:'+statusMeta.color+';white-space:nowrap">● '+statusMeta.label+'</span></div>'
       + (safeProject ? '<div class="caption" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+safeProject+'</div>' : '')
       + '</div>'
-      + '<div class="caption" style="flex-shrink:0">'+((room.lastTime||'').slice(5,16))+'</div>';
+      + '<div class="caption" style="flex-shrink:0">'+formatServerTimeShort(room.lastTime)+'</div>';
     row.onclick = function(){ openQuoteInboxRoom(room); };
     el.appendChild(row);
   });
@@ -13438,7 +13725,8 @@ async function apiFetch(path, opts, _retryCount){
   var headers = Object.assign({}, opts.headers||{});
   var isFormData=typeof FormData!=='undefined'&&opts.body instanceof FormData;
   if(!isFormData&&opts.body!=null&&!headers['Content-Type']) headers['Content-Type']='application/json';
-  if(window.authToken&&window.MVP.authMode!=='cookie') headers['Authorization'] = 'Bearer ' + window.authToken;
+  var sentAuth = !!(window.authToken && window.MVP.authMode!=='cookie');
+  if(sentAuth) headers['Authorization'] = 'Bearer ' + window.authToken;
   var res;
   try{
     res = await fetch(window.MVP.apiBase + path, Object.assign({credentials:'include'}, opts, {headers: headers}));
@@ -13460,7 +13748,13 @@ async function apiFetch(path, opts, _retryCount){
   // "요청 처리 중 오류가 발생했어요"만 반복했다. 이용자는 원인을 알 수 없어 앱 고장으로 받아들이고
   // 이탈했다. → 401이면 토큰을 정리하고 "다시 로그인해주세요"를 명확히 안내한다.
   // (세션 복원 중 발생한 401은 그 함수들이 이미 catch에서 처리하므로 안내를 중복 표시하지 않는다)
-  if(res.status === 401 && !opts.silentAuthFail){
+  // 결함수정(2026-09-18, 스크린샷 촬영 중 발견): 아래 401 안내는 '로그인이 풀린 사람'에게만 떠야 하는데,
+  // 처음부터 로그인한 적이 없는 방문자에게도 떴다. 앱/웹은 첫 화면에서 /api/rooms/mine 같은 인증
+  // API를 토큰 없이 미리 호출하는데(실서버 로그에 anonymous 401로 찍히는 것을 확인), 그 401 응답이
+  // 도착할 때쯤엔 이미 토큰 복원이 끝나 있어서 "로그인 중인데 만료됨"으로 오판했다.
+  // → 조건을 '지금 토큰이 있는가'가 아니라 '이 요청이 실제로 토큰을 실어 보냈는가'(sentAuth)로 바꾼다.
+  //   토큰을 보냈는데 거부당한 경우에만 만료로 판단하므로 오탐이 없다.
+  if(res.status === 401 && !opts.silentAuthFail && sentAuth){
     try{ if(typeof clearAuthToken==='function') clearAuthToken(); }catch(e){}
     window.currentUserLoggedIn = false;
     try{ sessionStorage.removeItem('roomer_loggedIn'); }catch(e){}
