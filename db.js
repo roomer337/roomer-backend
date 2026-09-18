@@ -6,6 +6,20 @@ const Database = require('better-sqlite3');
 const db = new Database(process.env.DB_PATH || 'roomer.db');
 
 db.pragma('foreign_keys = ON');
+// 신규(2026-09-18 전수조사 — 치명): journal_mode가 SQLite 기본값 'delete'(롤백 저널)로 돌고 있었다.
+// 롤백 저널은 커밋마다 저널파일 생성→쓰기→fsync→삭제→디렉터리 fsync를 반복하고, 읽기와 쓰기가
+// 서로를 완전히 배타 잠금한다. 실측 결과 같은 스키마에서 INSERT 1건 비용이
+//   delete 방식 0.644ms  vs  WAL 방식 0.024ms  — 약 27배 차이였다.
+// 이 서버는 모든 요청마다 request_logs에 INSERT를 하므로 요청 1건당 최소 0.6ms를 디스크 대기로
+// 버리고 있었고(Render의 네트워크 연결 디스크에서는 더 나쁨), 백업(VACUUM INTO)이나 긴 SELECT가
+// 도는 동안에는 모든 쓰기가 통째로 막혔다.
+// → WAL로 전환. synchronous=NORMAL은 WAL에서 권장되는 안전한 조합이다(전원 차단 시에도 DB가
+//   깨지지 않고, 마지막 몇 건의 트랜잭션만 손실될 수 있는 수준).
+// 주의: WAL은 DB 파일 옆에 -wal, -shm 파일을 만든다. DB_PATH가 영구 디스크(/var/data) 위에
+//      있어야 이 파일들도 함께 보존된다(server.js 부팅 로그의 [DB위치] 항목으로 확인 가능).
+db.pragma('journal_mode = WAL');
+db.pragma('synchronous = NORMAL');
+db.pragma('wal_autocheckpoint = 1000');
 
 // ===== 신규(강남언니 벤치마킹 검토 후속 — 1단계: 민감정보 암호화) =====
 // users.phone, partners.phone/business_reg_number/ceo_name/applicant_name,
@@ -74,6 +88,28 @@ db.prepare = function (sql) {
 };
 db.encryptPii = encryptPii;
 db.decryptPii = decryptPii;
+
+// ===== 신규(2026-09-18): 개인정보 검색용 블라인드 인덱스 =====
+// [왜 필요한가] 전화번호·사업자번호는 AES-GCM으로 암호화해 저장하는데, 이 방식은 같은 값이라도
+// 저장할 때마다 다른 암호문이 되므로 SQL의 WHERE로는 찾을 수 없다. 그래서 관리자 회원검색이
+// "테이블 전체를 메모리에 올려 전원의 개인정보를 복호화한 뒤 JS에서 거르는" 구조였고, 회원이
+// 10만 명이면 20건을 보려고 40만 번 복호화 + 약 100MB 힙을 쓰다가 512MB 서버가 죽을 수 있었다.
+// [해결] 검색 전용 해시(블라인드 인덱스) 컬럼을 따로 둔다. 암호화 키로 HMAC-SHA256을 계산하므로
+// 키를 모르면 해시에서 원문을 되돌리거나 사전공격으로 맞춰볼 수 없고(단순 SHA256과 다른 점),
+// 같은 입력은 항상 같은 해시가 나와 SQL WHERE + 인덱스로 즉시 찾을 수 있다.
+// [한계] 정확히 일치하는 값만 찾을 수 있다(부분검색 불가). 관리자 화면의 전화번호·사업자번호
+// 검색은 전체 번호를 입력하는 용도라 실사용에 문제가 없다. 상호명·닉네임·이메일은 암호화
+// 대상이 아니므로 종전처럼 부분검색이 된다.
+const PII_INDEX_KEY = crypto.createHmac('sha256', PII_KEY).update('roomer-blind-index-v1').digest();
+function piiIndex(value) {
+  if (value === null || value === undefined) return null;
+  // 전화번호/사업자번호는 하이픈·공백 표기가 제각각이라 숫자만 남겨 정규화한 뒤 해시한다.
+  const digits = String(value).replace(/\D/g, '');
+  if (!digits) return null;
+  return crypto.createHmac('sha256', PII_INDEX_KEY).update(digits).digest('hex');
+}
+db.piiIndex = piiIndex;
+
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -837,6 +873,34 @@ CREATE TABLE IF NOT EXISTS reviews (
 db.exec('CREATE INDEX IF NOT EXISTS idx_reviews_partner ON reviews(partner_id, created_at DESC)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_reviews_consumer ON reviews(consumer_id)');
 
+// ===== 신규(2026-09-18 전수조사): 누락 인덱스 일괄 보강 =====
+// 아래 인덱스들은 EXPLAIN QUERY PLAN으로 "SCAN"(=테이블 전체 훑기)이 실제로 확인된 쿼리들만
+// 골라 추가한 것이다. 추측으로 넣은 것은 없다. 특히 idx_request_logs_created는 6시간마다 도는
+// 보관기간 정리(server.js)가 가장 큰 테이블을 통째로 훑던 것을 막아준다.
+// 같은 내용의 마이그레이션 SQL을 migrations/20260918_add_missing_indexes.sql 로 따로 두었다
+// (공통 규칙 5번 — 스키마 변경은 마이그레이션 SQL을 별도 파일로 제시). 아래는 신규 배포 및
+// 기존 DB 양쪽에서 동일하게 적용되도록 IF NOT EXISTS로 선언한 것이라, 기존 데이터는 그대로 보존된다.
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_request_logs_created      ON request_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_search_queries_created    ON search_queries(created_at);
+CREATE INDEX IF NOT EXISTS idx_chat_rooms_partner        ON chat_rooms(partner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_contracts_partner         ON contracts(partner_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_consumer        ON contracts(consumer_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_quote           ON contracts(quote_id);
+CREATE INDEX IF NOT EXISTS idx_settlements_partner       ON settlements(partner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_settlements_contract      ON settlements(contract_id);
+CREATE INDEX IF NOT EXISTS idx_quotes_request            ON quotes(request_id, version DESC);
+CREATE INDEX IF NOT EXISTS idx_quote_requests_user       ON quote_requests(user_id, partner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_portfolio_photos_project  ON portfolio_photos(project_id);
+CREATE INDEX IF NOT EXISTS idx_portfolio_projects_partner ON portfolio_projects(partner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_credit_ledger_partner     ON credit_ledger(partner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_disputes_contract         ON disputes(contract_id);
+CREATE INDEX IF NOT EXISTS idx_admin_access_logs_created ON admin_access_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_notifications_created     ON notifications(created_at);
+CREATE INDEX IF NOT EXISTS idx_payment_events_created    ON payment_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_created     ON chat_messages(created_at);
+`);
+
 // 신규(사용자요청 — 고객센터 FAQ 확장): faqs 테이블이 완전히 비어있을 때만 초기 콘텐츠(100개)를
 // 채워 넣는다. 이미 데이터가 있다면(관리자가 추가·수정했을 수 있으므로) 절대 건드리지 않는다.
 (function seedFaqsIfEmpty() {
@@ -852,5 +916,50 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_reviews_consumer ON reviews(consumer_id)
   insertAll(seed);
   console.log(`[FAQ 시드] faqs 테이블이 비어있어 초기 콘텐츠 ${seed.length}건을 채웠습니다.`);
 })();
+
+// ===== 신규(2026-09-18): 검색용 블라인드 인덱스 컬럼 준비 (테이블 생성 이후에 실행되어야 함) =====
+// 검색용 해시 컬럼을 준비한다. SQLite는 ADD COLUMN에 IF NOT EXISTS가 없어서 직접 확인한다.
+// 기존 데이터에는 영향이 없다(값이 NULL인 컬럼이 하나 늘어날 뿐).
+const PII_INDEX_COLUMNS = [
+  ['users', 'phone_idx', 'phone'],
+  ['partners', 'phone_idx', 'phone'],
+  ['partners', 'business_reg_number_idx', 'business_reg_number']
+];
+for (const [table, col] of PII_INDEX_COLUMNS) {
+  const exists = db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col);
+  if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_${col} ON ${table}(${col})`);
+}
+
+// 한 행의 검색용 해시를 현재 저장값 기준으로 다시 계산해 넣는다.
+// (개인정보를 새로 저장하거나 바꾼 직후에 호출한다 — server.js의 저장 지점들)
+db.syncPiiIndexes = function syncPiiIndexes(table, id) {
+  try {
+    const cols = PII_INDEX_COLUMNS.filter(c => c[0] === table);
+    if (!cols.length || !id) return;
+    // .get()은 자동 복호화되므로 여기서 얻는 값은 평문이다.
+    const row = db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id);
+    if (!row) return;
+    for (const [, idxCol, srcCol] of cols) {
+      db.prepare(`UPDATE ${table} SET ${idxCol}=? WHERE id=?`).run(piiIndex(row[srcCol]), id);
+    }
+  } catch (e) { console.error('[검색인덱스] 갱신 실패:', table, id, e.message); }
+};
+
+// 서버 부팅 시 1회: 아직 해시가 비어 있는 기존 행을 채운다. 이미 채워진 행은 건드리지 않으므로
+// 두 번째 부팅부터는 거의 즉시 끝난다. 저장 지점을 하나 빠뜨려도 다음 부팅에 복구되는 안전망이다.
+db.backfillPiiIndexes = function backfillPiiIndexes() {
+  let filled = 0;
+  for (const [table, idxCol, srcCol] of PII_INDEX_COLUMNS) {
+    try {
+      const rows = db.prepare(`SELECT id, ${srcCol} FROM ${table} WHERE ${idxCol} IS NULL AND ${srcCol} IS NOT NULL`).all();
+      if (!rows.length) continue;
+      const upd = db.prepare(`UPDATE ${table} SET ${idxCol}=? WHERE id=?`);
+      db.transaction(() => { rows.forEach(r => { upd.run(piiIndex(r[srcCol]), r.id); filled++; }); })();
+    } catch (e) { console.error('[검색인덱스] 백필 실패:', table, e.message); }
+  }
+  if (filled > 0) console.log(`[검색인덱스] 기존 데이터 ${filled}건에 검색용 해시를 채웠습니다.`);
+  return filled;
+};
 
 module.exports = db;
