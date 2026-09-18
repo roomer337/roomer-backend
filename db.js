@@ -555,6 +555,32 @@ CREATE TABLE IF NOT EXISTS otp_codes (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- 신규(2026-09-18 — 설치형 앱 소셜로그인 복귀 문제 해결): 앱에서 카카오·네이버·애플 로그인을
+-- 시스템 브라우저로 처리한 뒤, 그 결과(인가코드)를 "앱으로만" 안전하게 돌려주기 위한 일회성 세션.
+--
+-- [왜 필요한가]
+-- 설치형 앱(Capacitor)은 화면을 https://localhost 로 띄우는데, 소셜 로그인 주소로 이동하는 순간
+-- 안드로이드가 그 주소를 외부 앱(네이버 앱 등)으로 넘겨버린다. 로그인은 그 바깥에서 끝나고
+-- 인가코드도 그쪽에 남아, 정작 우리 앱은 영원히 로그인되지 않는다(실제 발생 확인).
+--
+-- [어떻게 푸는가]
+-- 앱이 먼저 이 테이블에 세션을 하나 만들고(id는 state로 실려 나가고, claim_secret은 앱 안에만 남는다),
+-- 브라우저에서 로그인이 끝나면 서버가 인가코드를 이 행에 넣어둔다. 앱은 claim_secret을 제시해야만
+-- 그 코드를 가져갈 수 있다. 딥링크가 실패해도 앱이 주기적으로 물어보면 되므로 흐름이 끊기지 않고,
+-- 딥링크를 가로챈 다른 앱이 있어도 claim_secret이 없어 코드를 가져갈 수 없다.
+CREATE TABLE IF NOT EXISTS oauth_sessions (
+  id TEXT PRIMARY KEY,                       -- state로 실려나가는 공개 식별자
+  claim_hash TEXT NOT NULL,                  -- 앱만 아는 비밀값의 해시(원문은 저장하지 않음)
+  provider TEXT,                             -- kakao | naver | apple
+  status TEXT NOT NULL DEFAULT 'pending',    -- pending | ready | claimed | failed
+  auth_code TEXT,                            -- 브라우저에서 받아온 인가코드(1회용)
+  error_message TEXT,
+  expires_at TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  claimed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_sessions_expires ON oauth_sessions(expires_at);
+
 -- 신규(2026-09, 관리자 콘솔 실연동 — 허수업체 전수조사 후속): 등급 승급 심사 큐.
 -- from_tier는 스냅샷 고정 원칙(다른 테이블과 동일)에 따라 신청 시점의 등급을 값으로 복사해 저장한다.
 CREATE TABLE IF NOT EXISTS tier_upgrades (
