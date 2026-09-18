@@ -3,11 +3,12 @@
 // 실서비스에서는: SQLite→PostgreSQL, JWT시크릿 환경변수화, 소셜로그인 실제 OAuth 연동 필요
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { randomUUID, createHmac, createPublicKey } = require('crypto');
+const { randomUUID, createHmac, createPublicKey, randomInt } = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -31,7 +32,79 @@ if (PUSH_ENABLED) {
   );
 }
 
+// ===== 신규(2026-09-18, 사용자요청 "문제되는 것 모두 처리"): DB 저장위치 진단 + 자동 백업 =====
+// 배경: db.js는 `new Database(process.env.DB_PATH || 'roomer.db')` 구조라 DB_PATH 환경변수가 없으면
+// 서버의 임시 폴더에 DB가 만들어진다. Render는 재배포할 때마다 그 폴더를 새로 만들기 때문에, 그
+// 상태라면 배포 한 번에 회원·견적·계약·채팅 데이터가 전부 사라진다. 그런데 지금까지 이 사실을
+// 확인할 방법이 서버 어디에도 없었다(로그에도 안 찍히고, 조회 API도 없었음).
+// 또한 백업 코드도 프로젝트 전체에 한 줄도 없어서(backup/VACUUM INTO 검색결과 0건) DB 파일이
+// 손상되면 복구 수단이 전혀 없는 상태였다.
+// → ① 부팅 시 DB 위치와 "영구 디스크 위에 있는지"를 로그로 알리고, ② /healthz로 언제든 조회 가능하게 하고,
+//   ③ SQLite 표준 온라인 백업(VACUUM INTO)으로 하루 1회 자동 백업 + 오래된 백업 자동 삭제.
+const DB_FILE_PATH = path.resolve(process.env.DB_PATH || 'roomer.db');
+// Render 영구 디스크 마운트 경로. 다른 호스팅으로 옮기면 이 환경변수만 바꾸면 된다.
+const PERSISTENT_DISK_PATH = process.env.PERSISTENT_DISK_PATH || '/var/data';
+const DB_ON_PERSISTENT_DISK = DB_FILE_PATH.startsWith(PERSISTENT_DISK_PATH + path.sep);
+const DB_BACKUP_DIR = process.env.DB_BACKUP_DIR || path.join(PERSISTENT_DISK_PATH, 'backups');
+const DB_BACKUP_INTERVAL_HOURS = Math.max(1, parseInt(process.env.DB_BACKUP_INTERVAL_HOURS || '24', 10) || 24);
+const DB_BACKUP_KEEP = Math.max(1, parseInt(process.env.DB_BACKUP_KEEP || '7', 10) || 7);
+// 백업을 켤지 여부. 기본값은 "DB가 영구 디스크 위에 있을 때만 켬" — 임시 폴더에 백업을 만들어봐야
+// 재배포와 함께 같이 사라지므로 의미가 없고, 로컬 개발환경에 쓸데없는 파일만 만들게 되기 때문이다.
+const DB_BACKUP_ENABLED = process.env.DB_BACKUP_ENABLED === 'true' || (process.env.DB_BACKUP_ENABLED !== 'false' && DB_ON_PERSISTENT_DISK);
+let lastDbBackup = null; // { at, file, bytes } — /healthz가 보고용으로 읽는다
+
+function describeDbLocation() {
+  const lines = [`[DB위치] ${DB_FILE_PATH}`];
+  if (DB_ON_PERSISTENT_DISK) {
+    lines.push(`[DB위치] ✅ 영구 디스크(${PERSISTENT_DISK_PATH}) 위에 있습니다 — 재배포해도 데이터가 유지됩니다.`);
+  } else if (process.env.NODE_ENV === 'production') {
+    lines.push(`[DB위치] 🚨 경고: DB가 영구 디스크(${PERSISTENT_DISK_PATH}) 밖에 있습니다!`);
+    lines.push(`[DB위치] 🚨 이 상태로 재배포하면 회원·견적·계약·채팅 데이터가 전부 사라집니다.`);
+    lines.push(`[DB위치] 🚨 조치: Render → Environment 탭에서 DB_PATH 를 ${path.join(PERSISTENT_DISK_PATH, 'roomer.db')} 로 설정하세요.`);
+  } else {
+    lines.push('[DB위치] (로컬 개발환경 — 영구 디스크 검사 건너뜀)');
+  }
+  return lines.join('\n');
+}
+
+function runDbBackup() {
+  if (!DB_BACKUP_ENABLED) return null;
+  try {
+    fs.mkdirSync(DB_BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const target = path.join(DB_BACKUP_DIR, `roomer-${stamp}.db`);
+    // VACUUM INTO는 SQLite가 공식 지원하는 "실행 중에도 안전한" 백업 방식이다. 파일을 그냥 복사하면
+    // 쓰기가 진행 중인 순간에 깨진 사본이 만들어질 수 있는데, 이 방식은 일관된 스냅샷을 보장한다.
+    db.prepare('VACUUM INTO ?').run(target);
+    const bytes = fs.statSync(target).size;
+    lastDbBackup = { at: new Date().toISOString(), file: path.basename(target), bytes };
+    console.log(`[DB백업] 완료: ${target} (${(bytes / 1024 / 1024).toFixed(2)}MB)`);
+    // 오래된 백업 정리 — 1GB 디스크라 무한정 쌓이면 백업이 오히려 서비스를 죽인다.
+    const olds = fs.readdirSync(DB_BACKUP_DIR)
+      .filter(f => f.startsWith('roomer-') && f.endsWith('.db'))
+      .sort()
+      .slice(0, -DB_BACKUP_KEEP);
+    olds.forEach(f => {
+      try { fs.unlinkSync(path.join(DB_BACKUP_DIR, f)); console.log(`[DB백업] 오래된 백업 삭제: ${f}`); }
+      catch (e) { console.error('[DB백업] 오래된 백업 삭제 실패:', f, e.message); }
+    });
+    return lastDbBackup;
+  } catch (e) {
+    console.error('[DB백업] 실패:', e.message);
+    return null;
+  }
+}
+
 const app = express();
+// 결함수정(2026-09-18 전수조사 — 치명): trust proxy 미설정으로 모든 rate limit이 무력화되어 있었다.
+// Render는 요청을 프록시 1단을 거쳐 전달하는데, 이 설정이 없으면 Express가 X-Forwarded-For를 무시하고
+// "프록시의 IP"를 req.ip로 준다. express-rate-limit은 req.ip를 키로 쓰므로, 모든 이용자가 하나의
+// 버킷을 공유하게 된다 — 즉 `max: 5`인 OTP 발송 제한이 "1인당 5회"가 아니라 "전 세계 합쳐 5회"였다.
+// 공격자가 15분마다 요청 5개만 보내면 전체 회원가입·로그인이 마비되고(실제 이용자도 서로 막음),
+// 관리자 로그인도 10회로 봉쇄할 수 있었다.
+// 값에 true(무제한 신뢰)를 주면 반대로 X-Forwarded-For 위조로 제한을 우회당하므로, 반드시 실제
+// 프록시 홉 수인 정수 1을 지정한다. 다른 호스팅으로 옮기면 TRUST_PROXY_HOPS로 조절한다.
+app.set('trust proxy', Math.max(0, parseInt(process.env.TRUST_PROXY_HOPS || '1', 10) || 0));
 // ===== 1-3(팀장 지시): 보안 정적점검 반영 =====
 // 결함수정(사용자가 실제 폰에서 발견한 치명적 버그): helmet()의 기본 CSP(Content-Security-Policy)가
 // 인라인 스크립트(<script>...</script>)와 인라인 이벤트핸들러(onclick="...")를 전부 차단해서,
@@ -71,6 +144,11 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || 'https://roomer-backend.o
 // API(roomer-backend.onrender.com) 주소가 달라 진짜 cross-origin이라 이 옵션이 반드시 필요하다.
 app.use(cors({ origin(origin, callback) { callback(null, !origin || ALLOWED_ORIGINS.includes(origin)); }, credentials: true }));
 // 심사용 사진·PDF data URL이 함께 전송되는 현재 단일-HTML 구조용 제한이다.
+// 신규(2026-09-18 전수조사): 응답 압축이 전혀 없어서 3.5MB짜리 앱 화면(루머03.html)이 매번
+// 무압축으로 나가고 있었다. HTML/JS는 gzip으로 보통 75~80% 줄어들어 약 0.8MB가 된다.
+// 앱 진입 10만 회 기준 월 270GB의 불필요한 전송량이 발생하던 상태(=Render 대역폭 비용 + 이용자
+// 모바일 데이터 + 로딩 지연). 이미지·동영상 등 이미 압축된 형식은 compression이 알아서 건너뛴다.
+app.use(compression());
 app.use(express.json({ limit: '8mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
 // 결함수정(사용자 지적 — 객체 저장소 미설정 환경의 파일첨부 오류 개선): OBJECT_STORAGE_BUCKET이 없을 때
@@ -143,6 +221,68 @@ const searchLogLimiter = rateLimit({
 // ===== 1-2(팀장 지시): 요청 로깅 미들웨어 =====
 // 모든 요청의 method·path·상태코드·소요시간·요청자(있으면)를 기록(콘솔 + DB 양쪽)
 // ⚡MVP-SWITCH: 실서버 → 파일/외부 로그수집기(CloudWatch, Datadog 등)로 전송하도록 교체. 지금은 콘솔+SQLite
+// 신규(2026-09-18 — 디스크 고갈 방지): 아래 경로는 감사 가치가 없고 호출 빈도만 높아서 로그를 남기지 않는다.
+// (헬스체크는 Render가 수십 초마다, dev-file-version은 과거 프론트가 3초마다 호출하던 경로)
+const REQUEST_LOG_SKIP_PATHS = new Set(['/healthz', '/api/dev-file-version', '/api/dev-local-url']);
+// 신규(2026-09-18 — 디스크 고갈 방지): request_logs 보관기간. 기본 30일, 환경변수로 조절 가능.
+const REQUEST_LOG_RETENTION_DAYS = Math.max(1, parseInt(process.env.REQUEST_LOG_RETENTION_DAYS || '30', 10) || 30);
+// 신규(2026-09-18 전수조사): INSERT만 있고 삭제가 전혀 없어 무한히 커지던 로그성 테이블들의
+// 보관기간 정리. 전수조사 결과 정리 코드가 있는 로그 테이블은 하나도 없었고(DELETE FROM 검색결과
+// request_logs 외 0건), 실측한 행당 디스크 비용과 예상 트래픽으로 계산하면 영구 디스크 1GB가
+// 수 주~수 개월 안에 가득 차 DB 쓰기가 전부 실패하는 상태였다.
+// 보관기간은 "그 데이터를 실제로 읽는 코드"를 확인해서 정했다 — 예를 들어 search_queries는
+// /api/search/popular가 최근 30일치만 집계하므로 31일이 지난 행은 어디에서도 쓰이지 않는다.
+// 법적 보존의무가 있을 수 있는 항목(관리자 접근기록)은 넉넉히 1년으로 잡았다. 전부 환경변수로
+// 조절 가능하게 해두었으니 정책이 정해지면 값만 바꾸면 된다.
+const LOG_RETENTION = [
+  // [테이블, 보관일수, 추가조건, 설명]
+  ['request_logs',      REQUEST_LOG_RETENTION_DAYS, '', '요청 로그'],
+  ['search_queries',    Math.max(31, parseInt(process.env.SEARCH_LOG_RETENTION_DAYS || '31', 10) || 31), '', '검색어 로그(인기검색어는 최근 30일만 집계)'],
+  ['notifications',     Math.max(30, parseInt(process.env.NOTIFICATION_RETENTION_DAYS || '90', 10) || 90), 'AND read_at IS NOT NULL', '읽은 알림'],
+  ['admin_access_logs', Math.max(90, parseInt(process.env.ADMIN_LOG_RETENTION_DAYS || '365', 10) || 365), '', '관리자 접근기록(법정 보존기간 고려해 기본 1년)'],
+  ['payment_events',    Math.max(180, parseInt(process.env.PAYMENT_EVENT_RETENTION_DAYS || '400', 10) || 400), '', '결제 이벤트 원문(전자상거래법 5년 보존 대상은 payments 테이블이며 이건 중계사 응답 원문 사본)']
+];
+// ===== 신규(2026-09-18, 대표님 승인 — 채팅 보관기간 하이브리드 정책) =====
+// [왜 하이브리드인가]
+//  · 전자상거래법상 '소비자 불만·분쟁 처리 기록'은 3년, 계약·대금결제 기록은 5년 보존 의무가 있다.
+//  · 반대로 개인정보보호법은 '목적을 달성한 개인정보는 지체 없이 파기'하라고 한다.
+//  · 즉 "전부 1년"은 분쟁 증빙이 사라져 법적 리스크가 되고, "전부 5년"은 단순 문의 대화까지
+//    5년간 보관하게 되어 개인정보보호법 위반 소지 + 디스크 폭증(하루 7MB 순증)이 된다.
+// [정책] 계약이 실제로 체결된 상대와의 대화방 = 3년 / 계약이 없는 단순 문의 대화방 = 1년.
+//        디스크 절감 효과의 대부분이 문의성 채팅에서 나오므로 실효는 일괄 삭제와 거의 같으면서
+//        분쟁 증빙은 지켜진다. 두 기간 모두 환경변수로 조절 가능하니 법무 검토 후 값만 바꾸면 된다.
+// [주의] 이 삭제는 되돌릴 수 없다. 서버에 일일 자동 백업이 들어가 있으므로 백업 보관기간
+//        (기본 7개) 안에서는 복구가 가능하다.
+const CHAT_RETENTION_DAYS_CONTRACT = Math.max(365, parseInt(process.env.CHAT_RETENTION_DAYS_CONTRACT || '1095', 10) || 1095); // 3년
+const CHAT_RETENTION_DAYS_INQUIRY  = Math.max(90,  parseInt(process.env.CHAT_RETENTION_DAYS_INQUIRY  || '365', 10) || 365);  // 1년
+function purgeOldChatMessages() {
+  try {
+    // ① 계약이 없는 방(단순 문의) — 1년
+    const inquiry = db.prepare(`DELETE FROM chat_messages
+      WHERE created_at < datetime('now', ?)
+        AND room_id IN (
+          SELECT r.id FROM chat_rooms r
+          WHERE NOT EXISTS (
+            SELECT 1 FROM contracts c WHERE c.consumer_id = r.consumer_id AND c.partner_id = r.partner_id
+          )
+        )`).run(`-${CHAT_RETENTION_DAYS_INQUIRY} days`);
+    if (inquiry.changes > 0) console.log(`[로그정리] 문의성 채팅(계약 없음): ${CHAT_RETENTION_DAYS_INQUIRY}일 지난 ${inquiry.changes}건 삭제`);
+    // ② 계약이 있는 방 포함 전체 — 3년
+    const contracted = db.prepare(`DELETE FROM chat_messages WHERE created_at < datetime('now', ?)`)
+      .run(`-${CHAT_RETENTION_DAYS_CONTRACT} days`);
+    if (contracted.changes > 0) console.log(`[로그정리] 계약 연결 채팅: ${CHAT_RETENTION_DAYS_CONTRACT}일 지난 ${contracted.changes}건 삭제`);
+  } catch (e) { console.error('[로그정리] 채팅 정리 실패:', e.message); }
+}
+function purgeOldRequestLogs() {
+  purgeOldChatMessages();
+  for (const [table, days, extra, label] of LOG_RETENTION) {
+    try {
+      const info = db.prepare(`DELETE FROM ${table} WHERE created_at < datetime('now', ?) ${extra}`)
+        .run(`-${days} days`);
+      if (info.changes > 0) console.log(`[로그정리] ${label}: ${days}일 지난 ${info.changes}건 삭제 (${table})`);
+    } catch (e) { console.error(`[로그정리] ${table} 정리 실패:`, e.message); }
+  }
+}
 app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
@@ -161,13 +301,69 @@ app.use((req, res, next) => {
     // 원칙과 불일치). 이 라우트만 쿼리스트링을 제외한 경로만 기록하도록 수정. 다른 라우트의
     // 쿼리스트링(예: 인기검색어 통계용 검색어 로그)은 기존과 동일하게 유지한다.
     const loggedPath = req.path === '/api/geo/reverse' ? req.path : req.originalUrl;
-    console.log(`[${new Date().toISOString()}] ${req.method} ${loggedPath} → ${res.statusCode} (${duration}ms) by ${requester || 'anonymous'}`);
-    try {
-      db.prepare('INSERT INTO request_logs (method, path, status_code, duration_ms, user_id) VALUES (?,?,?,?,?)')
-        .run(req.method, loggedPath, res.statusCode, duration, requester);
-    } catch (e) { console.error('로그 DB 기록 실패:', e.message); }
+    // 결함수정(2026-09-18, Render 실서버 로그 조회 중 발견 — 디스크 고갈로 인한 서비스 중단 위험):
+    // 이 미들웨어는 "모든" 요청을 request_logs 테이블에 1건씩 INSERT하는데, 그 테이블을 비우는
+    // 코드가 프로젝트 전체에 단 한 줄도 없었다(DELETE FROM request_logs 검색결과 0건). 게다가
+    // 프론트가 /api/dev-file-version을 3초마다 폴링하고 있어서(루머03.html의 자동새로고침 기능)
+    // 사용자 1명이 화면을 켜두기만 해도 하루 28,800건이 쌓인다. Render 영구 디스크는 1GB뿐이라
+    // 사용자가 늘면 디스크가 가득 차서 DB 쓰기가 전부 실패 → 서비스 전체가 멈춘다.
+    // → ① 감사(監査) 가치가 없는 헬스체크·폴링성 경로는 로그를 아예 남기지 않고(아래 SKIP 목록),
+    //   ② 남은 로그도 보관기간을 두고 주기적으로 지운다(아래 purgeOldRequestLogs).
+    //   ③ 폴링 자체도 프론트에서 제거했다(루머03.html).
+    // 콘솔 로그도 함께 건너뛴다 — Render 로그 화면이 폴링으로 도배되면 진짜 오류를 못 찾는다.
+    if (!REQUEST_LOG_SKIP_PATHS.has(req.path)) {
+      console.log(`[${new Date().toISOString()}] ${req.method} ${loggedPath} → ${res.statusCode} (${duration}ms) by ${requester || 'anonymous'}`);
+      try {
+        db.prepare('INSERT INTO request_logs (method, path, status_code, duration_ms, user_id) VALUES (?,?,?,?,?)')
+          .run(req.method, loggedPath, res.statusCode, duration, requester);
+      } catch (e) { console.error('로그 DB 기록 실패:', e.message); }
+    }
   });
   next();
+});
+
+// ===== 신규(2026-09-18): 헬스체크 =====
+// 기존에 헬스체크 엔드포인트가 전혀 없어서(/health, /healthz, /api/health 검색결과 0건) Render의
+// "Health Check Path" 설정이 비어 있었다 → 서버가 죽어도 Render가 감지·자동재시작을 못 하는 상태.
+// 인증 없이 열려 있으므로 개인정보·키·값은 절대 넣지 않고, "있다/없다"와 경로 정보만 응답한다.
+// 주의: DB 조회가 실패할 때만 503을 반환한다. "DB가 영구 디스크 밖에 있음"은 심각한 경고지만
+// 서비스는 정상 동작하므로 여기서 503을 주면 Render가 재시작만 무한반복하게 되어 더 위험하다.
+app.get('/healthz', (req, res) => {
+  const body = {
+    status: 'ok',
+    time: new Date().toISOString(),
+    uptimeSec: Math.round(process.uptime()),
+    db: { path: DB_FILE_PATH, onPersistentDisk: DB_ON_PERSISTENT_DISK, ok: false, sizeMB: null },
+    backup: { enabled: DB_BACKUP_ENABLED, dir: DB_BACKUP_DIR, keep: DB_BACKUP_KEEP, last: lastDbBackup },
+    storage: process.env.OBJECT_STORAGE_BUCKET ? 'object-storage' : 'local-disk',
+    push: PUSH_ENABLED,
+    payments: !!(process.env.TOSS_SECRET_KEY && process.env.TOSS_CLIENT_KEY),
+    warnings: []
+  };
+  try {
+    db.prepare('SELECT 1').get();
+    body.db.ok = true;
+    try { body.db.sizeMB = +(fs.statSync(DB_FILE_PATH).size / 1024 / 1024).toFixed(2); } catch (e) { /* 크기 확인 실패는 무시 */ }
+  } catch (e) {
+    body.status = 'error';
+    body.db.error = e.message;
+  }
+  if (!DB_ON_PERSISTENT_DISK && process.env.NODE_ENV === 'production') {
+    body.warnings.push(`DB가 영구 디스크(${PERSISTENT_DISK_PATH}) 밖에 있습니다. 재배포 시 데이터가 사라집니다. DB_PATH 환경변수를 확인하세요.`);
+  }
+  if (!DB_BACKUP_ENABLED) body.warnings.push('DB 자동 백업이 꺼져 있습니다.');
+  if (!body.payments) body.warnings.push('토스페이먼츠 키(TOSS_SECRET_KEY/TOSS_CLIENT_KEY)가 설정되지 않아 결제 API가 비활성 상태입니다.');
+  try {
+    // 영구 디스크 여유공간 — Node 18.15+ 에서만 제공되므로 없으면 조용히 건너뛴다.
+    if (typeof fs.statfsSync === 'function') {
+      const st = fs.statfsSync(DB_ON_PERSISTENT_DISK ? PERSISTENT_DISK_PATH : __dirname);
+      const freeMB = +((st.bavail * st.bsize) / 1024 / 1024).toFixed(1);
+      const totalMB = +((st.blocks * st.bsize) / 1024 / 1024).toFixed(1);
+      body.disk = { freeMB, totalMB };
+      if (totalMB > 0 && freeMB / totalMB < 0.1) body.warnings.push(`디스크 여유공간이 10% 미만입니다(${freeMB}MB / ${totalMB}MB).`);
+    }
+  } catch (e) { /* 여유공간 확인 실패는 헬스체크 실패로 취급하지 않음 */ }
+  res.status(body.status === 'ok' ? 200 : 503).json(body);
 });
 
 const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-only-secret-change-in-production');
@@ -248,6 +444,21 @@ function partnerSignupRequired(req, res, next) {
 // 기존 프론트엔드는 클라이언트측 PIN 코드(2486) 하나로 관리자 진입이 가능했음.
 // "이 클라이언트측 PIN 검증을 절대 그대로 쓰지 말 것"이라고 코드에 명시돼 있던 부분 →
 // 서버측 이메일+비밀번호 로그인 + JWT(role 포함) + 역할기반 권한(RBAC)으로 완전히 교체
+// ===== 관리자 권한 3등급 체계 (2026-09-18 재설계, 대표님 승인) =====
+// [기존 문제] requiredRole 인자를 안 넘기면 등급 검사가 통째로 건너뛰어져서, 관리자 라우트
+//   55개 중 등급이 지정된 건 3개뿐이었다. 결과적으로 최하위 고객센터(admin_cs) 계정으로도
+//   전체 파트너의 사업자등록번호·대표자명·주소가 담긴 CSV를 통째로 내려받을 수 있었고,
+//   그 행위는 감사로그에도 전혀 남지 않았다. 아르바이트 계정 하나가 새면 전 회원 개인정보가
+//   유출되는 구조였다.
+// [새 원칙] "돈과 개인정보 대량반출은 최고관리자만"
+//   admin_cs(1등급, 고객센터)  : 문의답변·FAQ·신고접수 확인, 목록 조회는 가능하되 개인정보는 마스킹
+//   admin_operator(2등급, 운영): 승인/반려/정지, 분쟁·하자 처리, 콘텐츠·광고 관리,
+//                                개인정보 원문 '단건' 열람(반드시 감사로그 기록)
+//   admin_super(3등급, 최고)   : 위 전부 + CSV 대량 다운로드, 정산, 크레딧 원장, 정책 변경,
+//                                관리자 계정 관리, DB 백업
+// [동작] requiredRole은 "이 등급 이상"을 뜻한다(서열 비교). 인자를 안 주면 종전대로 관리자면 통과.
+const ADMIN_ROLE_RANK = { admin_cs: 1, admin_operator: 2, admin_super: 3 };
+const ADMIN_ROLE_LABEL = { admin_cs: '고객센터', admin_operator: '운영', admin_super: '최고관리자' };
 function adminAuthRequired(requiredRole) {
   return function (req, res, next) {
     const header = req.headers.authorization;
@@ -255,11 +466,13 @@ function adminAuthRequired(requiredRole) {
     try {
       const token = header.replace('Bearer ', '');
       const payload = jwt.verify(token, JWT_SECRET);
-      if (payload.role !== 'admin_super' && payload.role !== 'admin_operator' && payload.role !== 'admin_cs') {
+      const myRank = ADMIN_ROLE_RANK[payload.role] || 0;
+      if (!myRank) {
         return res.status(403).json({ success: false, error: { code: 'NOT_ADMIN', message: '관리자 권한이 없습니다' } });
       }
-      if (requiredRole && payload.role !== requiredRole && payload.role !== 'admin_super') {
-        return res.status(403).json({ success: false, error: { code: 'INSUFFICIENT_ROLE', message: '이 작업에 필요한 권한이 없습니다' } });
+      if (requiredRole && myRank < (ADMIN_ROLE_RANK[requiredRole] || 99)) {
+        return res.status(403).json({ success: false, error: { code: 'INSUFFICIENT_ROLE',
+          message: `이 작업은 '${ADMIN_ROLE_LABEL[requiredRole] || requiredRole}' 등급 이상만 할 수 있습니다` } });
       }
       req.admin = payload;
       next();
@@ -267,6 +480,24 @@ function adminAuthRequired(requiredRole) {
       res.status(401).json({ success: false, error: { code: 'INVALID_TOKEN', message: '유효하지 않은 토큰입니다' } });
     }
   };
+}
+// 고객센터(admin_cs) 등급에게는 개인정보 원문 대신 마스킹된 값을 보여준다.
+// 상담 업무에는 "끝 4자리"면 본인확인이 되고, 원문이 필요하면 운영 등급이 단건 조회(감사로그 남음)한다.
+function adminCanSeeRawPii(req) { return (ADMIN_ROLE_RANK[req.admin && req.admin.role] || 0) >= ADMIN_ROLE_RANK.admin_operator; }
+function maskPiiForAdmin(req, value, keepTail = 4) {
+  if (value === null || value === undefined || value === '') return value;
+  if (adminCanSeeRawPii(req)) return value;
+  const str = String(value);
+  if (str.length <= keepTail) return '*'.repeat(str.length);
+  return '*'.repeat(str.length - keepTail) + str.slice(-keepTail);
+}
+function maskNameForAdmin(req, value) {
+  if (!value) return value;
+  if (adminCanSeeRawPii(req)) return value;
+  const str = String(value);
+  if (str.length <= 1) return str;
+  if (str.length === 2) return str[0] + '*';
+  return str[0] + '*'.repeat(str.length - 2) + str.slice(-1);
 }
 
 // ===== 0. 관리자 인증 =====
@@ -663,7 +894,12 @@ app.post('/api/otp/email/send', otpSendLimiter, async (req, res) => {
   if (!isNonEmptyString(email, 200) || !EMAIL_RE.test(email)) return validationError(res, '올바른 이메일 형식이 아닙니다');
   if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
   if (!forPartner && !['signup', 'login'].includes(consumerMode)) return validationError(res, '소비자 인증 목적이 올바르지 않습니다');
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  // 결함수정(2026-09-18 전수조사 — 높음): 인증번호를 Math.random()으로 만들고 있었다.
+  // Math.random()은 예측 가능한 유사난수(V8 xorshift128+)라 암호 용도로 쓰면 안 된다. 이 코드로
+  // 만든 6자리 숫자를 맞히면 곧바로 로그인 토큰이 발급되므로, 같은 서버에서 내 번호를 여러 번
+  // 받아 관측하면 다른 사람에게 발송될 번호까지 계산해낼 수 있다. 시도횟수 제한(5회)은 무차별
+  // 대입만 막을 뿐 이 예측 공격은 못 막는다. → 암호학적 난수(crypto.randomInt)로 교체.
+  const code = String(randomInt(100000, 1000000));
   const codeHash = bcrypt.hashSync(code, 10);
   const id = randomUUID();
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
@@ -795,7 +1031,12 @@ app.post('/api/otp/sms/send', otpSendLimiter, async (req, res) => {
   if (!/^01[0-9]{8,9}$/.test(normalizedPhone)) return validationError(res, '올바른 휴대폰 번호 형식이 아닙니다');
   if (forPartner && !['signup', 'login'].includes(partnerMode)) return validationError(res, '파트너 인증 목적이 올바르지 않습니다');
   if (!forPartner && !['signup', 'login'].includes(consumerMode)) return validationError(res, '소비자 인증 목적이 올바르지 않습니다');
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  // 결함수정(2026-09-18 전수조사 — 높음): 인증번호를 Math.random()으로 만들고 있었다.
+  // Math.random()은 예측 가능한 유사난수(V8 xorshift128+)라 암호 용도로 쓰면 안 된다. 이 코드로
+  // 만든 6자리 숫자를 맞히면 곧바로 로그인 토큰이 발급되므로, 같은 서버에서 내 번호를 여러 번
+  // 받아 관측하면 다른 사람에게 발송될 번호까지 계산해낼 수 있다. 시도횟수 제한(5회)은 무차별
+  // 대입만 막을 뿐 이 예측 공격은 못 막는다. → 암호학적 난수(crypto.randomInt)로 교체.
+  const code = String(randomInt(100000, 1000000));
   const codeHash = bcrypt.hashSync(code, 10);
   const id = randomUUID();
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
@@ -873,6 +1114,7 @@ app.post('/api/otp/sms/verify', otpVerifyLimiter, (req, res) => {
     // 암호화하지 않는다(암호화하면 매번 다른 값이 나와 조회 자체가 불가능해짐). phone 컬럼만 암호화.
     db.prepare('INSERT INTO users (id, social_provider, social_id, nickname, phone, cash_balance) VALUES (?,?,?,?,?,?)')
       .run(id, 'phone', normalizedPhone, '휴대폰회원', db.encryptPii(normalizedPhone), 29000);
+    db.syncPiiIndexes('users', id); // 검색용 블라인드 인덱스 갱신(2026-09-18)
     user = db.prepare('SELECT * FROM users WHERE id=?').get(id);
   }
   const token = jwt.sign({ sub: user.id, role: 'consumer' }, JWT_SECRET, { expiresIn: '1h' });
@@ -963,6 +1205,46 @@ function withPartnerServiceRegions(partner) {
   if (!partner) return partner;
   return { ...partner, serviceRegions: partnerServiceRegions(partner.id) };
 }
+// ===== 신규(2026-09-18, 대표님 지시 "제대로 블러작업을 하자") =====
+// [기존 문제] 비회원에게 업체명·지역을 가리는 처리가 프론트의 CSS 블러(filter:blur)뿐이었다.
+// 평문이 이미 화면 안에 들어 있어서 개발자도구나 '소스 보기'만으로 그대로 읽혔고, 심지어
+// sessionStorage 값 하나만 바꿔도 전부 열렸다. "가입해야 공개" 정책이 사실상 작동하지 않았다.
+// [해결] 가리는 일을 서버가 한다. 로그인하지 않은 요청에는 애초에 마스킹된 값만 내려보낸다.
+// 원문이 브라우저에 도달하지 않으므로 개발자도구로도 볼 수 없다. 프론트의 블러는 "가려져 있다"는
+// 것을 알려주는 시각 효과로만 남는다.
+function isLoggedInRequest(req) {
+  const header = req.headers.authorization;
+  if (!header) return false;
+  try { jwt.verify(header.replace('Bearer ', ''), JWT_SECRET); return true; }
+  catch (e) { return false; }
+}
+// 상호명: 첫 글자만 남기고 가린다. (예: "루머인테리어" → "루*****")
+function maskBusinessName(name) {
+  const str = String(name || '').trim();
+  if (str.length <= 1) return str;
+  return str[0] + '*'.repeat(str.length - 1);
+}
+// 지역: 시/도까지만 남긴다. (예: "서울 강남구" → "서울 ◼◼◼")
+function maskRegion(region) {
+  const str = String(region || '').trim();
+  if (!str) return str;
+  const head = str.split(' ')[0];
+  return str === head ? head : head + ' ◼◼◼';
+}
+// 공개 응답용 업체 객체를 비회원 기준으로 가공한다.
+function maskPartnerForGuest(partner) {
+  if (!partner) return partner;
+  const masked = { ...partner };
+  masked.business_name = maskBusinessName(masked.business_name);
+  masked.region = maskRegion(masked.region);
+  if (Array.isArray(masked.serviceRegions)) masked.serviceRegions = masked.serviceRegions.map(r =>
+    (r && typeof r === 'object') ? { ...r, sigungu: r.sigungu ? '◼◼◼' : r.sigungu, regionCode: maskRegion(r.regionCode) } : maskRegion(r));
+  masked.address = undefined;      // 주소는 비회원에게 아예 내리지 않는다
+  masked.road_address = undefined;
+  masked.postal_code = undefined;
+  masked.masked = true;            // 프론트가 "가려진 값"임을 알 수 있게 표시
+  return masked;
+}
 function omitPartnerSecrets(partner, includePrivateProfile) {
   if (!partner) return partner;
   const safe = { ...partner };
@@ -970,8 +1252,13 @@ function omitPartnerSecrets(partner, includePrivateProfile) {
     'ci_hash', 'authorization_doc_url', 'doc_image_url', 'ext_image_url', 'int_image_url'
   ].forEach(key => delete safe[key]);
   if (!includePrivateProfile) {
+    // 결함수정(2026-09-18 전수조사 — 치명): ceo_name(대표자 실명)이 이 삭제목록에서 빠져 있었다.
+    // db.js는 ceo_name을 AES-256-GCM 암호화 대상(PII_FIELDS)으로 지정하고 조회 시 자동 복호화하는데,
+    // 이 함수를 쓰는 GET /api/partners/:id 와 GET /api/partners/search 는 둘 다 로그인 없이 열리는
+    // 공개 라우트라, 토큰 없이 호출 한 번으로 승인된 전체 업체의 대표자 실명이 평문으로 나갔다.
+    // (DB를 암호화해둔 의미가 응답 단계에서 사라지던 상태) → 비공개 필드로 편입.
     ['login_id', 'login_provider', 'business_reg_number', 'phone', 'applicant_name', 'address_detail',
-      'reject_reason'].forEach(key => delete safe[key]);
+      'ceo_name', 'reject_reason'].forEach(key => delete safe[key]);
   }
   return safe;
 }
@@ -1070,6 +1357,8 @@ app.post('/api/partners/register', partnerRegistrationLimiter, partnerSignupRequ
     // 여기서 partners 테이블에 다시 쓸 때는 db.encryptPii()로 다시 암호화해야 한다.
     db.prepare(`UPDATE partners SET phone=?, applicant_name=?, applicant_role=?, identity_verified_at=?, ci_hash=?, authorization_doc_url=? WHERE id=?`)
       .run(db.encryptPii(identityRow ? identityRow.phone : null), db.encryptPii(identityRow ? identityRow.applicant_name : (normalizedApplicantRole==='representative' ? ceoName : null)), normalizedApplicantRole, identityRow ? identityRow.verified_at : null, identityRow ? identityRow.ci_hash : null, authorizationDocument ? authorizationDocument.id : null, id);
+    db.syncPiiIndexes('partners', id); // 검색용 블라인드 인덱스 갱신(2026-09-18)
+
     db.prepare("UPDATE stored_files SET owner_type='partner', owner_id=? WHERE owner_type='partner_signup' AND owner_id=?")
       .run(id, verifiedLoginId);
     db.prepare(`UPDATE partners SET business_verified_at=?, business_status=?, business_tax_type=? WHERE id=?`)
@@ -1097,7 +1386,12 @@ app.get('/api/partners/search', (req, res) => {
     ))`;
     params.push(`%${region}%`, `%${region}%`);
   }
-  const partners = db.prepare(query).all(...params).map(withPartnerServiceRegions).map(partner => omitPartnerSecrets(partner, false));
+  const loggedIn = isLoggedInRequest(req);
+  const partners = db.prepare(query).all(...params)
+    .map(withPartnerServiceRegions)
+    .map(partner => omitPartnerSecrets(partner, false))
+    // 비회원이면 상호명·지역·주소를 서버에서 마스킹해 내려보낸다(프론트 블러만으로는 안 가려짐).
+    .map(partner => loggedIn ? partner : maskPartnerForGuest(partner));
   res.json({ success: true, data: partners });
 });
 
@@ -1289,8 +1583,9 @@ app.put('/api/partners/me/hero-photos', authRequired, (req, res) => {
 });
 
 app.get('/api/partners/:id', (req, res) => {
-  const partner = omitPartnerSecrets(withPartnerServiceRegions(db.prepare("SELECT * FROM partners WHERE id=? AND verify_status='approved'").get(req.params.id)), false);
-  if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
+  const raw = omitPartnerSecrets(withPartnerServiceRegions(db.prepare("SELECT * FROM partners WHERE id=? AND verify_status='approved'").get(req.params.id)), false);
+  if (!raw) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
+  const partner = isLoggedInRequest(req) ? raw : maskPartnerForGuest(raw);
   res.json({ success: true, data: partner });
 });
 
@@ -1347,19 +1642,46 @@ function adminPartnerReviewDetail(partner) {
     }
   };
 }
+// 신규(2026-09-18): 관리자용 DB 백업 상태 조회 / 즉시 백업 실행.
+// 파일을 내려주지는 않는다(DB 전체에 전 회원의 개인정보가 들어있어 유출 위험이 너무 큼) —
+// 목록·크기·시각만 보여주고, 실제 파일은 Render 대시보드의 Shell에서 꺼내는 방식을 권장.
+app.get('/api/admin/db-backups', adminAuthRequired(), (req, res) => {
+  let files = [];
+  try {
+    files = fs.readdirSync(DB_BACKUP_DIR)
+      .filter(f => f.startsWith('roomer-') && f.endsWith('.db'))
+      .sort().reverse()
+      .map(f => {
+        const st = fs.statSync(path.join(DB_BACKUP_DIR, f));
+        return { file: f, sizeMB: +(st.size / 1024 / 1024).toFixed(2), at: st.mtime.toISOString() };
+      });
+  } catch (e) { /* 백업 폴더가 아직 없으면 빈 목록으로 응답 */ }
+  res.json({ success: true, data: { enabled: DB_BACKUP_ENABLED, dir: DB_BACKUP_DIR, keep: DB_BACKUP_KEEP, intervalHours: DB_BACKUP_INTERVAL_HOURS, dbPath: DB_FILE_PATH, onPersistentDisk: DB_ON_PERSISTENT_DISK, last: lastDbBackup, files } });
+});
+app.post('/api/admin/db-backups', adminAuthRequired('admin_super'), (req, res) => {
+  if (!DB_BACKUP_ENABLED) return res.status(409).json({ success: false, error: { code: 'BACKUP_DISABLED', message: 'DB 자동 백업이 비활성 상태입니다(DB가 영구 디스크 밖에 있거나 DB_BACKUP_ENABLED=false).' } });
+  const result = runDbBackup();
+  if (!result) return res.status(500).json({ success: false, error: { code: 'BACKUP_FAILED', message: '백업 생성에 실패했습니다. 서버 로그를 확인해주세요.' } });
+  res.json({ success: true, data: result });
+});
+
 app.get('/api/admin/partners/pending', adminAuthRequired(), (req, res) => {
   const list = db.prepare("SELECT * FROM partners WHERE verify_status='pending' ORDER BY created_at DESC").all().map(adminPartnerReviewSummary);
   res.json({ success: true, data: list });
 });
 
-app.get('/api/admin/partners/:id/review', adminAuthRequired(), (req, res) => {
+app.get('/api/admin/partners/:id/review', adminAuthRequired('admin_operator'), (req, res) => {
+  // 신규(2026-09-18 권한체계 재설계): 개인정보 원문을 조회하는 화면에는 반드시 '누가 언제 누구
+  // 정보를 봤는지'를 남긴다. 기존에는 파일 열람에만 기록이 남고, 사업자번호·대표자명·연락처가
+  // 그대로 보이는 이 상세 조회에는 아무 기록도 남지 않았다.
+  logAdminAccess(req, 'partner_review', req.params.id, '업체 가입심사 상세 열람');
   const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
   if (!partner) return res.status(404).json({ success:false, error:{ code:'NOT_FOUND', message:'업체를 찾을 수 없습니다' } });
   res.set('Cache-Control', 'no-store');
   res.json({ success:true, data:adminPartnerReviewDetail(partner) });
 });
 
-app.get('/api/admin/files/:fileId', adminAuthRequired(), async (req, res, next) => {
+app.get('/api/admin/files/:fileId', adminAuthRequired('admin_operator'), async (req, res, next) => {
   const file = db.prepare("SELECT * FROM stored_files WHERE id=? AND visibility='private' AND deleted_at IS NULL").get(req.params.fileId);
   if (!file) return res.status(404).json({ success:false, error:{ code:'NOT_FOUND', message:'증빙파일을 찾을 수 없습니다' } });
   try {
@@ -1390,7 +1712,7 @@ app.get('/api/admin/access-logs', adminAuthRequired('admin_super'), (req, res) =
   })) });
 });
 
-app.put('/api/admin/partners/:id/approve', adminAuthRequired(), (req, res) => {
+app.put('/api/admin/partners/:id/approve', adminAuthRequired('admin_operator'), (req, res) => {
   const partner = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
   if (!partner) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
   // 결함정리(사용자요청 — 본인확인 정책 온오프 반영): identity_verification_required가 꺼져있으면
@@ -1412,7 +1734,7 @@ app.put('/api/admin/partners/:id/approve', adminAuthRequired(), (req, res) => {
   res.json({ success: true, data: { message: '승인되었습니다' } });
 });
 
-app.put('/api/admin/partners/:id/reject', adminAuthRequired(), (req, res) => {
+app.put('/api/admin/partners/:id/reject', adminAuthRequired('admin_operator'), (req, res) => {
   const { reason } = req.body;
   if (!isNonEmptyString(reason, 500)) return validationError(res, '반려 사유를 500자 이내로 입력해주세요');
   const result = db.prepare("UPDATE partners SET verify_status='rejected', reject_reason=?, approved_at=NULL, cert_business=0, cert_location=0, cert_contact=0 WHERE id=?").run(reason.trim(), req.params.id);
@@ -1424,7 +1746,7 @@ app.put('/api/admin/partners/:id/reject', adminAuthRequired(), (req, res) => {
 
 // 신규(2026-09, 관리자 콘솔 실연동 — 어뷰징 정지 해제): 반복 노쇼로 일시정지된 업체를 다시 활동 가능 상태로 되돌린다.
 // 사업자검증(business_verified_at)·동의이력은 정지 시점에 건드리지 않으므로 그대로 유지되어 있어 별도 재검증 없이 복원 가능.
-app.patch('/api/admin/partners/:id/unsuspend', adminAuthRequired(), (req, res) => {
+app.patch('/api/admin/partners/:id/unsuspend', adminAuthRequired('admin_operator'), (req, res) => {
   const result = db.prepare("UPDATE partners SET verify_status='approved' WHERE id=? AND verify_status='suspended'").run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '정지 상태인 업체를 찾을 수 없습니다' } });
   logMemberAction('partner', req.params.id, 'unsuspend', null, req.admin.sub);
@@ -1459,30 +1781,85 @@ function toCsv(rows, columns) {
   const body = rows.map(r => columns.map(c => esc(c.get(r))).join(',')).join('\n');
   return '﻿' + header + '\n' + body; // 엑셀 한글 깨짐 방지용 BOM
 }
-function filterConsumers(query) {
-  const { q, status } = query;
-  let rows = db.prepare('SELECT * FROM users ORDER BY created_at DESC').all();
-  if (q && isNonEmptyString(q, 100)) {
-    const needle = q.trim().toLowerCase();
-    rows = rows.filter(u => (u.nickname || '').toLowerCase().includes(needle) || (u.email || '').toLowerCase().includes(needle) || (u.phone || '').includes(needle));
+// 재설계(2026-09-18 — 메모리 고갈 방지): 기존 CSV 내보내기는 전체 행을 메모리에 올린 뒤 거대한
+// 문자열 하나를 통째로 만들어 res.send()했다. 회원 10만 명이면 행 객체와 CSV 문자열이 동시에
+// 힙에 올라가 512MB 서버가 버티지 못한다.
+// → 배치 반복자(iterateConsumers/iteratePartners)에서 1,000건씩 받아 res.write()로 흘려보낸다.
+//   메모리 사용량이 전체 회원 수와 무관하게 일정해진다.
+function streamCsv(res, filename, rowIterable, columns) {
+  const esc = v => { const s = (v == null ? '' : String(v)); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  res.set('Content-Type', 'text/csv; charset=utf-8');
+  res.set('Content-Disposition', 'attachment; filename="' + filename + '"');
+  res.write('\ufeff' + columns.map(c => esc(c.label)).join(',') + '\n'); // 엑셀 한글 깨짐 방지용 BOM
+  let buf = '', n = 0;
+  for (const r of rowIterable) {
+    buf += columns.map(c => esc(c.get(r))).join(',') + '\n';
+    if (++n % 500 === 0) { res.write(buf); buf = ''; }
   }
-  if (status && status !== 'all') rows = rows.filter(u => memberStatusOfConsumer(u) === status);
-  return rows;
+  if (buf) res.write(buf);
+  res.end();
+  return n;
+}
+// 재설계(2026-09-18 — 메모리 고갈 방지): 기존에는 users 테이블 '전체'를 메모리에 올린 뒤
+// JS에서 걸러내고 .slice()로 페이지를 잘랐다. 20건을 보려 해도 전 회원이 로드되고, db.js의
+// 자동 복호화 때문에 전원의 전화번호가 AES 복호화됐다(회원 10만이면 페이지1 한 번에 10만 번).
+// 512MB 서버에서는 관리자가 목록을 몇 번 새로고침하는 것만으로 메모리 부족 종료가 날 수 있었다.
+// → 필터·정렬·페이징을 전부 SQL로 내린다. 20건을 요청하면 DB에서 20건만 읽어온다.
+// 전화번호는 암호화돼 있어 WHERE로 못 찾으므로, 숫자로만 이루어진 검색어는 db.js의 블라인드
+// 인덱스(phone_idx, 검색 전용 해시)로 '정확히 일치' 조회한다. 문자가 섞인 검색어는 종전처럼
+// 닉네임·이메일 부분검색으로 처리한다.
+function buildConsumerQuery(query) {
+  const { q, status } = query;
+  const where = [];
+  const params = [];
+  if (q && isNonEmptyString(q, 100)) {
+    const needle = q.trim();
+    const digits = needle.replace(/\D/g, '');
+    if (digits.length >= 8 && digits.length === needle.replace(/[\s-]/g, '').length) {
+      where.push('phone_idx = ?');
+      params.push(db.piiIndex(digits));
+    } else {
+      where.push('(LOWER(nickname) LIKE ? OR LOWER(email) LIKE ?)');
+      const like = '%' + needle.toLowerCase() + '%';
+      params.push(like, like);
+    }
+  }
+  if (status && status !== 'all') {
+    if (status === 'withdrawn') where.push('withdrawn_at IS NOT NULL');
+    else if (status === 'suspended') where.push('withdrawn_at IS NULL AND suspended_at IS NOT NULL');
+    else if (status === 'active') where.push('withdrawn_at IS NULL AND suspended_at IS NULL');
+  }
+  return { sql: where.length ? ' WHERE ' + where.join(' AND ') : '', params };
+}
+// CSV 등 '전체를 훑어야 하는' 용도에서만 쓰는 배치 반복자. 한 번에 1,000건씩만 메모리에 올린다.
+function* iterateConsumers(query, batchSize = 1000) {
+  const { sql, params } = buildConsumerQuery(query);
+  let offset = 0;
+  for (;;) {
+    const rows = db.prepare(`SELECT * FROM users${sql} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, batchSize, offset);
+    if (!rows.length) return;
+    for (const r of rows) yield r;
+    if (rows.length < batchSize) return;
+    offset += batchSize;
+  }
 }
 app.get('/api/admin/consumers', adminAuthRequired(), (req, res) => {
-  const rows = filterConsumers(req.query);
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
-  const total = rows.length;
-  const list = rows.slice((page - 1) * limit, page * limit).map(u => ({
+  const { sql, params } = buildConsumerQuery(req.query);
+  const total = db.prepare(`SELECT COUNT(*) c FROM users${sql}`).get(...params).c;
+  const rows = db.prepare(`SELECT * FROM users${sql} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(...params, limit, (page - 1) * limit);
+  const list = rows.map(u => ({
     id: u.id, nickname: u.nickname, socialProvider: u.social_provider, maskedPhone: maskPhone(u.phone),
     cashBalance: u.cash_balance, createdAt: u.created_at, status: memberStatusOfConsumer(u), suspendReason: u.suspend_reason
   }));
   res.json({ success: true, data: { list, total, page, limit } });
 });
-app.get('/api/admin/consumers/export.csv', adminAuthRequired(), (req, res) => {
-  const rows = filterConsumers(req.query);
-  const csv = toCsv(rows, [
+app.get('/api/admin/consumers/export.csv', adminAuthRequired('admin_super'), (req, res) => {
+  // 권한체계(2026-09-18): 개인정보 대량반출이므로 최고관리자 전용 + 반드시 감사로그를 남긴다.
+  logAdminAccess(req, 'consumer_export_csv', 'all', '회원 목록 CSV 대량 다운로드');
+  streamCsv(res, 'consumers.csv', iterateConsumers(req.query), [
     { label: '닉네임', get: u => u.nickname },
     { label: '가입경로', get: u => u.social_provider },
     { label: '가입일', get: u => u.created_at },
@@ -1490,11 +1867,12 @@ app.get('/api/admin/consumers/export.csv', adminAuthRequired(), (req, res) => {
     { label: '상태', get: u => memberStatusOfConsumer(u) },
     { label: '정지사유', get: u => u.suspend_reason }
   ]);
-  res.set('Content-Type', 'text/csv; charset=utf-8');
-  res.set('Content-Disposition', 'attachment; filename="consumers.csv"');
-  res.send(csv);
 });
-app.get('/api/admin/consumers/:id', adminAuthRequired(), (req, res) => {
+app.get('/api/admin/consumers/:id', adminAuthRequired('admin_operator'), (req, res) => {
+  // 신규(2026-09-18 권한체계 재설계): 개인정보 원문을 조회하는 화면에는 반드시 '누가 언제 누구
+  // 정보를 봤는지'를 남긴다. 기존에는 파일 열람에만 기록이 남고, 사업자번호·대표자명·연락처가
+  // 그대로 보이는 이 상세 조회에는 아무 기록도 남지 않았다.
+  logAdminAccess(req, 'consumer_detail', req.params.id, '회원 상세(개인정보 포함) 열람');
   const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
   if (!u) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '회원을 찾을 수 없습니다' } });
   const quoteCount = db.prepare('SELECT COUNT(*) c FROM quote_requests WHERE user_id=?').get(u.id).c;
@@ -1509,7 +1887,7 @@ app.get('/api/admin/consumers/:id', adminAuthRequired(), (req, res) => {
     actionHistory: actions
   } });
 });
-app.put('/api/admin/consumers/:id/suspend', adminAuthRequired(), (req, res) => {
+app.put('/api/admin/consumers/:id/suspend', adminAuthRequired('admin_operator'), (req, res) => {
   const { reason } = req.body;
   if (!isNonEmptyString(reason, 500)) return validationError(res, '정지 사유를 입력해주세요');
   const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
@@ -1520,7 +1898,7 @@ app.put('/api/admin/consumers/:id/suspend', adminAuthRequired(), (req, res) => {
   createNotification('consumer', u.id, 'account_suspended', '이용이 제한되었습니다', reason.trim());
   res.json({ success: true, data: { message: '정지 처리됐어요' } });
 });
-app.put('/api/admin/consumers/:id/unsuspend', adminAuthRequired(), (req, res) => {
+app.put('/api/admin/consumers/:id/unsuspend', adminAuthRequired('admin_operator'), (req, res) => {
   const result = db.prepare("UPDATE users SET suspended_at=NULL, suspend_reason=NULL WHERE id=? AND suspended_at IS NOT NULL").run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '정지 상태인 회원을 찾을 수 없습니다' } });
   logMemberAction('consumer', req.params.id, 'unsuspend', null, req.admin.sub);
@@ -1529,32 +1907,59 @@ app.put('/api/admin/consumers/:id/unsuspend', adminAuthRequired(), (req, res) =>
 });
 
 // ---- 파트너 회원관리: 전체 목록(모든 상태) — 기존 /pending(대기중만)과 별개로 검색·필터를 지원 ----
-function filterPartners(query) {
+// 재설계(2026-09-18 — 메모리 고갈 방지): 위 buildConsumerQuery와 같은 이유로 SQL로 이관.
+// 숫자로만 된 검색어(전화번호·사업자번호)는 블라인드 인덱스로 정확일치 조회한다.
+function buildPartnerQuery(query) {
   const { q, status, tier, region } = query;
-  let rows = db.prepare('SELECT * FROM partners ORDER BY created_at DESC').all();
+  const where = [];
+  const params = [];
   if (q && isNonEmptyString(q, 100)) {
-    const needle = q.trim().toLowerCase();
-    rows = rows.filter(p => (p.business_name || '').toLowerCase().includes(needle) || (p.business_reg_number || '').includes(needle) || (p.phone || '').includes(needle));
+    const needle = q.trim();
+    const digits = needle.replace(/\D/g, '');
+    if (digits.length >= 8 && digits.length === needle.replace(/[\s-]/g, '').length) {
+      where.push('(phone_idx = ? OR business_reg_number_idx = ?)');
+      const h = db.piiIndex(digits);
+      params.push(h, h);
+    } else {
+      where.push('LOWER(business_name) LIKE ?');
+      params.push('%' + needle.toLowerCase() + '%');
+    }
   }
-  if (status && status !== 'all') rows = rows.filter(p => p.verify_status === status);
-  if (tier && tier !== 'all') rows = rows.filter(p => p.tier === tier);
-  if (region && isNonEmptyString(region, 50)) rows = rows.filter(p => (p.region || '').includes(region));
-  return rows;
+  if (status && status !== 'all') { where.push('verify_status = ?'); params.push(status); }
+  if (tier && tier !== 'all') { where.push('tier = ?'); params.push(tier); }
+  if (region && isNonEmptyString(region, 50)) { where.push('region LIKE ?'); params.push('%' + region + '%'); }
+  return { sql: where.length ? ' WHERE ' + where.join(' AND ') : '', params };
+}
+function* iteratePartners(query, batchSize = 1000) {
+  const { sql, params } = buildPartnerQuery(query);
+  let offset = 0;
+  for (;;) {
+    const rows = db.prepare(`SELECT * FROM partners${sql} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, batchSize, offset);
+    if (!rows.length) return;
+    for (const r of rows) yield r;
+    if (rows.length < batchSize) return;
+    offset += batchSize;
+  }
 }
 app.get('/api/admin/partners', adminAuthRequired(), (req, res) => {
-  const rows = filterPartners(req.query);
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
-  const total = rows.length;
-  const list = rows.slice((page - 1) * limit, page * limit).map(p => ({
-    id: p.id, businessName: p.business_name, tier: p.tier, region: p.region, businessRegNumber: p.business_reg_number,
+  const { sql, params } = buildPartnerQuery(req.query);
+  const total = db.prepare(`SELECT COUNT(*) c FROM partners${sql}`).get(...params).c;
+  const rows = db.prepare(`SELECT * FROM partners${sql} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(...params, limit, (page - 1) * limit);
+  const list = rows.map(p => ({
+    id: p.id, businessName: p.business_name, tier: p.tier, region: p.region,
+    // 권한체계(2026-09-18): 고객센터 등급에게는 사업자번호를 마스킹해서 보여준다.
+    businessRegNumber: maskPiiForAdmin(req, p.business_reg_number),
     creditBalance: p.credit_balance, contractsCount: p.contracts_count, createdAt: p.approved_at || p.created_at, status: p.verify_status
   }));
   res.json({ success: true, data: { list, total, page, limit } });
 });
-app.get('/api/admin/partners/export.csv', adminAuthRequired(), (req, res) => {
-  const rows = filterPartners(req.query);
-  const csv = toCsv(rows, [
+app.get('/api/admin/partners/export.csv', adminAuthRequired('admin_super'), (req, res) => {
+  // 권한체계(2026-09-18): 사업자등록번호가 평문으로 나가는 대량반출이므로 최고관리자 전용 + 감사로그.
+  logAdminAccess(req, 'partner_export_csv', 'all', '업체 목록 CSV 대량 다운로드(사업자번호 포함)');
+  streamCsv(res, 'partners.csv', iteratePartners(req.query), [
     { label: '상호명', get: p => p.business_name },
     { label: '등급', get: p => p.tier },
     { label: '지역', get: p => p.region },
@@ -1564,11 +1969,12 @@ app.get('/api/admin/partners/export.csv', adminAuthRequired(), (req, res) => {
     { label: '가입일', get: p => p.approved_at || p.created_at },
     { label: '상태', get: p => p.verify_status }
   ]);
-  res.set('Content-Type', 'text/csv; charset=utf-8');
-  res.set('Content-Disposition', 'attachment; filename="partners.csv"');
-  res.send(csv);
 });
-app.get('/api/admin/partners/:id/detail', adminAuthRequired(), (req, res) => {
+app.get('/api/admin/partners/:id/detail', adminAuthRequired('admin_operator'), (req, res) => {
+  // 신규(2026-09-18 권한체계 재설계): 개인정보 원문을 조회하는 화면에는 반드시 '누가 언제 누구
+  // 정보를 봤는지'를 남긴다. 기존에는 파일 열람에만 기록이 남고, 사업자번호·대표자명·연락처가
+  // 그대로 보이는 이 상세 조회에는 아무 기록도 남지 않았다.
+  logAdminAccess(req, 'partner_detail', req.params.id, '업체 상세(개인정보 포함) 열람');
   const p = db.prepare('SELECT * FROM partners WHERE id=?').get(req.params.id);
   if (!p) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '업체를 찾을 수 없습니다' } });
   const contractCount = db.prepare('SELECT COUNT(*) c FROM contracts WHERE partner_id=?').get(p.id).c;
@@ -1585,7 +1991,7 @@ app.get('/api/admin/partners/:id/detail', adminAuthRequired(), (req, res) => {
     actionHistory: actions
   } });
 });
-app.put('/api/admin/partners/:id/suspend', adminAuthRequired(), (req, res) => {
+app.put('/api/admin/partners/:id/suspend', adminAuthRequired('admin_operator'), (req, res) => {
   const { reason } = req.body;
   if (!isNonEmptyString(reason, 500)) return validationError(res, '정지 사유를 입력해주세요');
   const result = db.prepare("UPDATE partners SET verify_status='suspended' WHERE id=? AND verify_status='approved'").run(req.params.id);
@@ -1842,7 +2248,7 @@ app.get('/api/admin/portfolio/pending', adminAuthRequired(), (req, res) => {
     WHERE pp.status='pending' ORDER BY pp.created_at ASC LIMIT 200`).all();
   res.json({ success: true, data: rows });
 });
-app.put('/api/admin/portfolio/:id/approve', adminAuthRequired(), (req, res) => {
+app.put('/api/admin/portfolio/:id/approve', adminAuthRequired('admin_operator'), (req, res) => {
   const result = db.prepare("UPDATE portfolio_projects SET status='approved', reviewed_at=datetime('now'), reject_reason=NULL WHERE id=? AND status='pending'").run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '심사 대기중인 포트폴리오를 찾을 수 없습니다' } });
   const project = db.prepare('SELECT partner_id FROM portfolio_projects WHERE id=?').get(req.params.id);
@@ -1864,7 +2270,7 @@ app.put('/api/admin/portfolio/:id/approve', adminAuthRequired(), (req, res) => {
   }
   res.json({ success: true, data: { message: '승인되었습니다' } });
 });
-app.put('/api/admin/portfolio/:id/reject', adminAuthRequired(), (req, res) => {
+app.put('/api/admin/portfolio/:id/reject', adminAuthRequired('admin_operator'), (req, res) => {
   const { reason } = req.body;
   if (!isNonEmptyString(reason, 500)) return validationError(res, '반려 사유를 500자 이내로 입력해주세요');
   const result = db.prepare("UPDATE portfolio_projects SET status='rejected', reviewed_at=datetime('now'), reject_reason=? WHERE id=? AND status='pending'").run(reason.trim(), req.params.id);
@@ -2354,7 +2760,7 @@ app.get('/api/settlements/mine', authRequired, (req, res) => {
 // 조회하는 API가 아예 없어서 항상 빈 배열(window.SETTLEMENTS=[])만 보여주고 있었다 — 뱃지 카운트
 // (settleHold, /api/admin/dashboard/counts)는 실제 DB를 세고 있었는데 정작 목록 화면은 0건/빈 화면으로
 // 나오는 불일치 결함이었음.
-app.get('/api/admin/settlements', adminAuthRequired(), (req, res) => {
+app.get('/api/admin/settlements', adminAuthRequired('admin_super'), (req, res) => {
   const rows = db.prepare(`
     SELECT s.*, p.business_name AS partner_name, p.tier AS partner_tier
     FROM settlements s
@@ -2481,7 +2887,7 @@ app.get('/api/admin/disputes', adminAuthRequired(), (req, res) => {
     partnerName: r.partner_name || null, consumerName: r.consumer_name || null
   })) });
 });
-app.get('/api/admin/disputes/:id', adminAuthRequired(), (req, res) => {
+app.get('/api/admin/disputes/:id', adminAuthRequired('admin_operator'), (req, res) => {
   const r = db.prepare(`
     SELECT d.*, c.consumer_id, c.partner_id, p.business_name AS partner_name, u.nickname AS consumer_name
     FROM disputes d
@@ -2636,7 +3042,7 @@ app.get('/api/admin/inspections/queue', adminAuthRequired(), (req, res) => {
   res.json({ success: true, data });
 });
 
-app.get('/api/admin/inspections/:id', adminAuthRequired(), (req, res) => {
+app.get('/api/admin/inspections/:id', adminAuthRequired('admin_operator'), (req, res) => {
   const r = db.prepare(`SELECT i.*, c.consumer_id, c.partner_id, u.nickname AS consumer_name, p.business_name AS partner_name, p.tier AS partner_tier
     FROM inspections i JOIN contracts c ON c.id=i.contract_id JOIN users u ON u.id=c.consumer_id JOIN partners p ON p.id=c.partner_id WHERE i.id=?`).get(req.params.id);
   if (!r) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 내역을 찾을 수 없습니다' } });
@@ -2650,7 +3056,7 @@ app.get('/api/admin/inspections/:id', adminAuthRequired(), (req, res) => {
 });
 
 // 관리자가 감리 사진 원본을 열람(비공개 파일이라 관리자 인증 필수)
-app.get('/api/admin/inspections/:id/photos/:fileId', adminAuthRequired(), async (req, res, next) => {
+app.get('/api/admin/inspections/:id/photos/:fileId', adminAuthRequired('admin_operator'), async (req, res, next) => {
   const file = db.prepare("SELECT * FROM stored_files WHERE id=? AND owner_type='inspection' AND owner_id=? AND deleted_at IS NULL").get(req.params.fileId, req.params.id);
   if (!file) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '파일을 찾을 수 없습니다' } });
   try {
@@ -2665,7 +3071,7 @@ app.get('/api/admin/inspections/:id/photos/:fileId', adminAuthRequired(), async 
 });
 
 // 전문인력(관리자)이 직접 판정+답변 작성 → 완료처리(소비자에게 즉시 전달됨)
-app.put('/api/admin/inspections/:id/answer', adminAuthRequired(), (req, res) => {
+app.put('/api/admin/inspections/:id/answer', adminAuthRequired('admin_operator'), (req, res) => {
   const { grade, opinion, advice } = req.body;
   if (!['양호', '주의', '문제'].includes(grade)) return validationError(res, '올바른 판정 등급이 아닙니다(양호/주의/문제)');
   if (!isNonEmptyString(opinion, 2000) || !isNonEmptyString(advice, 1000)) return validationError(res, '소견과 권고사항을 입력해주세요');
@@ -2731,11 +3137,28 @@ function syncVerifiedInspectionPayment(local, providerPayment) {
   const nextStatus = statusMap[providerPayment.status] || 'ready';
   if (nextStatus === 'paid' && local.status !== 'paid') {
     const contract = db.prepare('SELECT * FROM contracts WHERE id=?').get(local.contract_id);
+  // 결함수정(2026-09-18 전수조사 — 치명, 금전): 여기서 쓰는 local은 await(토스 승인 API 왕복,
+  // 보통 0.2~1초) '이전'에 읽어둔 값이라, 그 사이 같은 주문에 대한 두 번째 요청(사용자 더블클릭,
+  // 앱 재시도, 또는 토스가 거의 동시에 보내는 웹훅)이 들어오면 두 요청 모두 '아직 미결제'로
+  // 판단해 잔액을 두 번 더하게 된다(감리 결제는 반대로 두 번 차감). db.transaction()은 블록
+  // 내부만 원자적으로 만들 뿐 await를 가로지르는 이 경쟁은 막지 못한다.
+  // → 상태 전이를 '조건부 UPDATE'로 바꿔서, 실제로 미결제→결제 전환에 성공한 요청(changes===1)
+  //   에서만 잔액을 건드리도록 한다. SQLite의 UPDATE는 원자적이라 두 요청 중 하나만 성공한다.
+    // 추가로, 포인트 차감은 '잔액이 실제로 남아있을 때만' 되도록 조건을 건다. 기존에는 결제 신청
+    // 시점에 기록해둔 credit_used를 무조건 빼서, 같은 포인트를 여러 건의 감리 신청에 중복으로
+    // 잡아두면 잔액이 음수가 될 수 있었다.
+    let applied = false;
     db.transaction(() => {
-      if (local.credit_used > 0 && contract) db.prepare('UPDATE users SET cash_balance = cash_balance - ? WHERE id=?').run(local.credit_used, contract.consumer_id);
-      db.prepare("UPDATE inspections SET status='paid', paid_at=datetime('now') WHERE id=?").run(local.id);
+      const info = db.prepare("UPDATE inspections SET status='paid', paid_at=datetime('now') WHERE id=? AND status <> 'paid'").run(local.id);
+      if (info.changes !== 1) return;            // 다른 요청이 먼저 처리함 — 중복 차감 방지
+      applied = true;
+      if (local.credit_used > 0 && contract) {
+        const used = db.prepare('UPDATE users SET cash_balance = cash_balance - ? WHERE id=? AND cash_balance >= ?')
+          .run(local.credit_used, contract.consumer_id, local.credit_used);
+        if (used.changes !== 1) throw Object.assign(new Error('보유 포인트가 부족합니다'), { code: 'INSUFFICIENT_BALANCE', status: 409 });
+      }
     })();
-    if (contract) createNotification('partner', contract.partner_id, 'inspection_paid', '감리 결제가 완료되었습니다', (INSPECT_PLANS[local.plan] ? INSPECT_PLANS[local.plan].label : local.plan) + ' 결제가 완료됐습니다.', 'contract', contract.id);
+    if (applied && contract) createNotification('partner', contract.partner_id, 'inspection_paid', '감리 결제가 완료되었습니다', (INSPECT_PLANS[local.plan] ? INSPECT_PLANS[local.plan].label : local.plan) + ' 결제가 완료됐습니다.', 'contract', contract.id);
   }
   return nextStatus;
 }
@@ -3470,7 +3893,7 @@ app.get('/api/credit/ledger/mine', authRequired, (req, res) => {
   res.json({ success: true, data: rows });
 });
 // 관리자 "포인트 관리 › 업체 크레딧" 탭: 전체 업체를 가로질러 원장을 모아본다(위 /mine과 달리 partner_id로 필터하지 않음)
-app.get('/api/admin/credit-ledger', adminAuthRequired(), (req, res) => {
+app.get('/api/admin/credit-ledger', adminAuthRequired('admin_super'), (req, res) => {
   const rows = db.prepare(`SELECT l.*, p.business_name AS partner_name, a.region, a.tagline
     FROM credit_ledger l LEFT JOIN partners p ON p.id=l.partner_id LEFT JOIN ad_reservations a ON a.id=l.related_ad_id
     ORDER BY l.created_at DESC, l.rowid DESC LIMIT 300`).all();
@@ -3487,11 +3910,18 @@ function syncVerifiedCreditTopup(local, providerPayment, rawEventType) {
   if (providerPayment.orderId !== local.order_id) throw Object.assign(new Error('주문번호가 일치하지 않습니다'), { code: 'PAYMENT_ORDER_MISMATCH', status: 409 });
   const statusMap = { DONE: 'paid', CANCELED: 'cancelled', PARTIAL_CANCELED: 'partially_cancelled', WAITING_FOR_DEPOSIT: 'pending', ABORTED: 'failed', EXPIRED: 'failed' };
   const nextStatus = statusMap[providerPayment.status] || 'ready';
-  const wasPaid = local.status === 'paid';
+  // 결함수정(2026-09-18 전수조사 — 치명, 금전): 여기서 쓰는 local은 await(토스 승인 API 왕복,
+  // 보통 0.2~1초) '이전'에 읽어둔 값이라, 그 사이 같은 주문에 대한 두 번째 요청(사용자 더블클릭,
+  // 앱 재시도, 또는 토스가 거의 동시에 보내는 웹훅)이 들어오면 두 요청 모두 '아직 미결제'로
+  // 판단해 잔액을 두 번 더하게 된다(감리 결제는 반대로 두 번 차감). db.transaction()은 블록
+  // 내부만 원자적으로 만들 뿐 await를 가로지르는 이 경쟁은 막지 못한다.
+  // → 상태 전이를 '조건부 UPDATE'로 바꿔서, 실제로 미결제→결제 전환에 성공한 요청(changes===1)
+  //   에서만 잔액을 건드리도록 한다. SQLite의 UPDATE는 원자적이라 두 요청 중 하나만 성공한다.
   db.transaction(() => {
-    db.prepare("UPDATE credit_topups SET status=?, payment_key=?, paid_at=CASE WHEN ?='paid' THEN COALESCE(paid_at,datetime('now')) ELSE paid_at END WHERE id=?")
-      .run(nextStatus, providerPayment.paymentKey || local.payment_key || null, nextStatus, local.id);
-    if (nextStatus === 'paid' && !wasPaid) {
+    const info = db.prepare("UPDATE credit_topups SET status=?, payment_key=?, paid_at=CASE WHEN ?='paid' THEN COALESCE(paid_at,datetime('now')) ELSE paid_at END WHERE id=? AND (status <> 'paid' OR ? <> 'paid')")
+      .run(nextStatus, providerPayment.paymentKey || local.payment_key || null, nextStatus, local.id, nextStatus);
+    const becamePaid = nextStatus === 'paid' && info.changes === 1;
+    if (becamePaid) {
       db.prepare('UPDATE partners SET credit_balance = credit_balance + ? WHERE id=?').run(local.amount, local.partner_id);
       db.prepare('INSERT INTO credit_ledger (id, partner_id, type, amount, payment_method, order_id) VALUES (?,?,?,?,?,?)')
         .run(randomUUID(), local.partner_id, 'purchase', local.amount, 'toss', local.order_id);
@@ -3546,11 +3976,18 @@ function syncVerifiedPointTopup(local, providerPayment, rawEventType) {
   if (providerPayment.orderId !== local.order_id) throw Object.assign(new Error('주문번호가 일치하지 않습니다'), { code: 'PAYMENT_ORDER_MISMATCH', status: 409 });
   const statusMap = { DONE: 'paid', CANCELED: 'cancelled', PARTIAL_CANCELED: 'partially_cancelled', WAITING_FOR_DEPOSIT: 'pending', ABORTED: 'failed', EXPIRED: 'failed' };
   const nextStatus = statusMap[providerPayment.status] || 'ready';
-  const wasPaid = local.status === 'paid';
+  // 결함수정(2026-09-18 전수조사 — 치명, 금전): 여기서 쓰는 local은 await(토스 승인 API 왕복,
+  // 보통 0.2~1초) '이전'에 읽어둔 값이라, 그 사이 같은 주문에 대한 두 번째 요청(사용자 더블클릭,
+  // 앱 재시도, 또는 토스가 거의 동시에 보내는 웹훅)이 들어오면 두 요청 모두 '아직 미결제'로
+  // 판단해 잔액을 두 번 더하게 된다(감리 결제는 반대로 두 번 차감). db.transaction()은 블록
+  // 내부만 원자적으로 만들 뿐 await를 가로지르는 이 경쟁은 막지 못한다.
+  // → 상태 전이를 '조건부 UPDATE'로 바꿔서, 실제로 미결제→결제 전환에 성공한 요청(changes===1)
+  //   에서만 잔액을 건드리도록 한다. SQLite의 UPDATE는 원자적이라 두 요청 중 하나만 성공한다.
   db.transaction(() => {
-    db.prepare("UPDATE point_topups SET status=?, payment_key=?, paid_at=CASE WHEN ?='paid' THEN COALESCE(paid_at,datetime('now')) ELSE paid_at END WHERE id=?")
-      .run(nextStatus, providerPayment.paymentKey || local.payment_key || null, nextStatus, local.id);
-    if (nextStatus === 'paid' && !wasPaid) {
+    const info = db.prepare("UPDATE point_topups SET status=?, payment_key=?, paid_at=CASE WHEN ?='paid' THEN COALESCE(paid_at,datetime('now')) ELSE paid_at END WHERE id=? AND (status <> 'paid' OR ? <> 'paid')")
+      .run(nextStatus, providerPayment.paymentKey || local.payment_key || null, nextStatus, local.id, nextStatus);
+    const becamePaid = nextStatus === 'paid' && info.changes === 1;
+    if (becamePaid) {
       db.prepare('UPDATE users SET cash_balance = cash_balance + ? WHERE id=?').run(local.amount, local.user_id);
       createNotification('consumer', local.user_id, 'point_topup_paid', '포인트가 충전되었습니다', local.amount.toLocaleString() + 'P가 충전되었습니다.', 'point_topup', local.id);
     }
@@ -3664,12 +4101,12 @@ app.get('/api/admin/tier-upgrades', adminAuthRequired(), (req, res) => {
     WHERE t.status='admin_review' ORDER BY t.created_at ASC`).all();
   res.json({ success: true, data: rows.map(r => ({ id: r.id, partnerId: r.partner_id, partnerName: r.partner_name, fromTier: r.from_tier, toTier: r.to_tier, licenseNumber: r.license_number, issuer: r.issuer, docName: r.doc_name, createdAt: r.created_at })) });
 });
-app.get('/api/admin/tier-upgrades/:id', adminAuthRequired(), (req, res) => {
+app.get('/api/admin/tier-upgrades/:id', adminAuthRequired('admin_operator'), (req, res) => {
   const r = db.prepare('SELECT t.*, p.business_name AS partner_name FROM tier_upgrades t JOIN partners p ON p.id=t.partner_id WHERE t.id=?').get(req.params.id);
   if (!r) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 건을 찾을 수 없습니다' } });
   res.json({ success: true, data: { id: r.id, partnerId: r.partner_id, partnerName: r.partner_name, fromTier: r.from_tier, toTier: r.to_tier, licenseNumber: r.license_number, issuer: r.issuer, docName: r.doc_name, status: r.status, createdAt: r.created_at, decidedAt: r.decided_at, adminNote: r.admin_note } });
 });
-app.patch('/api/admin/tier-upgrades/:id/approve', adminAuthRequired(), (req, res) => {
+app.patch('/api/admin/tier-upgrades/:id/approve', adminAuthRequired('admin_operator'), (req, res) => {
   const row = db.prepare('SELECT * FROM tier_upgrades WHERE id=?').get(req.params.id);
   if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 건을 찾을 수 없습니다' } });
   if (row.status !== 'admin_review') return res.status(409).json({ success: false, error: { code: 'ALREADY_DECIDED', message: '이미 심사가 완료된 건입니다' } });
@@ -3680,7 +4117,7 @@ app.patch('/api/admin/tier-upgrades/:id/approve', adminAuthRequired(), (req, res
   createNotification('partner', row.partner_id, 'tier_upgrade_approved', row.to_tier + ' 승급이 승인되었습니다', '수수료율이 자동으로 반영됩니다', 'tier_upgrade', row.id);
   res.json({ success: true, data: { id: row.id, status: 'approved', toTier: row.to_tier } });
 });
-app.patch('/api/admin/tier-upgrades/:id/reject', adminAuthRequired(), (req, res) => {
+app.patch('/api/admin/tier-upgrades/:id/reject', adminAuthRequired('admin_operator'), (req, res) => {
   const row = db.prepare('SELECT * FROM tier_upgrades WHERE id=?').get(req.params.id);
   if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: '신청 건을 찾을 수 없습니다' } });
   if (row.status !== 'admin_review') return res.status(409).json({ success: false, error: { code: 'ALREADY_DECIDED', message: '이미 심사가 완료된 건입니다' } });
@@ -3722,7 +4159,7 @@ function buildAbuseQueue() {
 app.get('/api/admin/abuse/queue', adminAuthRequired(), (req, res) => {
   res.json({ success: true, data: buildAbuseQueue() });
 });
-app.post('/api/admin/abuse/:roomId/action', adminAuthRequired(), (req, res) => {
+app.post('/api/admin/abuse/:roomId/action', adminAuthRequired('admin_operator'), (req, res) => {
   const { action, note } = req.body;
   if (!['warn', 'suspend'].includes(action)) return validationError(res, '올바른 조치가 아닙니다(warn/suspend)');
   const room = db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
@@ -3923,7 +4360,7 @@ app.get('/api/columns/:id', (req, res) => {
 });
 
 // 관리자 수동 동기화 트리거(Notion에 새 글 쓴 뒤 즉시 반영하고 싶을 때 호출)
-app.post('/api/admin/columns/sync-notion', adminAuthRequired(), async (req, res) => {
+app.post('/api/admin/columns/sync-notion', adminAuthRequired('admin_operator'), async (req, res) => {
   try {
     const result = await syncColumnsFromNotion();
     res.json({ success: true, data: result });
@@ -4179,32 +4616,30 @@ app.get('/api/settlements/export', authRequired, (req, res) => {
 // 이 라우트도 함께 제거한다. 소비자 포인트 충전은 위 5-1b(POST /api/points/topup)의 실제 토스페이먼츠
 // 결제로만 이루어진다.
 
-// ===== 12. 업체 출금 =====
-app.post('/api/withdrawals', authRequired, (req, res) => {
-  if(req.user.role !== 'partner') return res.status(403).json({ success:false, error:{code:'FORBIDDEN', message:'업체 계정만 출금할 수 있습니다'} });
-  const { amount, bankAccount } = req.body;
-  if(!isPositiveAmount(amount) || amount<=0) return validationError(res, '출금액은 0보다 커야 합니다');
-  if(!isNonEmptyString(bankAccount, 50)) return validationError(res, '계좌정보를 입력해주세요');
-  // 결함수정(4단계 부하테스트 중 발견 — 중대): 잔액 검증이 전혀 없어 보유 캐시 초과 출금이나
-  // 동시 다발 요청으로 인한 이중출금이 가능했음 → 트랜잭션으로 잔액 확인+즉시차감을 원자적으로 처리
-  const id = randomUUID();
-  try {
-    const tx = db.transaction(() => {
-      const partner = db.prepare('SELECT credit_balance FROM partners WHERE id=?').get(req.user.sub);
-      if(!partner) throw Object.assign(new Error('업체를 찾을 수 없습니다'), { code:'NOT_FOUND' });
-      if(partner.credit_balance < amount) throw Object.assign(new Error('보유 잔액이 부족합니다'), { code:'INSUFFICIENT_BALANCE' });
-      db.prepare('UPDATE partners SET credit_balance = credit_balance - ? WHERE id=?').run(amount, req.user.sub);
-      db.prepare('INSERT INTO credit_ledger (id, partner_id, type, amount, payment_method) VALUES (?,?,?,?,?)')
-        .run(id, req.user.sub, 'withdrawal', -Math.abs(amount), bankAccount);
-    });
-    tx();
-  } catch(e) {
-    const code = e.code || 'WITHDRAWAL_FAILED';
-    const status = code === 'NOT_FOUND' ? 404 : code === 'INSUFFICIENT_BALANCE' ? 400 : 500;
-    return res.status(status).json({ success:false, error:{ code, message: e.message } });
-  }
-  res.json({ success:true, data:{ id, status:'requested', message:'출금 신청이 접수됐어요' } });
-});
+// ===== 12. (삭제됨) 업체 출금 =====
+// 삭제(2026-09-18, 대표님 결정): POST /api/withdrawals 라우트를 완전히 제거했다.
+//
+// [삭제 이유]
+// credit_balance(광고 크레딧)를 늘리는 코드는 전 파일에서 단 하나 — 토스 카드결제로 충전한
+// 금액뿐이다(업체 정산금은 settlements 테이블이라 여기 들어오지 않는다). 그런데 이 라우트는
+// 그 카드 충전분을 클라이언트가 보낸 임의 문자열 계좌번호로, 관리자 승인도 계좌 실명확인도
+// 1일 한도도 없이 즉시 출금 처리했다. 도난 카드로 충전 후 곧바로 대포통장에 출금하면 카드
+// 차지백이 들어와도 이미 현금화된 뒤라, 광고 상품이 그대로 환금 창구가 되는 구조였다.
+// 또한 받은 계좌번호를 credit_ledger.payment_method 컬럼에 평문으로 저장하고 있었다
+// (전화번호·사업자번호는 암호화하면서 계좌번호만 암호화 대상에서 빠져 있었음).
+//
+// [영향 없음을 확인한 근거]
+// · 루머03.html 전체에서 '/api/withdrawals' 호출 0건 — 프론트에 이 API를 부르는 코드가 없다.
+// · 캐시출금 화면(s-cash-withdraw)은 이전 세션에서 이미 삭제된 상태였다.
+// · credit_ledger에 type='withdrawal'을 기록하는 코드도 이 라우트가 유일했다.
+// 즉 서버에만 남아 있던 미사용 라우트이며, 삭제로 끊기는 화면·기능이 없다.
+//
+// [계좌번호를 다시 받지 않는다]
+// 이 삭제로 서비스 전체에서 은행 계좌번호를 입력받는 경로가 사라졌다. 앞으로 정산 지급이
+// 필요해지면 계좌번호를 이 서버 DB에 직접 저장하지 말고, PG사(토스페이먼츠 등)의 지급대행
+// API에 위탁하거나 전용 암호화 컬럼(PII_FIELDS 등록 + 블라인드 인덱스)을 설계한 뒤 관리자
+// 승인 2단계를 거치는 구조로 새로 만들 것.
+// 기존에 저장돼 있던 계좌정보 세척은 migrations/20260918_purge_bank_accounts.sql 참고.
 
 // ===== 13. SNS 공유 + 초대 =====
 app.post('/api/share/sns', blockInProduction, authRequired, (req, res) => {
@@ -4299,7 +4734,7 @@ app.get('/api/admin/faqs', adminAuthRequired(), (req, res) => {
   const rows = db.prepare('SELECT * FROM faqs ORDER BY audience ASC, category ASC, sort_order ASC').all();
   res.json({ success: true, data: rows.map(mapFaq) });
 });
-app.post('/api/admin/faqs', adminAuthRequired(), (req, res) => {
+app.post('/api/admin/faqs', adminAuthRequired('admin_operator'), (req, res) => {
   const { audience, category, question, answer, keywords } = req.body;
   if (!['consumer', 'partner', 'common'].includes(audience)) return validationError(res, 'audience가 올바르지 않습니다(consumer/partner/common)');
   if (!isNonEmptyString(category, 50)) return validationError(res, 'category를 입력해주세요');
@@ -4311,7 +4746,7 @@ app.post('/api/admin/faqs', adminAuthRequired(), (req, res) => {
     .run(id, audience, category, question.trim(), answer.trim(), (keywords || '').trim(), maxOrder + 1);
   res.json({ success: true, data: mapFaq(db.prepare('SELECT * FROM faqs WHERE id=?').get(id)) });
 });
-app.put('/api/admin/faqs/:id', adminAuthRequired(), (req, res) => {
+app.put('/api/admin/faqs/:id', adminAuthRequired('admin_operator'), (req, res) => {
   const row = db.prepare('SELECT * FROM faqs WHERE id=?').get(req.params.id);
   if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'FAQ를 찾을 수 없습니다' } });
   const { question, answer, keywords, category, status } = req.body;
@@ -4325,7 +4760,7 @@ app.put('/api/admin/faqs/:id', adminAuthRequired(), (req, res) => {
     .run(question ? question.trim() : null, answer ? answer.trim() : null, keywords != null ? keywords.trim() : null, category || null, status || null, req.params.id);
   res.json({ success: true, data: mapFaq(db.prepare('SELECT * FROM faqs WHERE id=?').get(req.params.id)) });
 });
-app.delete('/api/admin/faqs/:id', adminAuthRequired(), (req, res) => {
+app.delete('/api/admin/faqs/:id', adminAuthRequired('admin_operator'), (req, res) => {
   const row = db.prepare('SELECT id FROM faqs WHERE id=?').get(req.params.id);
   if (!row) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'FAQ를 찾을 수 없습니다' } });
   db.prepare('DELETE FROM faqs WHERE id=?').run(req.params.id);
@@ -4333,7 +4768,7 @@ app.delete('/api/admin/faqs/:id', adminAuthRequired(), (req, res) => {
 });
 
 // ===== 14. 관리자 알림·정책 =====
-app.post('/api/admin/alert', adminAuthRequired(), (req, res) => {
+app.post('/api/admin/alert', adminAuthRequired('admin_operator'), (req, res) => {
   const { channel, message } = req.body;
   if(!['sms','email'].includes(channel)) return validationError(res, '올바른 발송채널이 아닙니다(sms/email)');
   // ⚡MVP-SWITCH: 실서버 → SMS/이메일 게이트웨이(알리고·SendGrid 등) API 호출
@@ -4367,7 +4802,7 @@ app.get('/api/admin/events', adminAuthRequired(), (req, res) => {
   const rows = db.prepare('SELECT * FROM admin_events ORDER BY created_at DESC').all();
   res.json({ success:true, data: rows.map(e => ({ id:e.id, name:e.name, start:e.start_date, end:e.end_date, target:e.target, benefit:e.benefit, copy:e.copy, status:e.status, participants:e.participants, conversions:e.conversions, createdAt:e.created_at })) });
 });
-app.post('/api/admin/events', adminAuthRequired(), (req, res) => {
+app.post('/api/admin/events', adminAuthRequired('admin_operator'), (req, res) => {
   const { name, start, end, target, benefit, copy } = req.body;
   if (!isNonEmptyString(name, 100)) return validationError(res, '이벤트 이름을 입력해주세요');
   if (!['consumer','partner','all'].includes(target)) return validationError(res, '대상을 선택해주세요');
@@ -4376,7 +4811,7 @@ app.post('/api/admin/events', adminAuthRequired(), (req, res) => {
     .run(id, name, start || null, end || null, target, benefit || null, copy || null, 'active');
   res.json({ success:true, data: { id, status:'active' } });
 });
-app.patch('/api/admin/events/:id/status', adminAuthRequired(), (req, res) => {
+app.patch('/api/admin/events/:id/status', adminAuthRequired('admin_operator'), (req, res) => {
   const { status } = req.body;
   if (!['draft','active','paused','ended'].includes(status)) return validationError(res, '올바른 상태가 아닙니다');
   const row = db.prepare('SELECT id FROM admin_events WHERE id=?').get(req.params.id);
@@ -4444,20 +4879,45 @@ app.get('/api/qrcode', async (req, res) => {
 // 코드에 적힌 '루머03.html'(결합형/NFC)과 실제 디스크의 파일명(분해형/NFD)이 바이트 단위로
 // 달라서 express.static이 파일을 못 찾고 계속 404를 반환했음(Mac에서만 재현되던 문제).
 // → 폴더를 실제로 스캔해서, 정규화(NFC) 기준으로 이름이 같은 파일을 찾아 그 "실제 파일명"으로 서빙
+// 결함수정(2026-09-18 전수조사 — 치명, 성능): 이 함수와 sendRoomerApp이 "파일 앞 4096자"만 보려고
+// fs.readFileSync로 3.5MB 파일 전체를 읽고 UTF-8 디코딩한 뒤 버리고 있었다. 게다가 sendRoomerApp이
+// 이 함수를 또 호출해서 화면 진입 1회당 같은 파일을 두 번, 총 7MB를 동기로 읽었다.
+// 실측 결과 요청당 25ms 동안 서버 전체가 정지(Node는 단일 스레드라 이 시간에 다른 요청을 한 건도
+// 처리하지 못함)했고, 0.5 CPU인 Render에서는 50~75ms로 추정된다. 초당 20명만 앱을 열어도 서버가
+// 포화된다. 재방문자(304 응답)에게도 이 읽기가 그대로 발생해 캐시 효과까지 무의미했다.
+// → (1) 앞 4096바이트만 읽도록 변경(전체 읽기 금지), (2) 찾은 경로를 캐시해 매 요청 재탐색 제거.
+//   파일이 교체되면 재배포로 프로세스가 새로 뜨므로 캐시는 자동 무효화된다. 개발 중 파일을
+//   바꿔가며 확인할 때는 ENABLE_DEV_TEST_ROUTES=true면 캐시를 쓰지 않는다.
+function readFilePrefix(filePath, bytes) {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(bytes);
+    const read = fs.readSync(fd, buf, 0, bytes, 0);
+    return buf.slice(0, read).toString('utf8');
+  } finally { fs.closeSync(fd); }
+}
+function looksLikeHtmlFile(filePath) {
+  const prefix = readFilePrefix(filePath, 4096).replace(/^\uFEFF/, '').trimStart().toLowerCase();
+  return prefix.includes('<!doctype html') || prefix.includes('<html');
+}
+let cachedIndexFile; // undefined=아직 안 찾음, null=없음, 문자열=찾은 경로
 function findIndexFileNormalized() {
+  const useCache = process.env.ENABLE_DEV_TEST_ROUTES !== 'true';
+  if (useCache && cachedIndexFile !== undefined) return cachedIndexFile;
   const files = fs.readdirSync(__dirname);
-  const acceptedNames = new Set(['루머03.html', 'roomer03.html'].map(name => name.normalize('NFC')));
+  const acceptedNames = new Set(['루먼03.html', 'roomer03.html'].map(name => name.normalize('NFC')));
   const candidates = files.filter(file => acceptedNames.has(file.normalize('NFC')));
   // 한글/NFD 파일명과 영문 다운로드 파일명을 모두 지원하되,
   // ZIP·오류문·TXT가 잘못 이름바꾸기된 파일은 선택하지 않는다.
+  let found = null;
   for (const file of candidates) {
     const candidatePath = path.join(__dirname, file);
-    try {
-      const prefix = fs.readFileSync(candidatePath, { encoding:'utf8' }).slice(0, 4096).replace(/^\uFEFF/, '').trimStart().toLowerCase();
-      if (prefix.includes('<!doctype html') || prefix.includes('<html')) return candidatePath;
-    } catch (error) { /* 다음 후보를 확인한다. */ }
+    try { if (looksLikeHtmlFile(candidatePath)) { found = candidatePath; break; } }
+    catch (error) { /* 다음 후보를 확인한다. */ }
   }
-  return candidates.length ? path.join(__dirname, candidates[0]) : null;
+  if (!found && candidates.length) found = path.join(__dirname, candidates[0]);
+  if (useCache) cachedIndexFile = found;
+  return found;
 }
 
 // 보안수정(루머28): __dirname 전체를 정적 공개하면 /app/server.js, /app/db.js 및 DB 파일까지
@@ -4468,8 +4928,8 @@ function sendRoomerApp(req, res) {
     return res.status(503).json({ success:false, error:{ code:'FRONTEND_NOT_FOUND', message:'루머03.html 파일이 배포되지 않았습니다' } });
   }
   try {
-    const prefix = fs.readFileSync(appFile, { encoding:'utf8' }).slice(0, 4096).replace(/^\uFEFF/, '').trimStart().toLowerCase();
-    if (!prefix.includes('<!doctype html') && !prefix.includes('<html')) {
+    // (2026-09-18) 여기서도 3.5MB 전체를 읽던 것을 앞 4096바이트만 읽도록 교체.
+    if (!looksLikeHtmlFile(appFile)) {
       return res.status(503).json({ success:false, error:{ code:'FRONTEND_INVALID', message:'배포된 루머03.html 파일의 내용이 올바르지 않습니다' } });
     }
   } catch (e) {
@@ -4731,7 +5191,12 @@ app.get(['/oauth/kakao/callback', '/oauth/naver/callback', '/oauth/apple/callbac
 // ===== 18. 라이브 리로드(파일만 교체하면 PC·모바일 자동 새로고침) =====
 // 신규(사용자요청): 수정한 루머03.html로 교체만 하면, 서버 재시작·수동 새로고침 없이
 // 열려있는 모든 브라우저(PC+모바일)가 3초 안에 저절로 새로고침되도록
-app.get('/api/dev-file-version', (req, res) => {
+// 결함정리(2026-09-18, 보안·비용 점검): 이 두 개(dev-file-version, dev-local-url)는 이름 그대로
+// 개발용인데 아래 test 라우트들과 달리 blockInProduction이 빠져 있어서 운영 서버에 그대로 열려
+// 있었다(Render 로그에서 익명 호출이 1~2초마다 찍히는 것으로 확인). 특히 dev-local-url은 서버의
+// 내부 IP 주소를 아무에게나 알려준다. 나머지 개발용 라우트와 동일하게 fail-safe로 차단한다.
+// (로컬 개발에서 자동새로고침을 쓰려면 ENABLE_DEV_TEST_ROUTES=true 로 실행하면 된다)
+app.get('/api/dev-file-version', blockInProduction, (req, res) => {
   try {
     const appFile = findIndexFileNormalized();
     if (!appFile) throw new Error('루머03.html not found');
@@ -4742,7 +5207,7 @@ app.get('/api/dev-file-version', (req, res) => {
   }
 });
 // 모바일 접속 URL을 프론트엔드가 QR코드로 바로 보여줄 수 있도록 로컬IP 제공
-app.get('/api/dev-local-url', (req, res) => {
+app.get('/api/dev-local-url', blockInProduction, (req, res) => {
   const os = require('os');
   const nets = os.networkInterfaces();
   let ip = null;
@@ -4993,8 +5458,25 @@ const storedFileCleanupInterval = setInterval(() => { purgeExpiredStoredFiles().
 storedFileCleanupInterval.unref();
 wss.on('close', () => clearInterval(storedFileCleanupInterval));
 
+// 신규(2026-09-18 — 디스크 고갈 방지): 요청로그 보관기간 정리. 기존 파일파기 작업과 같은 방식(주기 실행 + unref).
+const requestLogCleanupInterval = setInterval(purgeOldRequestLogs, 6 * 60 * 60 * 1000);
+requestLogCleanupInterval.unref();
+wss.on('close', () => clearInterval(requestLogCleanupInterval));
+
+// 신규(2026-09-18 — DB 유실 방지): SQLite 자동 백업. 기존 파일파기 작업과 동일한 패턴.
+const dbBackupInterval = setInterval(runDbBackup, DB_BACKUP_INTERVAL_HOURS * 60 * 60 * 1000);
+dbBackupInterval.unref();
+wss.on('close', () => clearInterval(dbBackupInterval));
+
 httpServer.listen(PORT, () => {
   purgeExpiredStoredFiles().catch(error => console.error('초기 파일 파기 작업 실패:', error.message));
+  purgeOldRequestLogs();
+  db.backfillPiiIndexes(); // 기존 데이터의 검색용 해시 채우기(이미 채워진 행은 건너뜀)
+  // 신규(2026-09-18): 부팅 직후 DB 저장 위치를 로그에 남긴다. DB_PATH 환경변수가 없으면 서버의 임시
+  // 폴더에 DB가 만들어져 재배포 때마다 데이터가 전부 사라지는데, 지금까지는 그 사실을 알 방법이
+  // 전혀 없었다(로그에도 안 찍힘). 이제 Render 로그 첫 줄에서 바로 확인할 수 있다.
+  console.log(describeDbLocation());
+  runDbBackup();
   console.log(`루머 ROOMER 백엔드 실행중: http://localhost:${PORT}`);
   // 신규(PC+모바일 동시테스트 지원): 같은 와이파이의 다른 기기(모바일)에서 접속할 정확한 주소를 자동으로 찾아서 안내
   const os = require('os');
