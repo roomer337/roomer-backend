@@ -59,6 +59,13 @@
      범용 강조색처럼 쓰이고 있어서, 그 값을 실제 금색으로 바꾸면 화면 전체가 의도치 않게
      금색으로 바뀐다 — 그래서 손대지 않고 완전히 새 변수로 분리함. */
   --gold-accent:#B08D57; --gold-accent-tint:#F4ECDD;
+  /* 신규(2026-09-18 색상 토큰화): 기존에 화면 곳곳에 하드코딩돼 있던 값들을 토큰으로 승격.
+     어느 토큰에도 없어서 리터럴로 쓸 수밖에 없던 색들이라, 여기에 정의해야 규칙 3번을 지킬 수 있다. */
+  --star-gold:#D9A441;        /* 별점 아이콘 */
+  --highlight:#F4D9A0;        /* 검색어 하이라이트 배경 */
+  --ad-navy:#1F3A52;          /* 광고 배너 그라데이션 시작 */
+  --ad-navy-light:#2D5A7A;    /* 광고 배너 그라데이션 끝 */
+  --steelblue-light:#3D6A8A;  /* 강조 버튼 그라데이션 끝 */
   --radius-input:10px; --radius-button:14px; --radius-card:18px; --radius-pill:24px;
 }
 .serif-editorial{font-family:'Noto Serif KR',serif}
@@ -1551,7 +1558,7 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:var(--ivory);c
 <div class="scr" id="s-app-download">
   <header class="header" style="justify-content:center"><div class="logo" onclick="confirmGoHome()" style="cursor:pointer"><span style="display:inline-flex;align-items:baseline;gap:6px"><img class="logo-img" alt="루머 ROOMER" style="height:65px;display:block"></span></div></header>
   <div class="content-narrow" style="margin-top:24px;text-align:center">
-    <div style="width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,var(--charcoal),#446079);display:flex;align-items:center;justify-content:center;margin:0 auto 18px" id="ic-appdl"></div>
+    <div style="width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,var(--charcoal),var(--terracotta));display:flex;align-items:center;justify-content:center;margin:0 auto 18px" id="ic-appdl"></div>
     <div class="h1" style="margin-bottom:8px">앱으로 더 편하게 만나보세요</div>
     <div class="caption" style="margin-bottom:28px;line-height:1.6">QR코드를 스캔하거나 스토어에서<br>"루머(ROOMER)"를 검색해주세요</div>
     <div style="width:150px;height:150px;background:var(--ivory);border:1px solid var(--stone);border-radius:var(--radius-card);margin:0 auto 24px;display:flex;align-items:center;justify-content:center" id="appdl-qr"></div>
@@ -3815,11 +3822,30 @@ window.nativeHaptic = function(style){
 window.ROOMER_APP_DOWNLOAD_URL = 'https://roomer-backend.onrender.com/app/';
 // 신규(사용자요청 — 단순화): 서버로 접속한 경우(file:// 아님), 파일이 교체되면 3초 안에 자동으로 새로고침
 // → 수정한 루머03.html로 교체만 하면 PC/모바일 양쪽 다 저절로 반영됨(수동 새로고침 불필요)
+// 결함수정(2026-09-18, Render 실서버 로그 조회 중 발견 — 서비스 중단으로 이어질 수 있던 문제):
+// 위 자동새로고침은 개발 편의 기능인데 조건이 "file: 프로토콜만 제외"라서, 실제 운영 웹과 설치형
+// 앱에서도 전부 동작하고 있었다. 그 결과
+//   ① 화면을 켜둔 사용자 1명당 하루 28,800건(3초마다)의 요청이 실서버로 들어오고,
+//   ② server.js가 모든 요청을 request_logs 테이블에 1건씩 영구 저장하는데 그 테이블을 비우는
+//      코드가 없어서, 사용자가 늘면 Render 영구 디스크 1GB가 가득 차 서비스 전체가 멈추고,
+//   ③ 배포로 파일 시각이 바뀌는 순간 앱을 켜둔 모든 사용자의 화면이 예고 없이 새로고침되어
+//      입력 중이던 견적·계약 내용이 날아갈 수 있었다.
+// → 진짜 로컬 개발환경(페이지 주소와 API 주소가 둘 다 내 PC)일 때만 동작하도록 제한한다.
+//   설치형 앱은 화면이 https://localhost, API는 실서버라 두 주소가 달라 자동으로 제외된다.
+//   서버쪽에서도 /api/dev-file-version을 운영에서 차단해 이중으로 막았다(server.js).
 (function(){
   if (location.protocol === 'file:') return;
+  var LOCAL_HOST_RE = /^(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)$/;
+  // 앱은 화면(https://localhost)과 API(실서버)의 주소가 다르다 — 이걸로 앱/원격서버를 걸러낸다.
+  var apiOrigin;
+  try { apiOrigin = new URL(window.MVP.apiBase || location.href, location.href).origin; } catch(e){ return; }
+  if (apiOrigin !== location.origin) return;            // 설치형 앱 또는 API가 다른 서버인 경우
+  if (!LOCAL_HOST_RE.test(location.hostname)) return;   // 운영 도메인(onrender.com 등)
   var initialMtime = null;
   setInterval(function(){
+    if (document.hidden) return; // 화면을 안 보고 있으면 굳이 물어보지 않는다
     fetch(window.MVP.apiBase + '/api/dev-file-version').then(function(r){ return r.json(); }).then(function(body){
+      if (!body || !body.success || !body.data) return;  // 운영에서 차단(404)되면 조용히 무시
       var mtime = body.data.mtime;
       if (initialMtime === null) { initialMtime = mtime; return; }
       if (mtime !== initialMtime) { location.reload(); }
@@ -3841,12 +3867,30 @@ window._onApiRetry = function(attempt){
 };
 // apiFetch 성공 시 배너 자동 제거를 위해, 재시도 후 응답이 오면 배너를 지우는 헬퍼
 function clearWakeBanner(){ var b=document.getElementById('wake-server-banner'); if(b && b.parentNode) b.parentNode.removeChild(b); }
-window.addEventListener('error', function(e){
-  const box = document.createElement('div');
-  box.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#AF5C53;color:#fff;padding:16px;font-size:15px;z-index:9999;font-family:monospace;white-space:pre-wrap;max-height:50vh;overflow:auto';
-  box.textContent = '오류 발견: ' + e.message + '\n파일: ' + e.filename + ':' + e.lineno + ':' + e.colno;
-  document.body.insertBefore(box, document.body.firstChild);
-});
+// 결함수정(2026-09-18): 이 전역 오류표시는 개발용 디버그 오버레이인데 조건 없이 항상 켜져 있어서,
+// 일반 이용자에게도 빨간 띠와 함께 내부 파일명·줄번호가 그대로 노출되고 있었다(한 번 뜨면 사라지지도
+// 않고, 오류가 여러 번이면 계속 쌓임). 개발·현장점검 때는 여전히 필요하므로 완전히 없애지 않고
+// "명시적으로 켰을 때만" 보이도록 바꾼다.
+//   · 로컬 개발환경에서는 자동으로 켜짐
+//   · 실기기에서 보고 싶으면 주소창/콘솔에서 localStorage.setItem('roomer_debug','1') 후 새로고침
+//   · 끌 때는 localStorage.removeItem('roomer_debug')
+// 색상은 공통 규칙 3번대로 CSS 변수를 쓰고 하드코딩하지 않는다(기존 #AF5C53 하드코딩 정리).
+(function(){
+  var debugOn = false;
+  try {
+    debugOn = localStorage.getItem('roomer_debug') === '1'
+      || /^(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)$/.test(location.hostname) && location.protocol !== 'https:';
+  } catch(e){ debugOn = false; }
+  if (!debugOn) return;
+  window.addEventListener('error', function(e){
+    var box = document.createElement('div');
+    box.style.cssText = 'position:fixed;top:0;left:0;right:0;background:var(--danger);color:#fff;padding:16px;font-size:15px;z-index:9999;font-family:monospace;white-space:pre-wrap;max-height:50vh;overflow:auto;cursor:pointer';
+    box.title = '눌러서 닫기';
+    box.textContent = '오류 발견: ' + e.message + '\n파일: ' + e.filename + ':' + e.lineno + ':' + e.colno;
+    box.onclick = function(){ if (box.parentNode) box.parentNode.removeChild(box); };
+    document.body.insertBefore(box, document.body.firstChild);
+  });
+})();
 // 결함 보완(사용자 요청: "내정보"에서 확인 가능하도록 저장기능 추가): 가입경로 선택 버튼이
 // 질문5단계 화면보다 먼저 클릭되므로, userProfile 객체를 파일 최상단에서 미리 정의해
 // 어느 시점에 접근해도 안전하도록 보장
@@ -4254,7 +4298,7 @@ function renderSettlement(){
         + '<div style="display:flex;justify-content:space-between;align-items:flex-start"><div><div style="font-size:15px;font-weight:700;color:var(--charcoal)">'+s.client+'</div><div style="font-size:12.5px;color:var(--slate);margin-top:2px">완공 '+s.done+' · '+s.tier+'</div></div>'
         + '<span style="flex-shrink:0;background:'+meta.color+';color:#fff;font-size:11.5px;font-weight:700;padding:3px 8px;border-radius:var(--radius-pill)">'+meta.label+'</span></div>'
         + '<div style="display:flex;justify-content:space-between;margin-top:10px;font-size:13.5px"><span style="color:var(--slate)">계약금액</span><b style="color:var(--charcoal)">'+won(s.amount)+'</b></div>'
-        + '<div style="display:flex;justify-content:space-between;margin-top:4px;font-size:13.5px"><span style="color:var(--slate)">수수료 ('+tierPct+')</span><b style="color:#446079">−'+won(fee)+'</b></div>'
+        + '<div style="display:flex;justify-content:space-between;margin-top:4px;font-size:13.5px"><span style="color:var(--slate)">수수료 ('+tierPct+')</span><b style="color:var(--terracotta)">−'+won(fee)+'</b></div>'
         + '<div style="display:flex;justify-content:space-between;margin-top:6px;padding-top:6px;border-top:1px solid var(--ivory);font-size:14.5px"><span style="font-weight:700">실 수령액</span><b style="color:var(--terracotta);font-size:16.5px">'+won(net)+'</b></div>'
         + progress
         + '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:12.5px;color:var(--slate)">'+payoutLine
@@ -4561,7 +4605,7 @@ function renderAdminPendingPartnersList(){
   el.innerHTML = '<div class="caption" style="margin-bottom:10px">대기중 '+list.length+'곳</div>' + list.map(function(a){
     var v = aiPreVerdict(a);
     return '<button type="button" onclick="renderAdminPendingPartnerDetail(\''+a.id+'\'); go(\'admin-pending-partner-detail\')" style="width:100%;text-align:left;background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:14px 16px;margin-bottom:10px;cursor:pointer;font-family:inherit">'
-      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px"><span style="font-size:15.5px;font-weight:700;color:var(--charcoal)">'+a.name+'</span><span style="font-size:11px;font-weight:700;color:'+v.color+'">● AI 1차판정: '+v.label+'</span></div>'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px"><span style="font-size:15.5px;font-weight:700;color:var(--charcoal)">'+escapeConsumerIdentityHtml(a.name)+'</span><span style="font-size:11px;font-weight:700;color:'+v.color+'">● AI 1차판정: '+v.label+'</span></div>'
       + '<div class="caption">신청 '+(a.appliedAt||'')+' · '+(a.tier||'')+'</div>'
     + '</button>';
   }).join('');
@@ -4599,9 +4643,12 @@ function renderAdminPendingPartnerDetail(id){
     + '<div style="background:'+v.color+'14;border-radius:var(--radius-card);padding:14px 16px;margin-bottom:18px">'
     + '<div style="font-weight:800;color:'+v.color+';margin-bottom:4px">AI 1차판정: '+v.label+'</div><div class="caption" style="line-height:1.6">'+v.note+'</div></div>'
     + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;font-size:13px">'
-    + '<div><div class="caption">대표자명</div><div style="font-weight:700">'+a.ceoName+(a.ceoVerified?' ✓':'')+'</div></div>'
-    + '<div><div class="caption">사업자번호</div><div style="font-weight:700">'+a.bizNo+(a.bizNoVerified?' ✓':'')+'</div></div>'
-    + '<div style="grid-column:1/3"><div class="caption">사업장 주소</div><div style="font-weight:700">'+a.addr+'</div></div>'
+    // 결함수정(2026-09-18 전수조사 — 치명, 관리자 계정 탈취): 아직 승인되지 않은 '아무나'가 가입신청
+    // 폼(상호명·대표자명·사업자번호·주소)에 넣은 값이 이스케이프 없이 관리자 심사화면에 그려지고
+    // 있었다. 관리자가 심사하려고 목록/상세를 여는 순간 관리자 권한으로 코드가 실행된다.
+    + '<div><div class="caption">대표자명</div><div style="font-weight:700">'+escapeConsumerIdentityHtml(a.ceoName)+(a.ceoVerified?' ✓':'')+'</div></div>'
+    + '<div><div class="caption">사업자번호</div><div style="font-weight:700">'+escapeConsumerIdentityHtml(a.bizNo)+(a.bizNoVerified?' ✓':'')+'</div></div>'
+    + '<div style="grid-column:1/3"><div class="caption">사업장 주소</div><div style="font-weight:700">'+escapeConsumerIdentityHtml(a.addr)+'</div></div>'
     + '</div>'
     + photoBox('사업자등록증', a.ocrImg, a.docUploaded)
     + photoBox('사무실 외부', a.extImg, a.extUploaded)
@@ -5645,7 +5692,7 @@ function renderAdminTierDetail(){
   if(!u){ el.innerHTML='<div class="caption" style="color:var(--slate);padding:20px 0">신청 건을 찾을 수 없어요.</div>'; return; }
   var resolved=(u.status==='approved'||u.status==='rejected');
   var block;
-  if(resolved){ var ok=(u.status==='approved'); block='<div style="background:'+(ok?'#3C6F511a':'#44607914')+';border:1px solid '+(ok?'#3C6F5155':'#44607933')+';border-radius:var(--radius-card);padding:14px"><div style="font-size:15px;font-weight:800;color:'+(ok?'var(--success)':'var(--terracotta)')+'">'+icon(ok?'checkCircle':'triangleWarn',ok?T.success:'#446079',14)+' '+(ok?(u.to+' 승급 승인 완료'):'승급 반려')+'</div><div style="font-size:12px;color:var(--slate);margin-top:6px">'+icon('shieldCheck',T.slate,11)+' 심사 완료 후에는 변경할 수 없습니다 (되돌리기 잠금).</div></div>'; }
+  if(resolved){ var ok=(u.status==='approved'); block='<div style="background:'+(ok?'#3C6F511a':'#44607914')+';border:1px solid '+(ok?'#3C6F5155':'#44607933')+';border-radius:var(--radius-card);padding:14px"><div style="font-size:15px;font-weight:800;color:'+(ok?'var(--success)':'var(--terracotta)')+'">'+icon(ok?'checkCircle':'triangleWarn',ok?T.success:T.terracotta,14)+' '+(ok?(u.to+' 승급 승인 완료'):'승급 반려')+'</div><div style="font-size:12px;color:var(--slate);margin-top:6px">'+icon('shieldCheck',T.slate,11)+' 심사 완료 후에는 변경할 수 없습니다 (되돌리기 잠금).</div></div>'; }
   else { block='<div style="display:flex;gap:8px"><button onclick="approveTier()" style="flex:1;background:var(--charcoal);color:#fff;border:none;border-radius:var(--radius-input);padding:11px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">면허 확인 · 승인</button><button onclick="rejectTier()" style="flex:1;background:var(--ivory);color:var(--terracotta);border:1px solid var(--stone);border-radius:var(--radius-input);padding:11px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">반려</button></div>'; }
   el.innerHTML=''
     + '<div style="background:#fff;border:1px solid var(--stone);border-radius:var(--radius-card);padding:16px;margin:8px 0 12px">'
@@ -5784,7 +5831,7 @@ function updateInspExpertPricePreview(){
 // 유료(사진감리/전문가감리)는 반드시 이 동의 절차를 거쳐야 다음 단계로 진행됨
 function confirmInspectionLegalNotice(planKey, extra){
   var noticeHtml = '<div style="font-size:17px;font-weight:800;margin-bottom:12px">구매 전 꼭 확인해주세요</div>'
-    + '<div style="background:#F3F1EE;border:1px solid var(--warning);border-radius:var(--radius-input);padding:14px;margin-bottom:16px;font-size:13.5px;color:var(--charcoal);line-height:1.7">'
+    + '<div style="background:var(--warning-bg);border:1px solid var(--warning);border-radius:var(--radius-input);padding:14px;margin-bottom:16px;font-size:13.5px;color:var(--charcoal);line-height:1.7">'
     + icon('alertTriangle',T.warning,13)+' 본 감리는 <b>참고용 소견</b>이며, 법적 소송에서의 공식 증거자료(법원 감정)와는 다릅니다.<br>'
     + '실제 소송을 준비 중이시라면 법원 감정인 제도 또는 변호사 상담을 권장드립니다.</div>'
     + '<label style="display:flex;align-items:flex-start;gap:8px;font-size:13.5px;color:var(--charcoal);cursor:pointer;margin-bottom:16px"><input type="checkbox" id="inspLegalAgree" onchange="document.getElementById(\'inspLegalConfirmBtn\').disabled=!this.checked;document.getElementById(\'inspLegalConfirmBtn\').style.opacity=this.checked?1:.45"><span>위 내용을 확인했으며 동의합니다</span></label>'
@@ -6422,7 +6469,7 @@ function renderNextAppNotice(){
   var iconWrap = document.getElementById('app-notice-icon-wrap');
   var titleEl = document.getElementById('app-notice-title');
   var descEl = document.getElementById('app-notice-desc');
-  if(iconWrap){ iconWrap.innerHTML = icon(pick.iconName, '#142029', 20); }
+  if(iconWrap){ iconWrap.innerHTML = icon(pick.iconName, 'var(--charcoal)', 20); }
   if(titleEl){
     titleEl.textContent = titleText;
     titleEl.style.fontSize = bodyText ? '17.5px' : '16.5px';
@@ -6831,6 +6878,10 @@ document.getElementById('lb-category').innerHTML =
    · 현재위치: navigator.geolocation로 실제 좌표 획득 → 서버가 카카오/VWorld 역지오코딩(좌표→행정동)
      + 시공사례 좌표에 반경검색(PostGIS ST_DWithin). 아래 approxRegionFromCoords는 프로토타입용 bbox 근사.
    · 지역선택: 프로토타입은 REGION_DATA 내장 2단계 칩. 실서비스 대안 = 카카오(다음) 우편번호/주소검색 임베드. */
+// 주의(2026-09-18 색상 토큰화 작업 시 확인): 아래 팔레트 배열의 값만은 CSS 변수로 바꾸면 안 된다.
+// 이 값들은 카드 렌더링에서 col+'cc'처럼 뒤에 투명도 두 자리를 붙여 8자리 hex로 만들어 쓰기 때문에
+// (renderCard의 linear-gradient(135deg,'+col+','+col+'cc')), var(--x)로 바꾸면 'var(--x)cc'라는
+// 잘못된 CSS가 되어 배경이 통째로 사라진다. 실제 코드로 확인한 사항이다.
 var REGION_PALETTE = ['#142029','#446079','var(--tone-mid)','#7A828A','var(--charcoal-dark)','var(--tone-light)'];
 var REGION_SPACES  = ['거실','주방','욕실','침실','신혼집','발코니'];
 // 재설계(사용자요청 — "전국의 모든 지역이 누락된 곳이 너무 많다"): 기존 REGION_DATA는 사람이
@@ -6989,7 +7040,7 @@ function renderMypageServiceRegions(){
   } else {
     box.innerHTML=regions.map(function(region,index){
       var primary = index===0;
-      return '<div style="display:flex;align-items:center;gap:8px;width:100%;background:'+(primary?'linear-gradient(135deg,var(--steelblue),#3d6a8a)':'#fff')+';border:1px solid '+(primary?'transparent':'var(--stone)')+';border-radius:14px;padding:10px 12px">'
+      return '<div style="display:flex;align-items:center;gap:8px;width:100%;background:'+(primary?'linear-gradient(135deg,var(--steelblue),var(--steelblue-light))':'#fff')+';border:1px solid '+(primary?'transparent':'var(--stone)')+';border-radius:14px;padding:10px 12px">'
         + '<span style="display:flex;flex-shrink:0;width:26px;height:26px;border-radius:50%;align-items:center;justify-content:center;background:'+(primary?'rgba(255,255,255,.22)':'var(--ivory)')+'">'+icon('pin',primary?'#fff':'var(--steelblue)',13)+'</span>'
         + '<div style="flex:1;min-width:0">'
           + (primary?'<span style="display:inline-block;background:rgba(255,255,255,.22);color:#fff;font-size:10px;font-weight:800;padding:2px 7px;border-radius:var(--radius-pill);margin-bottom:2px">대표 활동지역</span><br>':'')
@@ -7117,10 +7168,11 @@ function renderRegionLiveResults(regionCode, regionLabel){
         strengthTags: safeParse(raw.strength_tags), portfolioImages: safeParse(raw.portfolio_images),
         spaceCategories: safeParse(raw.space_categories), address: raw.address||'' };
       var areaTxt = loggedIn ? p.area : (p.area.split(' ')[0]+' ◼◼◼');
-      var nameHtml = loggedIn ? p.name : ('<span style="filter:blur(4px);user-select:none">'+p.name+'</span> <span style="color:var(--slate)">'+lockIcon+'</span>');
+      // 결함수정(2026-09-18 전수조사 — 치명, 저장형 XSS): 위 검색결과와 동일한 업체 상호명 주입 경로.
+      var nameHtml = loggedIn ? escapeConsumerIdentityHtml(p.name) : ('<span style="filter:blur(4px);user-select:none">'+escapeConsumerIdentityHtml(p.name)+'</span> <span style="color:var(--slate)">'+lockIcon+'</span>');
       var row=document.createElement('div');
       row.style.cssText='display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--stone);border-radius:var(--radius-card);margin-bottom:8px;cursor:pointer;background:#fff';
-      row.innerHTML='<div style="width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,var(--charcoal),#446079);display:flex;align-items:center;justify-content:center;flex-shrink:0">'+icon('building','#fff',18)+'</div>'
+      row.innerHTML='<div style="width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,var(--charcoal),var(--terracotta));display:flex;align-items:center;justify-content:center;flex-shrink:0">'+icon('building','#fff',18)+'</div>'
         + '<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;color:var(--charcoal);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+nameHtml+'</div><div style="font-size:12.5px;color:var(--slate);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+p.tier+' · ★ '+p.rating+' ('+p.reviews+') · '+areaTxt+'</div></div>'
         + '<span style="color:var(--slate);display:flex;flex-shrink:0">'+icon('chevronRight',T.slate,16)+'</span>';
       row.onclick=function(){ setReturnTo('local-search'); window.selectedPartnerCard=p; if(typeof renderCprofile==='function') renderCprofile(); go('cprofile'); };
@@ -7459,6 +7511,10 @@ function refreshRegionAdsUI(){
   if(typeof renderRegionAd==='function') renderRegionAd();
 }
 
+// 주의(2026-09-18 색상 토큰화 작업 시 확인): 아래 팔레트 배열의 값만은 CSS 변수로 바꾸면 안 된다.
+// 이 값들은 카드 렌더링에서 col+'cc'처럼 뒤에 투명도 두 자리를 붙여 8자리 hex로 만들어 쓰기 때문에
+// (renderCard의 linear-gradient(135deg,'+col+','+col+'cc')), var(--x)로 바꾸면 'var(--x)cc'라는
+// 잘못된 CSS가 되어 배경이 통째로 사라진다. 실제 코드로 확인한 사항이다.
 const LANDING_SLIDES = ['#142029','#446079','var(--tone-mid)','#7A828A','var(--charcoal-dark)'];
 // 첫화면 히어로: AI 완성 인테리어 영상 자동재생(무음·루프). 색상 슬라이드 → 영상 교체.
 // (LANDING_SLIDES 배열은 아래 피드(#02)·#07 히어로에서 계속 재사용)
@@ -7938,7 +7994,7 @@ function renderRealcases(){
   // 가입 유도 타일 (비회원에게만, 그리드 마지막 칸)
   if(!loggedIn){
     var cta = document.createElement('div');
-    cta.style.cssText = 'cursor:pointer;border-radius:var(--radius-card);overflow:hidden;background:linear-gradient(135deg,var(--charcoal),#446079);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px 12px;min-height:140px';
+    cta.style.cssText = 'cursor:pointer;border-radius:var(--radius-card);overflow:hidden;background:linear-gradient(135deg,var(--charcoal),var(--terracotta));display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px 12px;min-height:140px';
     cta.innerHTML = icon('bookmark','#fff',22)+'<div style="color:#fff;font-weight:700;font-size:13.5px;margin-top:8px;line-height:1.4">가입하고 우리 동네<br>사례 전체 보기 →</div>';
     cta.onclick = function(){ needSignup(); };
     hscrollEl.appendChild(cta);
@@ -8018,6 +8074,10 @@ function safePortfolioImageUrl(value){
 if(window.MVP && window.MVP.live){
   apiFetch('/api/portfolio/feed', {method:'GET', noRetry:true}).then(function(feed){
     if(!feed || !feed.length) return;
+  // 주의(2026-09-18 색상 토큰화 작업 시 확인): 아래 팔레트 배열의 값만은 CSS 변수로 바꾸면 안 된다.
+  // 이 값들은 카드 렌더링에서 col+'cc'처럼 뒤에 투명도 두 자리를 붙여 8자리 hex로 만들어 쓰기 때문에
+  // (renderCard의 linear-gradient(135deg,'+col+','+col+'cc')), var(--x)로 바꾸면 'var(--x)cc'라는
+  // 잘못된 CSS가 되어 배경이 통째로 사라진다. 실제 코드로 확인한 사항이다.
     var palette=['#142029','#446079','var(--tone-mid)','#7A828A','var(--charcoal-dark)','var(--tone-light)'];
     var realCards = feed.filter(function(p){ return p&&Array.isArray(p.photos)&&safePortfolioImageUrl(p.photos[0]); }).map(function(p, i){
       var region=safePortfolioText(p.region||'서울',60), parts=region.split(/\s+/);
@@ -8391,7 +8451,7 @@ function renderRegionAd(){
       return '<div class="region-ad-slide" data-i="'+i+'" onclick="'+escapeConsumerIdentityHtml(action)+'" style="position:absolute;inset:0;'+bgStyle+';opacity:'+(i===0?'1':'0')+';pointer-events:'+(i===0?'auto':'none')+';transition:opacity .4s ease">'
         + '<div style="position:absolute;inset:0;background:linear-gradient(90deg,rgba(20,32,41,.72),rgba(20,32,41,.32))"></div>'
         + '<span style="position:absolute;top:8px;left:12px;background:rgba(255,255,255,.92);color:var(--charcoal);font-size:10px;font-weight:800;padding:2px 7px;border-radius:var(--radius-pill)">AD</span>'
-        + '<div style="position:absolute;top:50%;left:14px;right:14px;transform:translateY(-50%);color:#fff;line-height:1.35"><div style="font-size:14.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(ad.tagline || ad.partnerName)+'</div><div style="font-size:12px;opacity:.88;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(ad.partnerName || ad.region)+'</div></div>'
+        + '<div style="position:absolute;top:50%;left:14px;right:14px;transform:translateY(-50%);color:#fff;line-height:1.35"><div style="font-size:14.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeConsumerIdentityHtml(ad.tagline || ad.partnerName)+'</div><div style="font-size:12px;opacity:.88;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeConsumerIdentityHtml(ad.partnerName || ad.region)+'</div></div>'
       + '</div>';
     }).join('');
     dotsEl.innerHTML = ads.map(function(_,i){ return '<span data-i="'+i+'" onclick="event.stopPropagation(); regionAdGoSlide2('+i+')" style="width:5px;height:5px;border-radius:50%;background:'+(i===0?'#fff':'rgba(255,255,255,.5)')+';cursor:pointer"></span>'; }).join('');
@@ -8523,6 +8583,9 @@ function openAdDetail(adId){
   document.getElementById('ad-detail-eyebrow').textContent = 'SPONSORED';
   document.getElementById('ad-detail-tagline').textContent = ad.tagline || ((ad.partnerName||'')+'의 시공 사례를 만나보세요');
   var loggedIn = window.currentUserLoggedIn;
+  // 변경(2026-09-18): 비회원에게 가리는 일은 이제 '서버'가 한다. 비로그인 요청에는 서버가 애초에
+  // 마스킹된 상호명("루머인테리어" → "루*****")과 시/도까지만 남긴 지역을 내려보내므로, 개발자도구나
+  // 소스 보기로도 원문을 볼 수 없다. 아래 블러는 "가려져 있다"는 것을 알려주는 시각 효과로만 남긴다.
   var lockIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
   document.getElementById('ad-detail-partner').innerHTML = loggedIn ? (ad.partnerName||'') : ('<span style="filter:blur(4px);user-select:none">'+(ad.partnerName||'')+'</span> <span style="color:var(--slate)">'+lockIcon+'</span>');
   document.getElementById('ad-detail-region').innerHTML = loggedIn ? ad.region : ('<span style="filter:blur(4px);user-select:none">'+ad.region+'</span> <span style="color:var(--slate);font-size:12px">(가입 시 공개)</span>');
@@ -8765,7 +8828,15 @@ function consumeNaverOAuthState(returnedState){
   return !!saved && !!returnedState && saved === returnedState;
 }
 function oauthCallbackIsSameOrigin(uri){
-  try{ return new URL(uri,location.href).origin===location.origin; }catch(e){ return false; }
+  // 결함수정(Capacitor 앱 대응): 이 검사는 "콜백 주소가 백엔드(API 서버) 주소와 일치하는가"를
+  // 확인하려는 목적인데, 기존에는 location.origin(현재 화면이 열린 주소)과 비교했다.
+  // 웹 배포본은 화면 주소와 API 서버 주소가 같아서 문제없었지만, 앱은 화면을 내장 파일(localhost)로
+  // 열고 API만 실서버로 호출하는 구조라 location.origin이 항상 달라 로그인이 전부 막혀버렸다.
+  // → 비교 기준을 "실제 API 베이스"(window.MVP.apiBase, 웹/앱 모두에서 백엔드 실주소로 설정됨)로 변경.
+  try{
+    var base = (window.MVP && window.MVP.apiBase) ? window.MVP.apiBase : location.href;
+    return new URL(uri,location.href).origin===new URL(base,location.href).origin;
+  }catch(e){ return false; }
 }
 function savePendingOAuthContext(provider){
   try{ sessionStorage.setItem('roomer_oauth_context_'+provider,JSON.stringify({consent:window.userProfile.consent||{},createdAt:Date.now()})); }catch(e){}
@@ -10875,7 +10946,7 @@ function renderSuggest(v){
     wrap.innerHTML='<div class="caption" style="padding:6px 2px 2px;font-weight:700">'+title+'</div>';
     items.forEach(function(it){
       var label=(type==='업체')?it.name:it;
-      var sub=(type==='업체')?(' · '+it.area+' · <svg width=\"10\" height=\"10\" viewBox=\"0 0 24 24\" fill=\"#446079\" style=\"vertical-align:-1px\"><path d=\"M12 2l2.9 6.3 6.9.6-5.2 4.5 1.6 6.7L12 17l-6.2 3.6 1.6-6.7L2.2 8.9l6.9-.6z\"/></svg>'+it.rating):'';
+      var sub=(type==='업체')?(' · '+it.area+' · <svg width=\"10\" height=\"10\" viewBox=\"0 0 24 24\" fill=\"var(--terracotta)\" style=\"vertical-align:-1px\"><path d=\"M12 2l2.9 6.3 6.9.6-5.2 4.5 1.6 6.7L12 17l-6.2 3.6 1.6-6.7L2.2 8.9l6.9-.6z\"/></svg>'+it.rating):'';
       var ic=type==='지역'?'pin':type==='업체'?'building':type==='스타일'?'sparkle':'search';
       var row=document.createElement('button'); row.type='button';
       row.style.cssText='display:flex;align-items:center;gap:8px;width:100%;border:none;background:none;padding:9px 2px;cursor:pointer;font-family:inherit;text-align:left;border-bottom:1px solid var(--stone)';
@@ -11079,9 +11150,12 @@ function renderPartnerResults(body, partners){
     var row=document.createElement('div'); row.style.cssText='display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--stone);border-radius:var(--radius-card);margin-bottom:8px;cursor:pointer';
     var areaTxt=loggedIn?p.area:(p.area.split(' ')[0]+' ◼◼◼');
     // 재설계(사용자요청): 업체명도 비회원에겐 블러 — 목록 열람·클릭·상세진입은 항상 허용, "확인"만 가입 시로 제한
-    var nameHtml=loggedIn?p.name:('<span style="filter:blur(4px);user-select:none">'+p.name+'</span> <span style="color:var(--slate)">'+lockIcon+'</span>');
-    row.innerHTML='<div style="width:46px;height:46px;border-radius:50%;background:linear-gradient(135deg,var(--charcoal),#446079);display:flex;align-items:center;justify-content:center;flex-shrink:0">'+icon('building','#fff',20)+'</div>'+
-      '<div style="flex:1"><div style="font-size:16px;font-weight:700;color:var(--charcoal)">'+nameHtml+'</div><div style="font-size:13px;color:var(--slate);margin-top:2px">'+p.tier+' · <svg width=\"10\" height=\"10\" viewBox=\"0 0 24 24\" fill=\"#446079\" style=\"vertical-align:-1px\"><path d=\"M12 2l2.9 6.3 6.9.6-5.2 4.5 1.6 6.7L12 17l-6.2 3.6 1.6-6.7L2.2 8.9l6.9-.6z\"/></svg> '+p.rating+' ('+p.reviews+') · '+areaTxt+'</div></div>'+
+    // 결함수정(2026-09-18 전수조사 — 치명, 저장형 XSS): 업체가 가입 때 직접 입력한 상호명(p.name)을
+    // 이스케이프 없이 innerHTML에 넣고 있었다. 상호명에 스크립트를 심어 가입하면, 검색결과를 연
+    // 모든 소비자의 브라우저에서 그 코드가 실행되어 로그인 토큰까지 탈취될 수 있었다.
+    var nameHtml=loggedIn?escapeConsumerIdentityHtml(p.name):('<span style="filter:blur(4px);user-select:none">'+escapeConsumerIdentityHtml(p.name)+'</span> <span style="color:var(--slate)">'+lockIcon+'</span>');
+    row.innerHTML='<div style="width:46px;height:46px;border-radius:50%;background:linear-gradient(135deg,var(--charcoal),var(--terracotta));display:flex;align-items:center;justify-content:center;flex-shrink:0">'+icon('building','#fff',20)+'</div>'+
+      '<div style="flex:1"><div style="font-size:16px;font-weight:700;color:var(--charcoal)">'+nameHtml+'</div><div style="font-size:13px;color:var(--slate);margin-top:2px">'+p.tier+' · <svg width=\"10\" height=\"10\" viewBox=\"0 0 24 24\" fill=\"var(--terracotta)\" style=\"vertical-align:-1px\"><path d=\"M12 2l2.9 6.3 6.9.6-5.2 4.5 1.6 6.7L12 17l-6.2 3.6 1.6-6.7L2.2 8.9l6.9-.6z\"/></svg> '+p.rating+' ('+p.reviews+') · '+areaTxt+'</div></div>'+
       '<span style="color:var(--slate);display:flex">'+icon('chevronRight',T.slate,18)+'</span>';
     row.onclick=function(){ setReturnTo('search'); window.selectedPartnerCard = p; if(typeof renderCprofile==='function') renderCprofile(); go('cprofile'); };
     body.appendChild(row);
@@ -11089,6 +11163,10 @@ function renderPartnerResults(body, partners){
 }
 function renderStyleResults(body, styles){
   var g=document.createElement('div'); g.style.cssText='display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px';
+// 주의(2026-09-18 색상 토큰화 작업 시 확인): 아래 팔레트 배열의 값만은 CSS 변수로 바꾸면 안 된다.
+// 이 값들은 카드 렌더링에서 col+'cc'처럼 뒤에 투명도 두 자리를 붙여 8자리 hex로 만들어 쓰기 때문에
+// (renderCard의 linear-gradient(135deg,'+col+','+col+'cc')), var(--x)로 바꾸면 'var(--x)cc'라는
+// 잘못된 CSS가 되어 배경이 통째로 사라진다. 실제 코드로 확인한 사항이다.
   var pal=['#142029','#446079','var(--tone-mid)','#7A828A','var(--charcoal-dark)','var(--tone-light)'];
   styles.forEach(function(s,i){
     var card=document.createElement('button'); card.type='button'; card.style.cssText='border:none;cursor:pointer;font-family:inherit;padding:0;text-align:left';
@@ -11125,9 +11203,9 @@ function paintRoomerColumnList(cols){
     card.onclick = function(){ setReturnTo('00'); openColumnDetail(col.id); };
     card.style.cssText = 'cursor:pointer;padding:'+(idx===0?'0':'14px')+' 0 14px;'+(idx>0?'border-top:1px solid var(--stone)':'');
     card.innerHTML =
-      '<div style="font-size:12px;color:var(--slate);margin-bottom:5px">'+col.tag+' · '+(col.published_at||'').replace(/-/g,'.')+'</div>'+
-      '<div style="font-size:15px;font-weight:700;color:var(--charcoal);line-height:1.4;margin-bottom:5px">'+col.title+'</div>'+
-      (col.summary ? '<div style="font-size:12.5px;color:var(--slate);line-height:1.5;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical">'+col.summary+'</div>' : '');
+      '<div style="font-size:12px;color:var(--slate);margin-bottom:5px">'+escapeConsumerIdentityHtml(col.tag)+' · '+(col.published_at||'').replace(/-/g,'.')+'</div>'+
+      '<div style="font-size:15px;font-weight:700;color:var(--charcoal);line-height:1.4;margin-bottom:5px">'+escapeConsumerIdentityHtml(col.title)+'</div>'+
+      (col.summary ? '<div style="font-size:12.5px;color:var(--slate);line-height:1.5;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical">'+escapeConsumerIdentityHtml(col.summary)+'</div>' : '');
     list.appendChild(card);
   });
 }
@@ -11227,9 +11305,9 @@ async function renderColumnListScreen(){
     card.onclick = function(){ setReturnTo('column-list'); openColumnDetail(col.id); };
     card.style.cssText = 'cursor:pointer;padding:16px 0;'+(idx>0?'border-top:1px solid var(--stone)':'');
     card.innerHTML =
-      '<div style="font-size:12px;color:var(--slate);margin-bottom:5px">'+col.tag+' · '+(col.published_at||'').replace(/-/g,'.')+'</div>'+
-      '<div style="font-size:15px;font-weight:700;color:var(--charcoal);line-height:1.4;margin-bottom:5px">'+col.title+'</div>'+
-      (col.summary ? '<div style="font-size:12.5px;color:var(--slate);line-height:1.5;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">'+col.summary+'</div>' : '');
+      '<div style="font-size:12px;color:var(--slate);margin-bottom:5px">'+escapeConsumerIdentityHtml(col.tag)+' · '+(col.published_at||'').replace(/-/g,'.')+'</div>'+
+      '<div style="font-size:15px;font-weight:700;color:var(--charcoal);line-height:1.4;margin-bottom:5px">'+escapeConsumerIdentityHtml(col.title)+'</div>'+
+      (col.summary ? '<div style="font-size:12.5px;color:var(--slate);line-height:1.5;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">'+escapeConsumerIdentityHtml(col.summary)+'</div>' : '');
     listEl.appendChild(card);
   });
 }
@@ -13377,6 +13455,25 @@ async function apiFetch(path, opts, _retryCount){
   }
   var body = await res.json().catch(function(){ return {}; });
   if(typeof clearWakeBanner==='function') clearWakeBanner(); // 응답 도착(성공이든 서버측 에러든) → 재시도 중이었다면 배너 제거
+  // 결함수정(2026-09-18 전수조사 — 높음): 응답 상태코드(res.status)를 전혀 보지 않아서 토큰이
+  // 만료되면(401) 화면은 로그인된 상태로 남아 있는데 채팅 전송·견적 저장·프로필 수정이 전부
+  // "요청 처리 중 오류가 발생했어요"만 반복했다. 이용자는 원인을 알 수 없어 앱 고장으로 받아들이고
+  // 이탈했다. → 401이면 토큰을 정리하고 "다시 로그인해주세요"를 명확히 안내한다.
+  // (세션 복원 중 발생한 401은 그 함수들이 이미 catch에서 처리하므로 안내를 중복 표시하지 않는다)
+  if(res.status === 401 && !opts.silentAuthFail){
+    try{ if(typeof clearAuthToken==='function') clearAuthToken(); }catch(e){}
+    window.currentUserLoggedIn = false;
+    try{ sessionStorage.removeItem('roomer_loggedIn'); }catch(e){}
+    if(!window._authExpiredNoticeShown){
+      window._authExpiredNoticeShown = true;
+      setTimeout(function(){ window._authExpiredNoticeShown = false; }, 5000); // 연달아 뜨는 것 방지
+      alert('로그인이 만료되었어요. 다시 로그인해주세요.');
+      try{ if(typeof go==='function') go('00'); }catch(e){}
+    }
+    var authErr = new Error('로그인이 만료되었어요. 다시 로그인해주세요.');
+    authErr.code = (body.error && body.error.code) || 'UNAUTHORIZED';
+    throw authErr;
+  }
   if(!res.ok || body.success === false){
     var err = new Error((body.error && body.error.message) || '요청 처리 중 오류가 발생했어요');
     err.code = body.error && body.error.code;
@@ -13393,7 +13490,7 @@ async function restoreConsumerSessionFromServer(){
   try{ savedMode=sessionStorage.getItem('roomer_accountMode')||''; }catch(e){}
   if(savedMode&&savedMode!=='consumer') return false;
   try{
-    var user=await apiFetch('/api/users/me',{method:'GET'});
+    var user=await apiFetch('/api/users/me',{method:'GET', silentAuthFail:true});
     var providerMap={naver:'네이버',kakao:'카카오',email:'이메일',phone:'휴대폰'};
     applyConsumerAuthResponse({user:user},providerMap[user.social_provider]||'소비자');
     window.currentUserLoggedIn=true;
@@ -13420,7 +13517,7 @@ async function restorePartnerSessionFromServer(){
   try{ savedMode=sessionStorage.getItem('roomer_accountMode')||''; }catch(e){}
   if(savedMode!=='partner') return false;
   try{
-    var partner=await apiFetch('/api/partners/me',{method:'GET'});
+    var partner=await apiFetch('/api/partners/me',{method:'GET', silentAuthFail:true});
     applyPartnerProfile(partner,{source:'server',status:'connected',restoreState:'restored',loginId:partner.login_id,channel:partner.login_provider});
     window.currentUserLoggedIn=true;
     window.currentAccountMode='partner';
@@ -14280,6 +14377,10 @@ function renderMypage(){
   const mypageMenuEl = document.getElementById('mypage-menu');
   mypageMenuEl.innerHTML = '';
   // 신규(사용자요청, 토스방식): 아이콘 삭제, 왼쪽에 작은 색상칩만 남김. 재설계(미니멀 팔레트 전환): 웜톤 대신 차콜/블루/그레이 톤 순환
+// 주의(2026-09-18 색상 토큰화 작업 시 확인): 아래 팔레트 배열의 값만은 CSS 변수로 바꾸면 안 된다.
+// 이 값들은 카드 렌더링에서 col+'cc'처럼 뒤에 투명도 두 자리를 붙여 8자리 hex로 만들어 쓰기 때문에
+// (renderCard의 linear-gradient(135deg,'+col+','+col+'cc')), var(--x)로 바꾸면 'var(--x)cc'라는
+// 잘못된 CSS가 되어 배경이 통째로 사라진다. 실제 코드로 확인한 사항이다.
   var chipColors = ['#446079','var(--tone-mid)','#7A828A','var(--charcoal-dark)','var(--tone-light)','#142029','var(--charcoal-dark)'];
   MYPAGE_MENU.forEach(function(m, idx){
     const row = document.createElement('div');
@@ -15990,7 +16091,7 @@ function renderReviewStars(){
   el.innerHTML = REVIEW_RATING_FIELDS.map(function(f){
     var field = f[0], label = f[1], val = d[field]||0;
     var stars = [1,2,3,4,5].map(function(n){
-      return '<span onclick="setReviewStar(\''+field+'\','+n+')" style="cursor:pointer;font-size:22px;line-height:1;color:'+(n<=val?'#D9A441':'var(--stone)')+'">★</span>';
+      return '<span onclick="setReviewStar(\''+field+'\','+n+')" style="cursor:pointer;font-size:22px;line-height:1;color:'+(n<=val?'var(--star-gold)':'var(--stone)')+'">★</span>';
     }).join('');
     return '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"><span style="font-size:14px;color:var(--charcoal)">'+label+'</span><span>'+stars+'</span></div>';
   }).join('');
@@ -16012,7 +16113,7 @@ async function submitReview(){
 }
 function renderReviewCardHtml(review, forPartner){
   var stars = '★'.repeat(review.ratingOverall) + '☆'.repeat(5-review.ratingOverall);
-  var html = '<div style="border-top:1px solid var(--ivory);padding-top:12px;margin-top:4px"><div style="color:#D9A441;font-size:15px;margin-bottom:4px">'+stars+'</div>';
+  var html = '<div style="border-top:1px solid var(--ivory);padding-top:12px;margin-top:4px"><div style="color:var(--star-gold);font-size:15px;margin-bottom:4px">'+stars+'</div>';
   if(review.comment) html += '<div style="font-size:14px;color:var(--charcoal);line-height:1.6;margin-bottom:6px">'+escapeConsumerIdentityHtml(review.comment)+'</div>';
   if(review.partnerReply){
     html += '<div style="background:var(--ivory);border-radius:8px;padding:8px 10px;font-size:13px;color:var(--charcoal);margin-top:6px"><b>업체 답글</b><br>'+escapeConsumerIdentityHtml(review.partnerReply)+'</div>';
@@ -16064,7 +16165,7 @@ async function loadCprofileReviews(partnerId, loggedIn){
       var stars = '★'.repeat(r.ratingOverall) + '☆'.repeat(5-r.ratingOverall);
       var commentHtml = r.comment ? escapeConsumerIdentityHtml(r.comment) : '(내용 없음)';
       if(!loggedIn) commentHtml = '<span style="filter:blur(4px);user-select:none">'+commentHtml+'</span>';
-      var html = '<div style="border-top:1px solid var(--ivory);padding:12px 0"><div style="color:#D9A441;font-size:14px;margin-bottom:4px">'+stars+'</div><div style="font-size:14px;color:var(--charcoal);line-height:1.6">'+commentHtml+'</div>';
+      var html = '<div style="border-top:1px solid var(--ivory);padding:12px 0"><div style="color:var(--star-gold);font-size:14px;margin-bottom:4px">'+stars+'</div><div style="font-size:14px;color:var(--charcoal);line-height:1.6">'+commentHtml+'</div>';
       if(r.partnerReply) html += '<div style="background:var(--ivory);border-radius:8px;padding:8px 10px;font-size:12.5px;color:var(--charcoal);margin-top:6px"><b>업체 답글</b><br>'+escapeConsumerIdentityHtml(r.partnerReply)+'</div>';
       html += '</div>';
       return html;
@@ -16276,7 +16377,7 @@ function faqHighlight(escapedText, rawQuery){
   var q = (rawQuery||'').trim();
   if(!q) return escapedText;
   var escQ = escapeConsumerIdentityHtml(q).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  try{ return escapedText.replace(new RegExp('('+escQ+')','ig'), '<mark style="background:#F4D9A0;color:inherit;border-radius:2px">$1</mark>'); }
+  try{ return escapedText.replace(new RegExp('('+escQ+')','ig'), '<mark style="background:var(--highlight);color:inherit;border-radius:2px">$1</mark>'); }
   catch(e){ return escapedText; }
 }
 function renderFaqList(role){
@@ -16491,10 +16592,10 @@ function useAsAdImage(url){
 }
 function renderPartnerAdUpsellBanner(){
   var el = document.getElementById('partner-ad-upsell-banner'); if(!el) return;
-  el.innerHTML = '<div style="background:linear-gradient(135deg,#1f3a52,#2d5a7a);border-radius:var(--radius-card);padding:16px 18px;color:#fff">'
+  el.innerHTML = '<div style="background:linear-gradient(135deg,var(--ad-navy),var(--ad-navy-light));border-radius:var(--radius-card);padding:16px 18px;color:#fff">'
     + '<div style="font-size:14.5px;font-weight:800;margin-bottom:4px">📢 이 사진, 광고로도 써보세요</div>'
     + '<div style="font-size:12.5px;line-height:1.6;opacity:.9;margin-bottom:12px">완공사례 사진 아래 "광고 이미지로 쓰기"를 누르면 재업로드 없이 우리동네 추천업체 지면에 바로 노출할 수 있어요.</div>'
-    + '<button type="button" onclick="setReturnTo(\'partner-portfolio\'); openAdApply()" style="background:#fff;color:#1f3a52;border:none;border-radius:var(--radius-pill);padding:8px 16px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit">광고 지면 예약하기 &rsaquo;</button>'
+    + '<button type="button" onclick="setReturnTo(\'partner-portfolio\'); openAdApply()" style="background:#fff;color:var(--ad-navy);border:none;border-radius:var(--radius-pill);padding:8px 16px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit">광고 지면 예약하기 &rsaquo;</button>'
   + '</div>';
 }
 // 결함수정(전수조사 발견): renderPartnerInfo/renderPartnerTierInfo는 s-partner-info/s-partner-tier-info
@@ -16878,8 +16979,8 @@ function renderChatLegalNotice(){
   var el = document.getElementById('chat-legal-notice'); if(!el) return;
   var isP = isPartner();
   var html = isP
-    ? '<div style="padding:12px 16px;background:linear-gradient(135deg,#142029,var(--charcoal-dark));border-bottom:1px solid rgba(68,96,121,.2)"><div style="display:flex;align-items:flex-start;gap:8px"><span style="flex-shrink:0;width:22px;height:22px;border-radius:50%;background:rgba(68,96,121,.18);display:flex;align-items:center;justify-content:center;margin-top:1px">'+icon('shieldCheck',T.brass,12)+'</span><span style="font-size:11.5px;color:var(--ondark-light);line-height:1.6"><b style="color:var(--brass)">안내: 계약은 "루머(ROOMER)"에서 신고해주세요.</b> 루머 밖에서 진행된 거래는 미수금·분쟁 발생 시 법적 대응을 도와드리기 어렵습니다. 메신저로 진행되는 공사 과정은 전부 기록·모니터링됩니다.</span></div></div>'
-    : '<div style="padding:12px 16px;background:linear-gradient(135deg,#142029,var(--charcoal-dark));border-bottom:1px solid rgba(68,96,121,.2)"><div style="display:flex;align-items:flex-start;gap:8px"><span style="flex-shrink:0;width:22px;height:22px;border-radius:50%;background:rgba(68,96,121,.18);display:flex;align-items:center;justify-content:center;margin-top:1px">'+icon('shieldCheck',T.brass,12)+'</span><span style="font-size:11.5px;color:var(--ondark-light);line-height:1.6"><b style="color:var(--brass)">안내: 계약은 "루머(ROOMER)" 안에서 진행해주세요.</b> 상담부터 실측·공사·감리·완료·하자처리·분쟁까지 모든 과정이 메신저로 기록돼서, 하자 발생 시 빠른 처리와 AI감리, 분쟁 시 법적 대응까지 안전하게 지원받으실 수 있어요.</span></div></div>';
+    ? '<div style="padding:12px 16px;background:linear-gradient(135deg,var(--charcoal),var(--charcoal-dark));border-bottom:1px solid rgba(68,96,121,.2)"><div style="display:flex;align-items:flex-start;gap:8px"><span style="flex-shrink:0;width:22px;height:22px;border-radius:50%;background:rgba(68,96,121,.18);display:flex;align-items:center;justify-content:center;margin-top:1px">'+icon('shieldCheck',T.brass,12)+'</span><span style="font-size:11.5px;color:var(--ondark-light);line-height:1.6"><b style="color:var(--brass)">안내: 계약은 "루머(ROOMER)"에서 신고해주세요.</b> 루머 밖에서 진행된 거래는 미수금·분쟁 발생 시 법적 대응을 도와드리기 어렵습니다. 메신저로 진행되는 공사 과정은 전부 기록·모니터링됩니다.</span></div></div>'
+    : '<div style="padding:12px 16px;background:linear-gradient(135deg,var(--charcoal),var(--charcoal-dark));border-bottom:1px solid rgba(68,96,121,.2)"><div style="display:flex;align-items:flex-start;gap:8px"><span style="flex-shrink:0;width:22px;height:22px;border-radius:50%;background:rgba(68,96,121,.18);display:flex;align-items:center;justify-content:center;margin-top:1px">'+icon('shieldCheck',T.brass,12)+'</span><span style="font-size:11.5px;color:var(--ondark-light);line-height:1.6"><b style="color:var(--brass)">안내: 계약은 "루머(ROOMER)" 안에서 진행해주세요.</b> 상담부터 실측·공사·감리·완료·하자처리·분쟁까지 모든 과정이 메신저로 기록돼서, 하자 발생 시 빠른 처리와 AI감리, 분쟁 시 법적 대응까지 안전하게 지원받으실 수 있어요.</span></div></div>';
   el.innerHTML = html;
 }
 function renderDefectLegalNotice(){
@@ -16900,10 +17001,10 @@ function renderDefectForm(){
     '<div class="caption" style="font-weight:700;margin-bottom:8px">하자 사진</div>'+
     (thumbs?'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px">'+thumbs+'</div>':'')+
     '<button class="btn btn-outline" style="margin-bottom:10px;display:flex;align-items:center;justify-content:center;gap:6px" onclick="triggerDefectUpload()">'+icon('camera',T.charcoal,15)+' 하자 사진 선택</button>'+
-    '<div style="background:var(--warning-bg);border-radius:var(--radius-input);padding:10px 12px;margin-bottom:14px;font-size:13px;color:var(--warning);font-weight:600">'+icon('triangleWarn','#A46F47',12)+' 하자 사진 첨부는 필수입니다. 사진 없이는 접수가 불가능해요.</div>'+
+    '<div style="background:var(--warning-bg);border-radius:var(--radius-input);padding:10px 12px;margin-bottom:14px;font-size:13px;color:var(--warning);font-weight:600">'+icon('triangleWarn','var(--warning)',12)+' 하자 사진 첨부는 필수입니다. 사진 없이는 접수가 불가능해요.</div>'+
     '<div class="caption" style="font-weight:700;margin-bottom:6px">하자 내용</div>'+
     '<textarea id="defect-text" oninput="window.defectDraftText=this.value" placeholder="예) 욕실에서 물이 새고 아랫집에 얼룩이 생겼어요 (AI가 긴급도를 자동 분류합니다)" style="width:100%;box-sizing:border-box;border:1px solid var(--stone);border-radius:var(--radius-input);padding:10px 12px;font-size:15px;font-family:inherit;min-height:80px;resize:vertical"></textarea>'+
-    '<div id="defect-block-warning" style="display:none;margin-top:8px;font-size:13px;color:var(--danger);font-weight:600">'+icon('triangleWarn','#AF5C53',12)+' 하자 사진을 먼저 첨부해주세요.</div>'+
+    '<div id="defect-block-warning" style="display:none;margin-top:8px;font-size:13px;color:var(--danger);font-weight:600">'+icon('triangleWarn','var(--danger)',12)+' 하자 사진을 먼저 첨부해주세요.</div>'+
     '<button class="btn" style="margin-top:12px;background:var(--terracotta);color:#fff" onclick="submitDefect()">하자 접수하기</button>'+
   '</div>';
   var ta=document.getElementById('defect-text'); if(ta) ta.value = window.defectDraftText || '';
@@ -16924,8 +17025,8 @@ function renderDefectList(){
         : '<div class="caption" style="margin-top:8px;color:var(--slate)">업체가 처리 완료를 보고했어요. 실제로 해결됐는지 확인해 주세요. (D+3 무응답 시 자동 종료)</div><button class="btn btn-primary" style="margin-top:8px" onclick="confirmDefectResolved('+r.id+')">확인했어요 (해결됨)</button><button class="btn btn-outline" style="margin-top:6px;color:var(--terracotta)" onclick="disputeDefectUnresolved('+r.id+')">아직 해결 안됐어요</button>'; }
     else if(r.status==='unresolved_flagged'){ st='미해결 · 운영자 검토중'; sc='var(--danger)';
       act = isPartner()
-        ? '<div class="caption" style="margin-top:8px;color:var(--terracotta)">'+icon('triangleWarn','#446079',12)+' 소비자가 미해결로 신고해 운영자가 검토 중입니다.</div>'
-        : '<div class="caption" style="margin-top:8px;color:var(--terracotta)">'+icon('triangleWarn','#446079',12)+' 운영자에게 전달됐어요. 더 확실히 하시려면 분쟁 신고로 근거를 남기세요.</div><button class="btn btn-outline" style="margin-top:6px" onclick="openDisputeFile(\'defect\')">분쟁 신고하기 &rsaquo;</button>'; }
+        ? '<div class="caption" style="margin-top:8px;color:var(--terracotta)">'+icon('triangleWarn','var(--terracotta)',12)+' 소비자가 미해결로 신고해 운영자가 검토 중입니다.</div>'
+        : '<div class="caption" style="margin-top:8px;color:var(--terracotta)">'+icon('triangleWarn','var(--terracotta)',12)+' 운영자에게 전달됐어요. 더 확실히 하시려면 분쟁 신고로 근거를 남기세요.</div><button class="btn btn-outline" style="margin-top:6px" onclick="openDisputeFile(\'defect\')">분쟁 신고하기 &rsaquo;</button>'; }
     else if(r.status==='resolved'){ st='처리 완료'; sc='var(--success)'; }
     else { st='대체 업체 배정'; sc='var(--danger)'; }
     var gradeBadge='<span style="font-size:12px;font-weight:700;color:#fff;background:'+g.color+';padding:2px 9px;border-radius:var(--radius-pill)">'+g.label+' · '+g.slaTxt+'</span>';
@@ -17002,7 +17103,8 @@ function renderCprofile(){
   var tier = p.tier || '부분공사가능업체';
   var lockIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
   // 재설계(사용자요청): 업체명·지역은 비회원에게 블러 — 클릭·진입 자체는 항상 허용하고 확인만 가입시로 제한
-  document.getElementById('cprofile-name').innerHTML = loggedIn ? name : ('<span style="filter:blur(4px);user-select:none">'+name+'</span> <span style="color:var(--slate)">'+lockIcon+'</span>');
+  // 결함수정(2026-09-18 전수조사 — 치명, 저장형 XSS): 업체 상호명 주입 경로 3번째.
+  document.getElementById('cprofile-name').innerHTML = loggedIn ? escapeConsumerIdentityHtml(name) : ('<span style="filter:blur(4px);user-select:none">'+escapeConsumerIdentityHtml(name)+'</span> <span style="color:var(--slate)">'+lockIcon+'</span>');
   document.getElementById('tier-pill2').innerHTML = icon('medal','#fff',11)+' '+tier;
   // 신규(사용자요청 — 3단계: 업체상세페이지 재구성): 대표 시공사진 히어로 캐러셀
   var heroEl = document.getElementById('cprofile-hero');
@@ -17023,7 +17125,9 @@ function renderCprofile(){
     introWrap.style.display = 'block';
     document.getElementById('cprofile-intro').textContent = p.intro || '';
     document.getElementById('cprofile-strength-tags').innerHTML = (p.strengthTags||[]).map(function(tag){
-      return '<span style="background:var(--ivory);color:var(--charcoal);font-size:12px;font-weight:600;padding:5px 11px;border-radius:var(--radius-pill)">'+tag+'</span>';
+      // 결함수정(2026-09-18 전수조사): 업체가 직접 입력하는 강점 키워드도 이스케이프 없이 들어가고 있었다.
+      // (바로 윗줄 intro는 textContent로 올바르게 처리하고 있어 여기만 누락된 상태였음)
+      return '<span style="background:var(--ivory);color:var(--charcoal);font-size:12px;font-weight:600;padding:5px 11px;border-radius:var(--radius-pill)">'+escapeConsumerIdentityHtml(tag)+'</span>';
     }).join('');
   } else {
     introWrap.style.display = 'none';
