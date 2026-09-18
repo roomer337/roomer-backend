@@ -4,11 +4,12 @@
 const express = require('express');
 const cors = require('cors');
 const compression = require('compression');
+const AdmZip = require('adm-zip');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { randomUUID, createHmac, createPublicKey, randomInt } = require('crypto');
+const { randomUUID, createHmac, createPublicKey, randomInt, randomBytes } = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -23,13 +24,27 @@ const openapiSpec = fs.existsSync(openapiPath) ? JSON.parse(fs.readFileSync(open
 
 // 신규(사용자요청 — 푸시알림 인프라 완성): VAPID 키가 Render 환경변수에 설정된 경우에만 실제로
 // 활성화되고, 없으면 조용히 비활성 상태로 남아 서버 부팅이나 다른 기능에 영향을 주지 않는다.
-const PUSH_ENABLED = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+// 결함수정(2026-09-18): 위 주석은 "부팅에 영향을 주지 않는다"고 적혀 있었지만 사실이 아니었다.
+// web-push는 키 형식이 조금이라도 어긋나면 setVapidDetails에서 즉시 예외를 던지는데, 이 코드가
+// try 없이 모듈 최상단에 있어서 서버가 **부팅 자체를 못 하고 죽는다**. Render 환경변수에 키를
+// 붙여넣을 때 줄바꿈이나 공백이 섞이는 일은 흔하고, 그 경우 재시작 무한반복에 빠진다
+// (실제로 잘못된 키로 테스트했더니 'Vapid public key should be 65 bytes long'로 프로세스 종료).
+// → 푸시는 부가기능이므로, 키가 잘못되면 푸시만 끄고 서비스는 정상 기동시킨다.
+let PUSH_ENABLED = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
 if (PUSH_ENABLED) {
-  webpush.setVapidDetails(
-    process.env.VAPID_SUBJECT || 'mailto:roomer0829@naver.com',
-    process.env.VAPID_PUBLIC_KEY,
-    process.env.VAPID_PRIVATE_KEY
-  );
+  try {
+    webpush.setVapidDetails(
+      // 붙여넣기 사고 대비: 앞뒤 공백·줄바꿈은 제거하고 넘긴다.
+      (process.env.VAPID_SUBJECT || 'mailto:roomer0829@naver.com').trim(),
+      process.env.VAPID_PUBLIC_KEY.trim(),
+      process.env.VAPID_PRIVATE_KEY.trim()
+    );
+  } catch (e) {
+    PUSH_ENABLED = false;
+    console.error('🚨 [푸시] VAPID 키 형식이 잘못되어 푸시 알림을 비활성화합니다:', e.message);
+    console.error('🚨 [푸시] Render → Environment 에서 VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY 값을 다시 확인하세요(공백·줄바꿈 주의).');
+    console.error('🚨 [푸시] 서비스의 나머지 기능은 정상 동작합니다.');
+  }
 }
 
 // ===== 신규(2026-09-18, 사용자요청 "문제되는 것 모두 처리"): DB 저장위치 진단 + 자동 백업 =====
@@ -95,6 +110,112 @@ function runDbBackup() {
   }
 }
 
+// ============================================================================
+// 신규(2026-09-18 — 환경변수 자가점검): 부팅할 때 "지금 이 서버가 제대로 된 설정으로 떴는가"를
+// 스스로 검사해서 로그 맨 앞에 남긴다.
+//
+// [왜 필요한가]
+// 잘못 설정해도 서버는 아무 말 없이 잘 뜨는 항목들이 있는데, 그 결과가 전부 "며칠 뒤에,
+// 실제 이용자 피해로" 드러난다.
+//   · DB_PATH가 영구 디스크 밖 → 재배포 한 번에 회원·계약·채팅이 전부 소멸
+//   · LOCAL_STORAGE_DIR가 영구 디스크 밖 → 채팅 사진·첨부가 재배포마다 소멸
+//   · ALLOWED_ORIGIN에 앱 origin 누락 → WebSocket이 조용히 끊기고 메신저가 "재연결 중…"만 표시
+//   · ALIGO_TEST_MODE=true → 문자가 실제로 발송되지 않아 휴대폰 인증 가입이 전부 실패
+// 이 넷은 대시보드를 눈으로 훑어서는 잘못을 알아채기 어렵다. 그래서 서버가 직접 판정한다.
+//
+// [원칙] 값은 절대 로그에 찍지 않는다. 키 이름과 ✅/🚨 판정만 남긴다.
+//        (로그는 협력사·외주에게 공유될 수 있고, 비밀키가 한 번 로그에 남으면 회수할 수 없다)
+// ============================================================================
+const REQUIRED_APP_ORIGINS = ['https://localhost', 'capacitor://localhost'];
+function collectEnvHealth() {
+  const isProd = process.env.NODE_ENV === 'production';
+  const items = []; // { key, ok, level: 'fatal'|'warn'|'info', msg, fix }
+  const add = (key, ok, level, msg, fix) => items.push({ key, ok, level, msg, fix });
+
+  // 1) DB 저장 위치 — 데이터 전체 소멸 여부가 걸린 항목
+  add('DB_PATH', DB_ON_PERSISTENT_DISK, 'fatal',
+    DB_ON_PERSISTENT_DISK ? `영구 디스크(${PERSISTENT_DISK_PATH}) 위 — 재배포해도 데이터 유지`
+                          : `영구 디스크(${PERSISTENT_DISK_PATH}) 밖 — 재배포 시 회원·견적·계약·채팅 전부 소멸`,
+    `Render → Environment → DB_PATH = ${path.join(PERSISTENT_DISK_PATH, 'roomer.db')}`);
+
+  // 2) 첨부파일 저장 위치 — 오브젝트 스토리지를 쓰면 이 검사는 무의미하므로 건너뛴다
+  if (process.env.OBJECT_STORAGE_BUCKET) {
+    add('LOCAL_STORAGE_DIR', true, 'info', '오브젝트 스토리지 사용 중 — 로컬 경로 검사 불필요');
+  } else {
+    const storeDir = path.resolve(process.env.LOCAL_STORAGE_DIR || path.join(__dirname, 'uploads', 'private-store'));
+    const storeOnDisk = storeDir.startsWith(PERSISTENT_DISK_PATH + path.sep);
+    add('LOCAL_STORAGE_DIR', storeOnDisk, 'fatal',
+      storeOnDisk ? `영구 디스크(${PERSISTENT_DISK_PATH}) 위 — 채팅 사진·첨부 유지`
+                  : `영구 디스크(${PERSISTENT_DISK_PATH}) 밖 — 재배포 시 채팅 사진·첨부 전부 소멸`,
+      `Render → Environment → LOCAL_STORAGE_DIR = ${path.join(PERSISTENT_DISK_PATH, 'storage')}`);
+  }
+
+  // 3) 앱 origin 허용 — 빠지면 메신저가 조용히 폴링으로 떨어진다(테스터가 "메신저 이상해요" 하는 전형)
+  const missingOrigins = REQUIRED_APP_ORIGINS.filter(o => !ALLOWED_ORIGINS.includes(o));
+  add('ALLOWED_ORIGIN', missingOrigins.length === 0, 'fatal',
+    missingOrigins.length === 0 ? `앱 origin ${REQUIRED_APP_ORIGINS.length}개 모두 포함 — 실시간 메신저 정상`
+                                : `누락: ${missingOrigins.join(', ')} — 앱에서 WebSocket이 끊겨 "재연결 중…"만 표시됩니다`,
+    `Render → Environment → ALLOWED_ORIGIN 에 쉼표로 추가: ${REQUIRED_APP_ORIGINS.join(',')}`);
+
+  // 4) 문자 실발송 여부 — true면 알리고가 "성공"을 돌려주지만 문자는 가지 않는다
+  const aligoTest = process.env.ALIGO_TEST_MODE === 'true';
+  if (process.env.ALIGO_API_KEY) {
+    add('ALIGO_TEST_MODE', !aligoTest, 'fatal',
+      aligoTest ? '테스트 모드 — 문자가 실제로 발송되지 않아 휴대폰 인증 가입이 전부 실패합니다'
+                : '실발송 모드 — 휴대폰 인증 문자가 실제로 나갑니다',
+      'Render → Environment → ALIGO_TEST_MODE = false (또는 변수 자체를 삭제)');
+  } else {
+    add('ALIGO_API_KEY', false, 'warn', '미설정 — 휴대폰 인증 문자 발송 불가',
+      'Render → Environment → ALIGO_API_KEY 설정');
+  }
+
+  // 5) 나머지 — 있으면 정상, 없으면 어떤 기능이 죽는지만 명시
+  add('NODE_ENV', isProd, 'warn', isProd ? 'production' : `'${process.env.NODE_ENV || '(없음)'}' — 운영 서버라면 production 이어야 안전검사가 동작합니다`,
+    'Render → Environment → NODE_ENV = production');
+  add('JWT_SECRET', !!process.env.JWT_SECRET, 'fatal', process.env.JWT_SECRET ? '설정됨' : '미설정 — 로그인 전체 불가', 'Render → Environment → JWT_SECRET 설정');
+  add('PII_ENCRYPTION_KEY', !!process.env.PII_ENCRYPTION_KEY, 'fatal',
+    process.env.PII_ENCRYPTION_KEY ? '설정됨 (⚠️ 이 값은 절대 바꾸지 마세요 — 바꾸면 저장된 전화번호·사업자번호를 영구히 복호화할 수 없습니다)' : '미설정 — 개인정보 암호화 불가',
+    'Render → Environment → PII_ENCRYPTION_KEY 설정');
+  add('RESEND_API_KEY', !!process.env.RESEND_API_KEY, 'warn',
+    process.env.RESEND_API_KEY ? '설정됨 — 이메일 OTP 로그인 가능(스토어 심사자용)' : '미설정 — 이메일 OTP 로그인 불가 → 스토어 심사 반려 위험',
+    'Render → Environment → RESEND_API_KEY 설정');
+  const vapidPresent = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+  add('VAPID_PRIVATE_KEY', PUSH_ENABLED, 'warn',
+    PUSH_ENABLED ? '설정됨 — 웹푸시 발송 가능'
+                 : (vapidPresent ? '값은 있으나 형식이 잘못되어 푸시가 꺼졌습니다(공백·줄바꿈이 섞였을 가능성)' : '미설정 — 푸시 알림 발송 불가'),
+    'Render → Environment → VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT 확인');
+  add('TOSS_SECRET_KEY', !!(process.env.TOSS_SECRET_KEY && process.env.TOSS_CLIENT_KEY), 'info',
+    (process.env.TOSS_SECRET_KEY && process.env.TOSS_CLIENT_KEY) ? '설정됨 — 결제 활성' : '미설정 — 결제 비활성 (PG 심사중이면 정상)',
+    'PG 심사 완료 후 Render → Environment → TOSS_SECRET_KEY / TOSS_CLIENT_KEY 설정');
+  if (process.env.ADMIN_BOOTSTRAP_PASSWORD) {
+    add('ADMIN_BOOTSTRAP_PASSWORD', false, 'warn',
+      '남아 있음 — 최초 관리자 계정이 이미 만들어졌다면 삭제하는 편이 안전합니다',
+      'Render → Environment → ADMIN_BOOTSTRAP_EMAIL / ADMIN_BOOTSTRAP_PASSWORD 삭제');
+  }
+  return items;
+}
+
+function describeEnvHealth() {
+  const items = collectEnvHealth();
+  const bad = items.filter(i => !i.ok);
+  const lines = ['', '='.repeat(72), ' [환경점검] 부팅 시 환경변수 자가진단 (값은 로그에 남기지 않습니다)', '='.repeat(72)];
+  items.forEach(i => {
+    const mark = i.ok ? '✅' : (i.level === 'fatal' ? '🚨' : (i.level === 'warn' ? '⚠️ ' : 'ℹ️ '));
+    lines.push(` ${mark} ${i.key.padEnd(24)} ${i.msg}`);
+  });
+  const fatals = bad.filter(i => i.level === 'fatal');
+  if (bad.length) {
+    lines.push('-'.repeat(72));
+    lines.push(' [조치 방법]');
+    bad.forEach(i => { if (i.fix) lines.push(`   · ${i.key}: ${i.fix}`); });
+  }
+  lines.push('='.repeat(72));
+  lines.push(fatals.length ? ` 🚨 즉시 조치가 필요한 항목 ${fatals.length}건: ${fatals.map(i => i.key).join(', ')}`
+                           : ' ✅ 즉시 조치가 필요한 항목 없음');
+  lines.push('='.repeat(72), '');
+  return lines.join('\n');
+}
+
 const app = express();
 // 결함수정(2026-09-18 전수조사 — 치명): trust proxy 미설정으로 모든 rate limit이 무력화되어 있었다.
 // Render는 요청을 프록시 1단을 거쳐 전달하는데, 이 설정이 없으면 Express가 X-Forwarded-For를 무시하고
@@ -150,6 +271,15 @@ app.use(cors({ origin(origin, callback) { callback(null, !origin || ALLOWED_ORIG
 // 모바일 데이터 + 로딩 지연). 이미지·동영상 등 이미 압축된 형식은 compression이 알아서 건너뛴다.
 app.use(compression());
 app.use(express.json({ limit: '8mb' }));
+// 결함수정(2026-09-18 메신저 교차검증 중 발견): Express 5는 본문이나 Content-Type이 없는 요청에서
+// req.body를 undefined로 둔다. 그런데 이 파일의 라우트 90여 곳이 `req.body.xxx` 또는
+// `const {a,b} = req.body` 형태로 곧바로 접근하기 때문에, 본문 없이 POST가 들어오면
+// "Cannot read properties of undefined"가 나면서 400(입력값 오류)이 아니라 500(서버 오류)이
+// 반환된다. 실제로 읽음처리 API(/api/rooms/:roomId/read)에서 이 500을 재현해 확인했다.
+// 이용자 입장에서는 "서버가 고장났다"로 보이고, 원인 추적도 어렵다.
+// → 본문이 없으면 빈 객체로 채워, 각 라우트의 정상적인 입력값 검증(400)으로 흘러가게 한다.
+//   라우트를 90곳 고치는 대신 한 곳에서 이 부류의 오류를 통째로 없앤다.
+app.use((req, res, next) => { if (req.body === undefined || req.body === null) req.body = {}; next(); });
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { dotfiles: 'deny', maxAge: '1d', fallthrough: false }));
 // 결함수정(사용자 지적 — 객체 저장소 미설정 환경의 파일첨부 오류 개선): OBJECT_STORAGE_BUCKET이 없을 때
 // storage.js가 공개 파일(포트폴리오 사진 등)을 로컬 디스크(uploads/private-store/public)에 저장하는데,
@@ -282,6 +412,12 @@ function purgeOldRequestLogs() {
       if (info.changes > 0) console.log(`[로그정리] ${label}: ${days}일 지난 ${info.changes}건 삭제 (${table})`);
     } catch (e) { console.error(`[로그정리] ${table} 정리 실패:`, e.message); }
   }
+  // 신규(2026-09-18): 앱 소셜로그인 중계 세션은 10분짜리 일회용이라 날짜 기준이 아닌 만료시각 기준으로
+  // 정리한다. 다른 테이블과 보관기간 성격이 달라 LOG_RETENTION 목록에 넣지 않았다.
+  try {
+    const info = db.prepare("DELETE FROM oauth_sessions WHERE expires_at < datetime('now')").run();
+    if (info.changes > 0) console.log(`[로그정리] 앱 로그인 중계 세션: 만료된 ${info.changes}건 삭제 (oauth_sessions)`);
+  } catch (e) { console.error('[로그정리] oauth_sessions 정리 실패:', e.message); }
 }
 app.use((req, res, next) => {
   const start = Date.now();
@@ -325,45 +461,63 @@ app.use((req, res, next) => {
 // ===== 신규(2026-09-18): 헬스체크 =====
 // 기존에 헬스체크 엔드포인트가 전혀 없어서(/health, /healthz, /api/health 검색결과 0건) Render의
 // "Health Check Path" 설정이 비어 있었다 → 서버가 죽어도 Render가 감지·자동재시작을 못 하는 상태.
-// 인증 없이 열려 있으므로 개인정보·키·값은 절대 넣지 않고, "있다/없다"와 경로 정보만 응답한다.
 // 주의: DB 조회가 실패할 때만 503을 반환한다. "DB가 영구 디스크 밖에 있음"은 심각한 경고지만
 // 서비스는 정상 동작하므로 여기서 503을 주면 Render가 재시작만 무한반복하게 되어 더 위험하다.
-app.get('/healthz', (req, res) => {
-  const body = {
+//
+// 결함수정(2026-09-18 전수조사 — 정보노출 🟡): 이 엔드포인트는 인증 없이 누구나 열 수 있는데
+// 처음 만들 때 서버의 DB 절대경로·백업 폴더 경로·디스크 잔여용량까지 그대로 응답에 담고 있었다.
+// 공격자에게는 "어디를 노려야 하는지"를 알려주는 정보이고, 굳이 공개될 이유가 없다.
+// → 공개 응답은 "살아있다/DB 연결된다" 수준의 최소 정보만 남기고, 경로·용량·상세 진단은
+//   관리자 전용 /api/admin/env-health 로 옮긴다. 상세는 Render 로그에도 부팅 때 한 번 남는다.
+function collectHealthDetail() {
+  const detail = {
     status: 'ok',
     time: new Date().toISOString(),
     uptimeSec: Math.round(process.uptime()),
     db: { path: DB_FILE_PATH, onPersistentDisk: DB_ON_PERSISTENT_DISK, ok: false, sizeMB: null },
     backup: { enabled: DB_BACKUP_ENABLED, dir: DB_BACKUP_DIR, keep: DB_BACKUP_KEEP, last: lastDbBackup },
     storage: process.env.OBJECT_STORAGE_BUCKET ? 'object-storage' : 'local-disk',
+    ota: OTA_ENABLED ? (otaBundle ? { version: otaBundle.version, builtAt: otaBundle.builtAt } : '번들 없음') : '비활성',
     push: PUSH_ENABLED,
     payments: !!(process.env.TOSS_SECRET_KEY && process.env.TOSS_CLIENT_KEY),
     warnings: []
   };
   try {
     db.prepare('SELECT 1').get();
-    body.db.ok = true;
-    try { body.db.sizeMB = +(fs.statSync(DB_FILE_PATH).size / 1024 / 1024).toFixed(2); } catch (e) { /* 크기 확인 실패는 무시 */ }
+    detail.db.ok = true;
+    try { detail.db.sizeMB = +(fs.statSync(DB_FILE_PATH).size / 1024 / 1024).toFixed(2); } catch (e) { /* 크기 확인 실패는 무시 */ }
   } catch (e) {
-    body.status = 'error';
-    body.db.error = e.message;
+    detail.status = 'error';
+    detail.db.error = e.message;
   }
   if (!DB_ON_PERSISTENT_DISK && process.env.NODE_ENV === 'production') {
-    body.warnings.push(`DB가 영구 디스크(${PERSISTENT_DISK_PATH}) 밖에 있습니다. 재배포 시 데이터가 사라집니다. DB_PATH 환경변수를 확인하세요.`);
+    detail.warnings.push(`DB가 영구 디스크(${PERSISTENT_DISK_PATH}) 밖에 있습니다. 재배포 시 데이터가 사라집니다. DB_PATH 환경변수를 확인하세요.`);
   }
-  if (!DB_BACKUP_ENABLED) body.warnings.push('DB 자동 백업이 꺼져 있습니다.');
-  if (!body.payments) body.warnings.push('토스페이먼츠 키(TOSS_SECRET_KEY/TOSS_CLIENT_KEY)가 설정되지 않아 결제 API가 비활성 상태입니다.');
+  if (!DB_BACKUP_ENABLED) detail.warnings.push('DB 자동 백업이 꺼져 있습니다.');
+  if (!detail.payments) detail.warnings.push('토스페이먼츠 키(TOSS_SECRET_KEY/TOSS_CLIENT_KEY)가 설정되지 않아 결제 API가 비활성 상태입니다.');
   try {
     // 영구 디스크 여유공간 — Node 18.15+ 에서만 제공되므로 없으면 조용히 건너뛴다.
     if (typeof fs.statfsSync === 'function') {
       const st = fs.statfsSync(DB_ON_PERSISTENT_DISK ? PERSISTENT_DISK_PATH : __dirname);
       const freeMB = +((st.bavail * st.bsize) / 1024 / 1024).toFixed(1);
       const totalMB = +((st.blocks * st.bsize) / 1024 / 1024).toFixed(1);
-      body.disk = { freeMB, totalMB };
-      if (totalMB > 0 && freeMB / totalMB < 0.1) body.warnings.push(`디스크 여유공간이 10% 미만입니다(${freeMB}MB / ${totalMB}MB).`);
+      detail.disk = { freeMB, totalMB };
+      if (totalMB > 0 && freeMB / totalMB < 0.1) detail.warnings.push(`디스크 여유공간이 10% 미만입니다(${freeMB}MB / ${totalMB}MB).`);
     }
   } catch (e) { /* 여유공간 확인 실패는 헬스체크 실패로 취급하지 않음 */ }
-  res.status(body.status === 'ok' ? 200 : 503).json(body);
+  return detail;
+}
+
+app.get('/healthz', (req, res) => {
+  const detail = collectHealthDetail();
+  // 공개 응답 — Render 헬스체크가 필요한 최소 정보만. 경로·용량·환경변수 진단은 담지 않는다.
+  res.status(detail.status === 'ok' ? 200 : 503).json({
+    status: detail.status,
+    time: detail.time,
+    uptimeSec: detail.uptimeSec,
+    db: { ok: detail.db.ok },
+    warningCount: detail.warnings.length
+  });
 });
 
 const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-only-secret-change-in-production');
@@ -1657,6 +1811,18 @@ app.get('/api/admin/db-backups', adminAuthRequired(), (req, res) => {
       });
   } catch (e) { /* 백업 폴더가 아직 없으면 빈 목록으로 응답 */ }
   res.json({ success: true, data: { enabled: DB_BACKUP_ENABLED, dir: DB_BACKUP_DIR, keep: DB_BACKUP_KEEP, intervalHours: DB_BACKUP_INTERVAL_HOURS, dbPath: DB_FILE_PATH, onPersistentDisk: DB_ON_PERSISTENT_DISK, last: lastDbBackup, files } });
+});
+// 신규(2026-09-18): 관리자 전용 환경 진단. 예전에는 이 내용이 /healthz로 아무나 볼 수 있었는데
+// (DB 절대경로·백업 폴더·디스크 잔여용량), 공개될 이유가 없어서 여기로 옮겼다.
+// 환경변수의 "값"은 여기서도 절대 내려주지 않는다 — 키 이름과 판정(ok/level)만 준다.
+app.get('/api/admin/env-health', adminAuthRequired('admin_super'), (req, res) => {
+  const detail = collectHealthDetail();
+  const env = collectEnvHealth();
+  res.json({ success: true, data: {
+    runtime: detail,
+    env: env.map(i => ({ key: i.key, ok: i.ok, level: i.level, message: i.msg, fix: i.fix || null })),
+    fatalCount: env.filter(i => !i.ok && i.level === 'fatal').length
+  } });
 });
 app.post('/api/admin/db-backups', adminAuthRequired('admin_super'), (req, res) => {
   if (!DB_BACKUP_ENABLED) return res.status(409).json({ success: false, error: { code: 'BACKUP_DISABLED', message: 'DB 자동 백업이 비활성 상태입니다(DB가 영구 디스크 밖에 있거나 DB_BACKUP_ENABLED=false).' } });
@@ -3472,6 +3638,10 @@ app.get('/api/meas-jobs/:roomId', authRequired, (req, res) => {
 app.post('/api/rooms/:roomId/read', authRequired, (req,res) => {
   const room=db.prepare('SELECT * FROM chat_rooms WHERE id=?').get(req.params.roomId);
   if(!assertRoomAccess(room,req.user))return res.status(403).json({success:false,error:{code:'FORBIDDEN',message:'본인이 속한 채팅방만 읽음 처리할 수 있습니다'}});
+  // 결함수정(2026-09-18): lastReadSeq가 null이면 Number(null)===0이라 검증을 통과해버려서,
+  // "읽음 처리에 성공했다"는 200을 주면서 실제로는 0번까지만 읽은 것으로 기록했다(=아무것도 안 읽음).
+  // 화면에는 성공으로 보이는데 안읽음 배지는 그대로 남는 혼란스러운 상태가 된다. 명시적으로 거부한다.
+  if(req.body.lastReadSeq===null||req.body.lastReadSeq===undefined)return validationError(res,'읽음 위치(lastReadSeq)가 필요합니다');
   const requested=Number(req.body.lastReadSeq);
   if(!Number.isInteger(requested)||requested<0)return validationError(res,'읽음 위치가 올바르지 않습니다');
   const maxRow=db.prepare('SELECT coalesce(max(seq),0) AS max_seq FROM chat_messages WHERE room_id=?').get(room.id);
@@ -4905,7 +5075,7 @@ function findIndexFileNormalized() {
   const useCache = process.env.ENABLE_DEV_TEST_ROUTES !== 'true';
   if (useCache && cachedIndexFile !== undefined) return cachedIndexFile;
   const files = fs.readdirSync(__dirname);
-  const acceptedNames = new Set(['루먼03.html', 'roomer03.html'].map(name => name.normalize('NFC')));
+  const acceptedNames = new Set(['루머03.html', 'roomer03.html'].map(name => name.normalize('NFC')));
   const candidates = files.filter(file => acceptedNames.has(file.normalize('NFC')));
   // 한글/NFD 파일명과 영문 다운로드 파일명을 모두 지원하되,
   // ZIP·오류문·TXT가 잘못 이름바꾸기된 파일은 선택하지 않는다.
@@ -4919,6 +5089,115 @@ function findIndexFileNormalized() {
   if (useCache) cachedIndexFile = found;
   return found;
 }
+
+// ===== 신규(2026-09-18, 대표님 지시 "매번 빌드하지 않는 방법"): 앱 라이브 업데이트(OTA) =====
+//
+// [무엇을 해결하나]
+// 루머 앱은 화면 전체(루머03.html)를 빌드 시점에 앱 안에 구워 넣는 구조라, 글자 하나만 고쳐도
+// APK/AAB를 다시 만들고 스토어 심사를 다시 받아야 했다. 화면 수정이 잦은 서비스에서는 이게
+// 가장 큰 병목이다.
+//
+// [어떻게 해결하나]
+// 앱에 @capgo/capacitor-updater 플러그인을 넣고, 이 서버가 "새 화면 번들"을 직접 배포한다.
+// 대표님이 지금까지 하시던 것처럼 루머03.html을 GitHub에 올려 Render가 재배포되면, 이 서버가
+// 부팅하면서 그 파일로 앱용 번들(zip)을 자동으로 만들어 둔다. 앱은 실행될 때 이 서버에
+// "새 버전 있나요?"를 묻고, 있으면 조용히 내려받아 다음 실행부터 새 화면을 쓴다.
+// → 결과적으로 화면 수정은 백엔드 배포와 똑같이 "GitHub 업로드" 한 번으로 끝난다.
+//
+// [스토어 정책]
+// 앱이 스스로를 바꾸는 것은 원칙적으로 금지지만, HTML/JS처럼 '해석되는 코드'는 양대 스토어가
+// 명시적으로 예외를 둔다(Google Play 기기·네트워크 악용 정책의 WebView JavaScript 예외,
+// Apple DPLA 3.3.1(B)). 단 "앱의 주요 목적을 바꾸지 않는" 범위여야 하므로, 이 통로로는 화면만
+// 바꾸고 앱의 성격을 바꾸는 변경은 하지 않는다.
+//
+// [안전장치]
+//  · 번들은 SHA256 체크섬과 함께 내려보내 앱이 무결성을 검증한다(중간에 변조되면 적용 안 됨).
+//  · 앱은 여전히 자기 안에 화면을 들고 있어서, 서버가 죽어도 오프라인으로 동작한다.
+//  · 새 번들이 깨져서 앱이 실행되지 않으면 플러그인이 자동으로 이전 번들로 되돌린다(롤백).
+//  · OTA_ENABLED=false 환경변수로 언제든 통째로 끌 수 있다.
+const OTA_ENABLED = process.env.OTA_ENABLED !== 'false';
+const OTA_API_BASE = process.env.OTA_API_BASE || 'https://roomer-backend.onrender.com';
+const OTA_DIR = path.join(
+  fs.existsSync(PERSISTENT_DISK_PATH) ? PERSISTENT_DISK_PATH : require('os').tmpdir(),
+  'app-bundles'
+);
+// build-www.js가 앱 번들에 주입하는 것과 "완전히 동일한" 스크립트여야 한다.
+// (앱은 화면을 내장 파일로 열고 API만 실서버로 호출하므로, window.MVP를 미리 못박아 둬야 한다)
+function otaNativeOverride() {
+  return '<script>\n'
+    + '  // Capacitor 앱 전용: 웹앱 내장(번들) 환경에서는 항상 실서버로 API를 호출하도록 고정.\n'
+    + '  window.MVP = { live: true, apiBase: \'' + OTA_API_BASE + '\' };\n'
+    + '</script>\n';
+}
+let otaBundle = null; // { version, file, checksum, bytes, builtAt }
+function buildOtaBundle() {
+  if (!OTA_ENABLED) return null;
+  try {
+    const appFile = findIndexFileNormalized();
+    if (!appFile) { console.warn('[OTA] 루머03.html을 찾지 못해 번들을 만들지 않았습니다.'); return null; }
+    const stat = fs.statSync(appFile);
+    // 버전은 semver 형식이어야 한다. 배포할 때마다 파일 시각이 갱신되므로 자연히 증가한다.
+    const version = '1.1.' + Math.floor(stat.mtimeMs / 1000);
+    const html = fs.readFileSync(appFile, 'utf8');
+    const headIdx = html.indexOf('<head>');
+    if (headIdx === -1) { console.warn('[OTA] <head> 태그를 찾지 못했습니다.'); return null; }
+    const insertAt = headIdx + '<head>'.length;
+    const patched = html.slice(0, insertAt) + '\n' + otaNativeOverride() + html.slice(insertAt);
+
+    const zip = new AdmZip();
+    zip.addFile('index.html', Buffer.from(patched, 'utf8'));
+    const manifestPath = path.join(__dirname, 'manifest.json');
+    if (fs.existsSync(manifestPath)) zip.addLocalFile(manifestPath);
+    const buf = zip.toBuffer();
+
+    fs.mkdirSync(OTA_DIR, { recursive: true });
+    const fileName = `roomer-${version}.zip`;
+    const target = path.join(OTA_DIR, fileName);
+    fs.writeFileSync(target, buf);
+    const checksum = require('crypto').createHash('sha256').update(buf).digest('hex');
+
+    // 오래된 번들 정리 — 영구 디스크가 1GB뿐이라 무한정 쌓이면 안 된다(최근 3개만 보관).
+    try {
+      fs.readdirSync(OTA_DIR).filter(f => f.startsWith('roomer-') && f.endsWith('.zip'))
+        .sort().slice(0, -3).forEach(f => fs.unlinkSync(path.join(OTA_DIR, f)));
+    } catch (e) { console.error('[OTA] 오래된 번들 정리 실패:', e.message); }
+
+    otaBundle = { version, file: fileName, checksum, bytes: buf.length, builtAt: new Date().toISOString() };
+    console.log(`[OTA] 앱 번들 준비 완료: ${version} (${(buf.length / 1024 / 1024).toFixed(2)}MB)`);
+    return otaBundle;
+  } catch (e) {
+    console.error('[OTA] 번들 생성 실패:', e.message);
+    return null;
+  }
+}
+// 앱이 "새 버전 있나요?"라고 묻는 곳. Capgo 플러그인은 POST로 기기 정보를 보내지만,
+// 브라우저에서 눈으로 확인할 수 있도록 GET도 같이 받는다.
+app.all('/api/app/update-check', (req, res) => {
+  if (!OTA_ENABLED) return res.json({ message: '라이브 업데이트가 비활성화되어 있습니다' });
+  if (!otaBundle) return res.json({ message: '배포된 번들이 없습니다' });
+  const current = (req.body && (req.body.version_name || req.body.version)) || req.query.version || null;
+  if (current && current === otaBundle.version) {
+    return res.json({ message: '최신 버전입니다', version: otaBundle.version });
+  }
+  res.json({
+    version: otaBundle.version,
+    url: `${OTA_API_BASE}/app-bundles/${otaBundle.file}`,
+    checksum: otaBundle.checksum
+  });
+});
+// 번들 내려받는 곳. 내용물은 /app 이 이미 공개로 서빙하는 화면과 같아서 별도 인증을 두지 않는다.
+app.get('/app-bundles/:file', (req, res) => {
+  if (!OTA_ENABLED) return res.status(404).json({ success: false, error: { code: 'OTA_DISABLED', message: '라이브 업데이트가 비활성화되어 있습니다' } });
+  // 경로 조작 차단: 파일명 형식을 엄격히 검사한다.
+  if (!/^roomer-[0-9.]+\.zip$/.test(req.params.file)) {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_BUNDLE', message: '잘못된 번들 이름입니다' } });
+  }
+  const target = path.join(OTA_DIR, req.params.file);
+  if (!target.startsWith(OTA_DIR) || !fs.existsSync(target)) {
+    return res.status(404).json({ success: false, error: { code: 'BUNDLE_NOT_FOUND', message: '번들을 찾을 수 없습니다' } });
+  }
+  res.type('application/zip').sendFile(target);
+});
 
 // 보안수정(루머28): __dirname 전체를 정적 공개하면 /app/server.js, /app/db.js 및 DB 파일까지
 // 다운로드될 수 있다. 앱 HTML 한 파일만 명시적으로 제공하고, 내용이 실제 HTML인지도 확인한다.
@@ -5184,9 +5463,151 @@ app.get(['/location-policy', '/location-policy/'], (req, res) => sendLegalPage('
 // 카카오/네이버가 리다이렉트하는 /oauth/*/callback 경로는 API가 아니라 "앱 화면"이 다시 열려야
 // 하는 경로임(그래야 프론트의 handleKakaoOAuthCallback/handleNaverOAuthCallback이 code를 읽어
 // 처리함). 이 경로들에서도 앱 파일을 그대로 서빙하도록 명시적으로 라우트 추가.
-app.get(['/oauth/kakao/callback', '/oauth/naver/callback', '/oauth/apple/callback'], (req, res) => {
-  sendRoomerApp(req, res);
+// ============================================================================
+// 신규(2026-09-18 — 대표님이 실기기에서 발견한 치명적 버그): 설치형 앱의 소셜로그인 복귀 처리.
+//
+// [무엇이 문제였나]
+// 앱(Capacitor)은 화면을 https://localhost 로 띄우는데, socialGo()가 window.location.href 로
+// nid.naver.com / kauth.kakao.com / appleid.apple.com 으로 이동시킨다. Capacitor는 앱 주소가
+// 아닌 곳으로의 이동을 가로채 **외부 앱으로 넘겨버린다**(Bridge.launchIntent). 네이버 주소는
+// 네이버 앱이 App Link로 선점하고 있어서 네이버 앱이 열리고, 로그인 후 콜백까지 네이버 인앱
+// 브라우저 안에서 끝난다. 즉 **로그인은 앱 바깥에서 완료되고, 우리 앱은 영원히 로그아웃 상태**다.
+// (대표님 캡처: 앱을 쓰다가 네이버 인앱 브라우저 안에서 Apple 로그인 화면이 뜸 — 바로 이 경로)
+//
+// [어떻게 고치는가 — 구글·애플이 요구하는 정석]
+//   ① 앱이 먼저 /api/auth/oauth-session 으로 일회용 세션을 만든다.
+//      - sessionId는 state에 실려 바깥으로 나가고, claimSecret은 앱 안에만 남는다.
+//   ② 앱은 시스템 브라우저(크롬 커스텀탭)로 로그인 화면을 연다 — 웹뷰가 아니라서 구글·애플 정책에 맞고,
+//      네이버 앱으로 튕겨도 결국 같은 브라우저 세션 안이다.
+//   ③ 로그인이 끝나면 여기(GET 콜백)로 돌아오는데, state가 앱용이면 화면을 그리는 대신
+//      인가코드를 그 세션 행에 넣어두고, roomer:// 딥링크로 앱을 다시 띄운다.
+//   ④ 앱은 claimSecret을 제시하고 인가코드를 회수해, 기존과 완전히 동일한 경로
+//      (POST /api/auth/social/:provider/callback)로 로그인을 끝낸다.
+//
+// [보안] 인가코드는 딥링크에 싣지 않는다. 딥링크에는 sessionId만 들어간다. 같은 scheme을 등록한
+// 악성 앱이 딥링크를 가로채도 claimSecret이 없어 코드를 가져갈 수 없다. 코드는 1회용·10분 만료다.
+// [안정성] 딥링크가 실패해도(기기·브라우저마다 동작이 다름) 앱이 주기적으로 물어보면 회수되므로
+// 흐름이 끊기지 않는다. 딥링크는 "빨리 돌아오게 하는 최적화"일 뿐 필수 경로가 아니다.
+// ============================================================================
+const APP_OAUTH_STATE_PREFIX = 'app.';
+const APP_OAUTH_SCHEME = process.env.APP_OAUTH_SCHEME || 'roomer';
+const APP_OAUTH_ANDROID_PACKAGE = process.env.APP_OAUTH_ANDROID_PACKAGE || 'com.roomer.app';
+const APP_OAUTH_SESSION_TTL_MIN = 10;
+
+function purgeExpiredOauthSessions() {
+  try { db.prepare("DELETE FROM oauth_sessions WHERE expires_at < datetime('now')").run(); }
+  catch (e) { console.error('만료된 oauth_sessions 정리 실패:', e.message); }
+}
+function hashClaimSecret(secret) {
+  return createHmac('sha256', JWT_SECRET).update(String(secret)).digest('hex');
+}
+
+// ① 앱이 로그인 시작 직전에 호출 — 일회용 세션 발급
+app.post('/api/auth/oauth-session', socialAuthLimiter, (req, res) => {
+  const provider = String((req.body && req.body.provider) || '').toLowerCase();
+  if (!['kakao', 'naver', 'apple'].includes(provider)) {
+    return validationError(res, 'provider는 kakao·naver·apple 중 하나여야 합니다');
+  }
+  purgeExpiredOauthSessions();
+  const sessionId = randomBytes(16).toString('hex');
+  const claimSecret = randomBytes(32).toString('hex');
+  db.prepare(`INSERT INTO oauth_sessions (id, claim_hash, provider, status, expires_at)
+              VALUES (?,?,?, 'pending', datetime('now', ?))`)
+    .run(sessionId, hashClaimSecret(claimSecret), provider, `+${APP_OAUTH_SESSION_TTL_MIN} minutes`);
+  res.json({ success: true, data: { sessionId, claimSecret, state: APP_OAUTH_STATE_PREFIX + sessionId, expiresInSec: APP_OAUTH_SESSION_TTL_MIN * 60 } });
 });
+
+// ④ 앱이 인가코드를 회수 — claimSecret을 아는 쪽(우리 앱)만 가져갈 수 있다
+app.post('/api/auth/oauth-session/claim', socialAuthLimiter, (req, res) => {
+  const { sessionId, claimSecret } = req.body || {};
+  if (!isNonEmptyString(sessionId, 64) || !isNonEmptyString(claimSecret, 128)) {
+    return validationError(res, 'sessionId와 claimSecret이 필요합니다');
+  }
+  const row = db.prepare('SELECT * FROM oauth_sessions WHERE id=?').get(sessionId);
+  // 존재 여부와 비밀값 불일치를 같은 응답으로 처리한다 — 어느 sessionId가 유효한지 알려주지 않기 위해.
+  if (!row || row.claim_hash !== hashClaimSecret(claimSecret)) {
+    return res.status(404).json({ success: false, error: { code: 'OAUTH_SESSION_NOT_FOUND', message: '로그인 세션을 찾을 수 없어요. 다시 시도해주세요.' } });
+  }
+  if (new Date(row.expires_at.replace(' ', 'T') + 'Z') < new Date()) {
+    return res.status(410).json({ success: false, error: { code: 'OAUTH_SESSION_EXPIRED', message: '로그인 시간이 초과됐어요. 다시 시도해주세요.' } });
+  }
+  if (row.status === 'failed') {
+    return res.status(400).json({ success: false, error: { code: 'OAUTH_SESSION_FAILED', message: row.error_message || '로그인에 실패했어요. 다시 시도해주세요.' } });
+  }
+  if (row.status !== 'ready') {
+    // 아직 브라우저에서 로그인이 끝나지 않음 — 앱은 이 응답을 받으면 조금 뒤 다시 물어본다.
+    return res.json({ success: true, data: { status: row.status === 'claimed' ? 'claimed' : 'pending' } });
+  }
+  // 1회용: 꺼내가는 즉시 코드를 지운다(같은 코드를 두 번 쓸 수 없게).
+  db.prepare("UPDATE oauth_sessions SET status='claimed', auth_code=NULL, claimed_at=datetime('now') WHERE id=?").run(sessionId);
+  res.json({ success: true, data: { status: 'ready', provider: row.provider, code: row.auth_code, state: APP_OAUTH_STATE_PREFIX + sessionId } });
+});
+
+// ③ 소셜 서비스가 돌아오는 지점. 웹이면 지금까지처럼 앱 화면을 그리고, 앱이면 딥링크로 복귀시킨다.
+app.get(['/oauth/kakao/callback', '/oauth/naver/callback', '/oauth/apple/callback'], (req, res) => {
+  const state = typeof req.query.state === 'string' ? req.query.state : '';
+  // 웹 브라우저에서 온 기존 흐름 — 건드리지 않는다.
+  if (!state.startsWith(APP_OAUTH_STATE_PREFIX)) return sendRoomerApp(req, res);
+
+  const provider = req.path.split('/')[2];
+  const sessionId = state.slice(APP_OAUTH_STATE_PREFIX.length);
+  const row = db.prepare('SELECT * FROM oauth_sessions WHERE id=?').get(sessionId);
+  const code = typeof req.query.code === 'string' ? req.query.code : '';
+
+  if (!row || row.provider !== provider) {
+    return res.status(400).type('html').send(renderOauthBridgePage({ ok: false, message: '로그인 세션을 찾을 수 없어요. 앱에서 다시 시도해주세요.' }));
+  }
+  if (!code) {
+    // 사용자가 취소했거나 소셜 서비스가 오류를 돌려준 경우
+    const reason = typeof req.query.error_description === 'string' ? req.query.error_description
+                 : (typeof req.query.error === 'string' ? req.query.error : '로그인이 취소됐어요.');
+    db.prepare("UPDATE oauth_sessions SET status='failed', error_message=? WHERE id=?").run(String(reason).slice(0, 200), sessionId);
+    return res.type('html').send(renderOauthBridgePage({ ok: false, message: '로그인이 완료되지 않았어요. 앱에서 다시 시도해주세요.', sessionId }));
+  }
+  if (row.status !== 'pending') {
+    return res.status(409).type('html').send(renderOauthBridgePage({ ok: false, message: '이미 처리된 로그인이에요. 앱에서 다시 시도해주세요.' }));
+  }
+  db.prepare("UPDATE oauth_sessions SET status='ready', auth_code=? WHERE id=?").run(code, sessionId);
+  res.type('html').send(renderOauthBridgePage({ ok: true, message: '로그인이 확인됐어요. 앱으로 돌아갑니다…', sessionId }));
+});
+
+// 브라우저에서 앱으로 되돌아가는 짧은 중계 화면.
+// 안드로이드 크롬에서는 intent:// 형식이 가장 확실하게 앱을 띄워주고, 그 외(iOS 사파리 등)에서는
+// 커스텀 스킴을 쓴다. 자동 복귀가 막히는 기기도 있어서 직접 누를 수 있는 버튼을 항상 함께 둔다.
+// 이 화면이 안 떠도 앱이 스스로 결과를 회수하므로 로그인은 어차피 완료된다.
+function renderOauthBridgePage({ ok, message, sessionId }) {
+  const safeMessage = escapeHtmlLegal(String(message || ''));
+  const linkPath = 'oauth' + (sessionId ? '?s=' + encodeURIComponent(sessionId) : '');
+  const schemeUrl = `${APP_OAUTH_SCHEME}://${linkPath}`;
+  const intentUrl = `intent://${linkPath}#Intent;scheme=${APP_OAUTH_SCHEME};package=${APP_OAUTH_ANDROID_PACKAGE};end`;
+  return `<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>루머 ROOMER</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:#FFFDFA;color:#2E2A27;font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",sans-serif}
+  .box{text-align:center;padding:28px 22px;max-width:340px}
+  .msg{font-size:16px;font-weight:700;line-height:1.5;margin-bottom:22px}
+  .btn{display:inline-block;padding:14px 26px;border-radius:12px;background:#C4714F;color:#fff;
+       font-size:15px;font-weight:700;text-decoration:none}
+  .hint{margin-top:16px;font-size:12.5px;color:#8A817C;line-height:1.5}
+</style></head>
+<body><div class="box">
+  <div class="msg">${safeMessage}</div>
+  <a class="btn" id="back" href="${schemeUrl}">앱으로 돌아가기</a>
+  <div class="hint">자동으로 돌아가지 않으면 위 버튼을 눌러주세요.<br>이 창은 닫으셔도 됩니다.</div>
+</div>
+<script>
+(function(){
+  var isAndroid = /Android/i.test(navigator.userAgent);
+  var target = isAndroid ? ${JSON.stringify(intentUrl)} : ${JSON.stringify(schemeUrl)};
+  document.getElementById('back').setAttribute('href', target);
+  ${ok ? 'setTimeout(function(){ try{ window.location.href = target; }catch(e){} }, 400);' : ''}
+})();
+</script>
+</body></html>`;
+}
 
 // ===== 18. 라이브 리로드(파일만 교체하면 PC·모바일 자동 새로고침) =====
 // 신규(사용자요청): 수정한 루머03.html로 교체만 하면, 서버 재시작·수동 새로고침 없이
@@ -5472,10 +5893,14 @@ httpServer.listen(PORT, () => {
   purgeExpiredStoredFiles().catch(error => console.error('초기 파일 파기 작업 실패:', error.message));
   purgeOldRequestLogs();
   db.backfillPiiIndexes(); // 기존 데이터의 검색용 해시 채우기(이미 채워진 행은 건너뜀)
+  buildOtaBundle(); // 앱 라이브 업데이트용 번들 준비(배포된 루머03.html 기준)
   // 신규(2026-09-18): 부팅 직후 DB 저장 위치를 로그에 남긴다. DB_PATH 환경변수가 없으면 서버의 임시
   // 폴더에 DB가 만들어져 재배포 때마다 데이터가 전부 사라지는데, 지금까지는 그 사실을 알 방법이
   // 전혀 없었다(로그에도 안 찍힘). 이제 Render 로그 첫 줄에서 바로 확인할 수 있다.
   console.log(describeDbLocation());
+  // 신규(2026-09-18): 환경변수 자가진단. 잘못 설정해도 서버는 조용히 잘 뜨는 항목들을 서버가 직접
+  // 판정해 로그로 알린다. 값은 찍지 않고 키 이름과 판정만 남긴다.
+  console.log(describeEnvHealth());
   runDbBackup();
   console.log(`루머 ROOMER 백엔드 실행중: http://localhost:${PORT}`);
   // 신규(PC+모바일 동시테스트 지원): 같은 와이파이의 다른 기기(모바일)에서 접속할 정확한 주소를 자동으로 찾아서 안내
